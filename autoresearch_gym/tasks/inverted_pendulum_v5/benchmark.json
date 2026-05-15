@@ -1,0 +1,23 @@
+{
+  "name": "mujoco_inverted_pendulum_v5",
+  "description": "Canonical MuJoCo cart-pendulum balance benchmark using Gymnasium InvertedPendulum-v5.",
+  "env_id": "InvertedPendulum-v5",
+  "env_kwargs": {
+    "render_mode": "rgb_array",
+    "max_episode_steps": 1000
+  },
+  "train_episodes": 100,
+  "eval_episodes": 10,
+  "max_steps": 1000,
+  "render_mode": "rgb_array",
+  "primary_metric": "eval_avg_return",
+  "train_seed": 37,
+  "eval_seed_start": 3500,
+  "device": "auto",
+  "primary_metric_mode": "maximize",
+  "notes": [
+    "InvertedPendulum-v5 is a MuJoCo cart-pendulum balance task with continuous cart force control.",
+    "This is a reliable prebuilt pendulum-like task with a small continuous action space.",
+    "The task starts near upright and rewards balance, so it is not a swing-up-from-hanging benchmark."
+  ]
+}

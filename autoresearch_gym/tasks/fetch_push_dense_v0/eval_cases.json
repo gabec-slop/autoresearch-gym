@@ -1,0 +1,4 @@
+{
+  "description": "FetchPushDense evaluation is seed-based. This file is intentionally not referenced by benchmark.json because the upstream environment owns goal sampling.",
+  "cases": []
+}

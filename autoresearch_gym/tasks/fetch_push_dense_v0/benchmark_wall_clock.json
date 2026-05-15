@@ -1,0 +1,25 @@
+{
+  "name": "fetch_push_dense_v0_wall_clock",
+  "description": "FetchPushDense-v4 benchmark with a fixed wall-clock training window.",
+  "env_id": "FetchPushDense-v4",
+  "env_kwargs": {
+    "render_mode": "rgb_array",
+    "max_episode_steps": 50
+  },
+  "train_episodes": 100000,
+  "train_seconds": 300,
+  "eval_episodes": 25,
+  "max_steps": 50,
+  "render_mode": "rgb_array",
+  "primary_metric": "eval_avg_return",
+  "train_seed": 41,
+  "eval_seed_start": 4000,
+  "device": "auto",
+  "primary_metric_mode": "maximize",
+  "notes": [
+    "Use this benchmark when comparing FetchPush training recipes under equal wall-clock time.",
+    "RGB rendering is enabled by default so dashboard frames are available for live monitoring.",
+    "train_episodes is a high safety cap; train_seconds is the intended budget.",
+    "The HER seed is a natural alternative for this goal-conditioned manipulation task."
+  ]
+}

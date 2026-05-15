@@ -1,0 +1,25 @@
+{
+  "name": "panda_pick_and_place_dense_v0_wall_clock",
+  "description": "PandaGym pick-and-place benchmark with a fixed wall-clock training window and a blue ghost goal marker.",
+  "env_id": "AutoresearchPandaPickAndPlaceDense-v0",
+  "env_kwargs": {
+    "render_mode": "rgb_array",
+    "renderer": "Tiny"
+  },
+  "train_episodes": 100000,
+  "train_seconds": 300,
+  "eval_episodes": 25,
+  "max_steps": 50,
+  "render_mode": "rgb_array",
+  "primary_metric": "eval_avg_return",
+  "train_seed": 47,
+  "eval_seed_start": 4500,
+  "device": "auto",
+  "primary_metric_mode": "maximize",
+  "notes": [
+    "Use this benchmark when comparing Panda pick-and-place training recipes under equal wall-clock time.",
+    "train_episodes is a high safety cap; train_seconds is the intended budget.",
+    "The HER seed is a natural alternative for this goal-conditioned manipulation task.",
+    "AutoresearchPandaPickAndPlaceDense-v0 delegates physics to PandaGym and only recolors the non-collidable goal marker for visual clarity."
+  ]
+}

@@ -1,0 +1,219 @@
+# Autoresearch Gym
+
+Autoresearch Gym is a Gymnasium workbench for running agent-driven reinforcement
+learning research loops under fixed benchmark contracts. It gives Codex, Claude
+Code, or another coding agent the pieces it needs to author one candidate at a
+time, run deterministic evaluation, inspect live metrics and frames, and choose
+the next hypothesis from the evidence.
+
+The project follows the Karpathy `autoresearch` pattern: the repo provides
+benchmarks, seed trainables, a runner, and a live dashboard; the external coding
+agent provides the research judgment and edits session-local candidate files.
+
+![Animated Panda pick-and-place dashboard sample](docs/media/panda-pick-place-dashboard.gif)
+
+## Installation Setup
+
+Create a Python 3.10 environment and install the simulator stack you need:
+
+```bash
+cd autoresearch-gym
+uv venv --seed --python 3.10 .venv
+uv sync --extra mujoco
+```
+
+Useful extras:
+
+```bash
+uv sync --extra mujoco  # Hopper, InvertedPendulum, FetchPush
+uv sync --extra panda   # Panda/PyBullet and PandaGym tasks
+uv sync --extra dev     # tests and development tools
+```
+
+On Apple Silicon, install `panda-gym` without its upstream `pybullet`
+dependency after syncing the `panda` extra:
+
+```bash
+uv pip install --no-deps "panda-gym==3.0.7"
+```
+
+Windows PowerShell uses the same `uv sync --extra ...` commands. For NVIDIA
+CUDA Torch wheels, use the current command from the official PyTorch selector
+after syncing the desired extra. See [docs/INSTALL.md](docs/INSTALL.md) for the
+full platform notes.
+
+Bundled tasks:
+
+| Task | Benchmark | Seed |
+| --- | --- | --- |
+| Hopper | `autoresearch_gym/tasks/hopper_v0/benchmark.json` | `autoresearch_gym/tasks/hopper_v0/seed_trainable.py` |
+| Hopper vectorized wall-clock | `autoresearch_gym/tasks/hopper_v0/benchmark_vectorized_wall_clock.json` | `autoresearch_gym/tasks/hopper_v0/seed_trainable_vectorized.py` |
+| InvertedPendulum | `autoresearch_gym/tasks/inverted_pendulum_v5/benchmark.json` | `autoresearch_gym/tasks/inverted_pendulum_v5/seed_trainable.py` |
+| FetchPushDense | `autoresearch_gym/tasks/fetch_push_dense_v0/benchmark.json` | `autoresearch_gym/tasks/fetch_push_dense_v0/seed_trainable.py` or `seed_trainable_her.py` |
+| Panda pick-and-place | `autoresearch_gym/tasks/panda_pick_and_place_v0/benchmark.json` | `autoresearch_gym/tasks/panda_pick_and_place_v0/seed_trainable.py` or `seed_trainable_her.py` |
+| Panda bat-to-goal | `autoresearch_gym/tasks/bat_to_goal_v0/benchmark.json` | `autoresearch_gym/tasks/bat_to_goal_v0/seed_trainable.py` |
+
+## Testing Seed Performance Of A Task (With Dashboard)
+
+Use a session directory when you want the dashboard, live artifacts, and a
+repeatable baseline record.
+
+Start the dashboard in one terminal:
+
+```bash
+uv run autoresearch-gym dashboard --port 4174
+```
+
+Create a session:
+
+```bash
+uv run autoresearch-gym init-session \
+  --label inverted-pendulum-seed-smoke \
+  --benchmark autoresearch_gym/tasks/inverted_pendulum_v5/benchmark_wall_clock.json \
+  --seed-candidate autoresearch_gym/tasks/inverted_pendulum_v5/seed_trainable.py
+```
+
+Copy the seed into the session as pass 1:
+
+```bash
+cp autoresearch_gym/tasks/inverted_pendulum_v5/seed_trainable.py \
+  autoresearch_runs/sessions/<session-id>/candidates/pass01_baseline.py
+```
+
+Run the seed under the fixed benchmark, with a short override if you just want a
+smoke test:
+
+```bash
+uv run autoresearch-gym run \
+  --benchmark autoresearch_gym/tasks/inverted_pendulum_v5/benchmark_wall_clock.json \
+  --session-dir autoresearch_runs/sessions/<session-id> \
+  --candidate autoresearch_runs/sessions/<session-id>/candidates/pass01_baseline.py \
+  --tag pass01-baseline \
+  --train-seconds 45 \
+  --eval-episodes 5 \
+  --compact-status \
+  --compact-status-file autoresearch_runs/sessions/<session-id>/live/status.log
+```
+
+Open:
+
+```text
+http://127.0.0.1:4174/dashboard/?session=autoresearch_runs/sessions/<session-id>
+```
+
+The dashboard can also be opened bare at `/dashboard/`; it resolves the latest
+live session first, then falls back to `autoresearch_runs/sessions/latest`.
+
+For a quick terminal-only smoke test without session artifacts:
+
+```bash
+uv run autoresearch-gym run \
+  --benchmark autoresearch_gym/tasks/hopper_v0/benchmark.json \
+  --seed-candidate autoresearch_gym/tasks/hopper_v0/seed_trainable.py \
+  --tag smoke \
+  --train-episodes 2 \
+  --eval-episodes 1 \
+  --no-record
+```
+
+## Launching A Multi-Epoch Autoresearch Session
+
+Ask the coding agent to read [AUTORESEARCH.md](AUTORESEARCH.md) before it starts
+mutating candidates. The short version is:
+
+1. Initialize a session from a fixed benchmark and seed.
+2. Copy the selected seed verbatim to `candidates/pass01_baseline.py`.
+3. Run pass 1.
+4. For each later pass, inspect the latest evidence, write one new
+   `candidates/passNN_<slug>.py`, run that already-authored candidate, then keep
+   or reject it based on fixed eval.
+5. Do not prewrite a queue of candidates. The next pass can come from an idea
+   backlog or from a new observation in the previous run.
+
+Example prompts:
+
+- "Run a 10 x 45 second InvertedPendulum autoresearch loop. Pick the next pass
+  sequentially from the evidence at hand instead of planning all candidates up
+  front."
+- "Take 20 creative 2-minute InvertedPendulum passes from the current best
+  candidate, run headless to save compute, and stop early if the benchmark maxes
+  out."
+- "Run Hopper for a 5-minute wall-clock budget with the dashboard enabled and a
+  compact status log I can tail while the agent works."
+- "Compare FetchPushDense SAC and SAC+HER from their seeds, then mutate only one
+  session-local candidate at a time based on fixed eval results."
+
+For longer runs, use a compact status file so humans and agents can monitor
+progress without parsing the final JSON summary:
+
+```bash
+uv run autoresearch-gym run \
+  --benchmark autoresearch_gym/tasks/<task_name>/<benchmark>.json \
+  --session-dir autoresearch_runs/sessions/<session-id> \
+  --candidate autoresearch_runs/sessions/<session-id>/candidates/passNN_<slug>.py \
+  --tag passNN-<slug> \
+  --compact-status \
+  --compact-status-file autoresearch_runs/sessions/<session-id>/live/status.log \
+  --status-interval-seconds 10
+```
+
+Tail it while the run continues:
+
+```bash
+tail -f autoresearch_runs/sessions/<session-id>/live/status.log
+```
+
+Final stdout remains the full JSON summary. The compact file is intentionally
+for live monitoring.
+
+```mermaid
+flowchart LR
+    P["Prompt"] --> A["Agent writes one candidate"]
+    A --> R["autoresearch-gym run"]
+    R --> D["Dashboard, JSON summary, compact status"]
+    D --> L["results.jsonl and outer_loop_log.md"]
+    L --> N["Choose next hypothesis"]
+    N --> A
+```
+
+## Gotchas And Notes From Mac, Windows, Claude, And Codex
+
+- Read [AUTORESEARCH.md](AUTORESEARCH.md) for running sessions and
+  [AGENTS.md](AGENTS.md) for package maintenance. The README intentionally does
+  not duplicate the full candidate contract.
+- Use `benchmark.json` for episode-budget comparisons and
+  `benchmark_wall_clock.json` for fixed-time learning-efficiency comparisons.
+  Do not compare results across budget types unless you label the comparison as
+  budget-mismatched.
+- Candidate files must live under the session-local `candidates/` directory.
+  Pass 1 should be a verbatim copy of the selected seed.
+- Keep stdout clean for the final JSON summary. Use `--compact-status-file` for
+  live monitoring, especially with Claude Code or Codex runs where streamed
+  terminal output may be buffered, summarized, or hidden.
+- Claude Code, and sometimes Codex, may try to batch-plan several candidates up
+  front. Push the agent back to the strict autoresearch loop: write one
+  candidate, run it, inspect the evidence, update the research log, then choose
+  the next candidate. Preplanned batches do not learn from the experiments they
+  have not run yet.
+- Watch `outer_loop_log.md`. Agents sometimes skip the research log unless
+  explicitly told to record the hypothesis, changed mechanism, result, decision,
+  interpretation, and next idea after every pass.
+- Agents can also rat-hole on tuning one parameter for many passes. When that
+  happens, push for broader and more diverse changes: replay behavior,
+  exploration, architecture, losses, reward transforms, vectorization, warmup,
+  update cadence, or task-specific priors.
+- Keep the dashboard server running for normal sessions. Turn off expensive
+  visualization from the dashboard when stepping away, or use `--headless-env`
+  for MuJoCo runs when you do not need environment-level RGB rendering.
+- `--headless-env` records runtime conditions in the final summary. PandaGym /
+  PyBullet environments may reject `render_mode=None`; in that case the runner
+  keeps the benchmark render mode and records the fallback.
+- On macOS, MuJoCo rendering can fail in restrictive sandboxes because CGL/GLFW
+  needs a real WindowServer connection. Verify render failures from a normal
+  GUI-permitted shell before changing benchmark or runner code.
+- On Windows, use PowerShell and install CUDA Torch wheels from the official
+  PyTorch selector if you want NVIDIA GPU acceleration. Verify CUDA before
+  launching long Hopper/vectorized runs.
+- Generated sessions, checkpoints, media, logs, and `autoresearch_runs/`
+  artifacts are local research output. Do not publish them unless you have
+  deliberately curated small examples such as the README media.

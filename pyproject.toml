@@ -1,0 +1,44 @@
+[project]
+name = "autoresearch-gym"
+version = "0.1.0"
+description = "A small Gymnasium workbench for agent-driven RL autoresearch."
+readme = "README.md"
+requires-python = ">=3.10,<3.11"
+license = "MIT"
+license-files = ["LICENSE"]
+dependencies = [
+  "gymnasium>=0.29",
+  "numpy<2",
+  "pillow",
+]
+
+[project.optional-dependencies]
+dev = [
+  "build",
+  "pytest",
+]
+mujoco = [
+  "gymnasium[mujoco]>=0.29",
+  "gymnasium-robotics>=1.3",
+  "torch",
+]
+panda = [
+  "panda-gym==3.0.7; platform_system != 'Darwin' or platform_machine != 'arm64'",
+  "scipy",
+  "torch",
+  "pybullet-arm64; platform_system == 'Darwin' and platform_machine == 'arm64'",
+  "pybullet; platform_system != 'Darwin' or platform_machine != 'arm64'",
+]
+
+[project.scripts]
+autoresearch-gym = "autoresearch_gym.cli:main"
+
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["autoresearch_gym*"]
+
+[tool.setuptools.package-data]
+autoresearch_gym = ["tasks/**/*.json", "tasks/**/*.py"]

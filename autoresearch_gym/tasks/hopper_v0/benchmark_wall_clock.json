@@ -1,0 +1,24 @@
+{
+  "name": "mujoco_hopper_v0_wall_clock",
+  "description": "Hopper-v5 benchmark with a fixed wall-clock training window for single-environment SAC candidates.",
+  "env_id": "Hopper-v5",
+  "env_kwargs": {
+    "render_mode": "rgb_array",
+    "max_episode_steps": 1000
+  },
+  "train_episodes": 100000,
+  "train_seconds": 300,
+  "eval_episodes": 10,
+  "max_steps": 1000,
+  "render_mode": "rgb_array",
+  "primary_metric": "eval_avg_return",
+  "train_seed": 31,
+  "eval_seed_start": 3000,
+  "device": "auto",
+  "primary_metric_mode": "maximize",
+  "notes": [
+    "Use this benchmark for single-environment fixed-time Hopper recipe comparisons.",
+    "Use benchmark_vectorized_wall_clock.json with seed_trainable_vectorized.py when the research question includes vectorization and hardware utilization.",
+    "train_episodes is a high safety cap; train_seconds is the intended budget."
+  ]
+}

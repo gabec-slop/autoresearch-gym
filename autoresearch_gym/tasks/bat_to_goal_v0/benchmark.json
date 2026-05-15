@@ -1,0 +1,26 @@
+{
+  "name": "bat_to_goal_rightedge_v1",
+  "description": "Seed Panda batting benchmark. The task definition is read-only for autoresearch.",
+  "env_id": "PandaBatToGoal-v0",
+  "env_kwargs": {
+    "render_mode": "rgb_array",
+    "reward_type": "dense",
+    "max_steps": 120
+  },
+  "train_episodes": 100,
+  "eval_episodes": 25,
+  "max_steps": 120,
+  "reward_type": "dense",
+  "render_mode": "rgb_array",
+  "primary_metric": "eval_success_rate",
+  "train_seed": 7,
+  "eval_seed_start": 1000,
+  "eval_case_bank": "eval_cases.json",
+  "device": "auto",
+  "primary_metric_mode": "maximize",
+  "notes": [
+    "Designed for local development runs on modest CPU or GPU hardware.",
+    "Do not modify autoresearch_gym/envs/bat_to_goal.py from this harness.",
+    "Evaluation uses a fixed case bank so success rates are less sensitive to sampler drift."
+  ]
+}

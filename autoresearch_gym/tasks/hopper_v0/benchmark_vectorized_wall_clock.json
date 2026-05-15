@@ -1,0 +1,25 @@
+{
+  "name": "mujoco_hopper_v0_vectorized_wall_clock",
+  "description": "Canonical MuJoCo Hopper continuous-control benchmark using a fixed wall-clock training window for vectorized autoresearch candidates.",
+  "env_id": "Hopper-v5",
+  "env_kwargs": {
+    "render_mode": "rgb_array",
+    "max_episode_steps": 1000
+  },
+  "train_episodes": 100000,
+  "train_seconds": 300,
+  "eval_episodes": 10,
+  "max_steps": 1000,
+  "render_mode": "rgb_array",
+  "primary_metric": "eval_avg_return",
+  "train_seed": 31,
+  "eval_seed_start": 3000,
+  "device": "auto",
+  "primary_metric_mode": "maximize",
+  "notes": [
+    "Hopper is a standard MuJoCo locomotion benchmark with three torque-controlled hinges.",
+    "This benchmark fixes the training budget by wall-clock time rather than episode count.",
+    "train_episodes is a high safety cap; the intended budget is train_seconds.",
+    "Use seed_trainable_vectorized.py so candidate code can mutate vector env count, batch size, update cadence, and rendering cadence to improve utilization."
+  ]
+}

@@ -1,0 +1,4 @@
+{
+  "description": "InvertedPendulum-v5 evaluation is seed-based. This file is intentionally not referenced by benchmark.json because the upstream environment does not consume fixed_case reset options.",
+  "cases": []
+}

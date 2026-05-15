@@ -1,0 +1,76 @@
+# OS/editor noise
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+
+# Python caches and test output
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.pyre/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+
+# Virtualenvs and local secrets
+.venv/
+venv/
+env/
+.env
+.env.*
+!.env.example
+
+# Packaging/build output
+*.egg-info/
+build/
+dist/
+wheelhouse/
+site/
+
+# Autoresearch sessions and generated artifacts
+autoresearch_runs/
+artifacts/
+runs/
+wandb/
+lightning_logs/
+
+# Codex-local artifacts and agent scratch state
+.codex/
+.codex-*/
+.codex-artifacts/
+.codex-session-exports/
+.codex-tmp/
+codex/
+codex-artifacts/
+codex_artifacts/
+codex-session-exports/
+codex-session-exports-*/
+codex-tmp/
+codex-*.jsonl
+codex-*.log
+codex-*.zip
+*codex-session*.zip
+
+# Model checkpoints and generated training files
+*.pt
+*.pth
+*.ckpt
+*.onnx
+*.safetensors
+*.log
+*.tmp
+
+# Local-only helper scripts, scratch experiments, and notebooks
+local/
+scratch/
+tmp/
+scripts/local/
+scripts/scratch/
+notebooks/.ipynb_checkpoints/
+*.local.*
+*.personal.*

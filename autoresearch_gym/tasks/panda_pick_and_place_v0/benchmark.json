@@ -1,0 +1,23 @@
+{
+  "name": "panda_pick_and_place_dense_v0",
+  "description": "PandaGym pick-and-place benchmark where the Panda robot lifts a green cube and moves it to a blue ghost target marker.",
+  "env_id": "AutoresearchPandaPickAndPlaceDense-v0",
+  "env_kwargs": {
+    "render_mode": "rgb_array",
+    "renderer": "Tiny"
+  },
+  "train_episodes": 200,
+  "eval_episodes": 25,
+  "max_steps": 50,
+  "render_mode": "rgb_array",
+  "primary_metric": "eval_avg_return",
+  "train_seed": 47,
+  "eval_seed_start": 4500,
+  "device": "auto",
+  "primary_metric_mode": "maximize",
+  "notes": [
+    "AutoresearchPandaPickAndPlaceDense-v0 delegates physics to PandaGym and only recolors the non-collidable goal marker for visual clarity.",
+    "The dense reward gives the outer loop a smoother learning signal than sparse pick-and-place success.",
+    "The bundled seed flattens PandaGym goal-conditioned observations for a simple SAC baseline."
+  ]
+}

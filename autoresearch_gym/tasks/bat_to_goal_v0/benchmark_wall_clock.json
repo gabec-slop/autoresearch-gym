@@ -1,0 +1,27 @@
+{
+  "name": "bat_to_goal_rightedge_v1_wall_clock",
+  "description": "Panda batting benchmark with a fixed wall-clock training window.",
+  "env_id": "PandaBatToGoal-v0",
+  "env_kwargs": {
+    "render_mode": "rgb_array",
+    "reward_type": "dense",
+    "max_steps": 120
+  },
+  "train_episodes": 100000,
+  "train_seconds": 300,
+  "eval_episodes": 25,
+  "max_steps": 120,
+  "reward_type": "dense",
+  "render_mode": "rgb_array",
+  "primary_metric": "eval_success_rate",
+  "train_seed": 7,
+  "eval_seed_start": 1000,
+  "eval_case_bank": "eval_cases.json",
+  "device": "auto",
+  "primary_metric_mode": "maximize",
+  "notes": [
+    "Use this benchmark when comparing training approaches under equal wall-clock time.",
+    "train_episodes is a high safety cap; train_seconds is the intended budget.",
+    "Candidate code may tune warmup, update cadence, replay, and model size, but evaluation remains fixed."
+  ]
+}

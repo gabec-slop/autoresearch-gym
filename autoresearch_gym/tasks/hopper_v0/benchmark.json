@@ -1,0 +1,24 @@
+{
+  "name": "mujoco_hopper_v0",
+  "description": "Canonical MuJoCo Hopper continuous-control benchmark for validating generic RL autoresearch loops.",
+  "env_id": "Hopper-v5",
+  "env_kwargs": {
+    "render_mode": "rgb_array",
+    "max_episode_steps": 1000
+  },
+  "train_episodes": 100,
+  "eval_episodes": 10,
+  "max_steps": 1000,
+  "render_mode": "rgb_array",
+  "primary_metric": "eval_avg_return",
+  "train_seed": 31,
+  "eval_seed_start": 3000,
+  "device": "auto",
+  "primary_metric_mode": "maximize",
+  "notes": [
+    "Hopper is a standard MuJoCo locomotion benchmark with three torque-controlled hinges.",
+    "The bundled seed is intentionally simple SAC; serious baselines should compare against SB3 RL Zoo or CleanRL.",
+    "This task validates the simulator-agnostic harness on a widely recognized continuous-control environment.",
+    "The live dashboard samples RGB frames from the training process through the runner's MuJoCo renderer."
+  ]
+}

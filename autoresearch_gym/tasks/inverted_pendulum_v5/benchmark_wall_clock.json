@@ -1,0 +1,24 @@
+{
+  "name": "mujoco_inverted_pendulum_v5_wall_clock",
+  "description": "InvertedPendulum-v5 cart-pendulum benchmark with a fixed wall-clock training window.",
+  "env_id": "InvertedPendulum-v5",
+  "env_kwargs": {
+    "render_mode": "rgb_array",
+    "max_episode_steps": 1000
+  },
+  "train_episodes": 100000,
+  "train_seconds": 300,
+  "eval_episodes": 10,
+  "max_steps": 1000,
+  "render_mode": "rgb_array",
+  "primary_metric": "eval_avg_return",
+  "train_seed": 37,
+  "eval_seed_start": 3500,
+  "device": "auto",
+  "primary_metric_mode": "maximize",
+  "notes": [
+    "Use this benchmark when comparing cart-pendulum training recipes under equal wall-clock time.",
+    "train_episodes is a high safety cap; train_seconds is the intended budget.",
+    "This task can saturate quickly; prefer short wall-clock runs for smoke and recipe debugging."
+  ]
+}

@@ -1,0 +1,4 @@
+{
+  "description": "PandaPickAndPlaceDense-v3 evaluation is seed-based. This file is intentionally not referenced by benchmark.json because PandaGym owns goal sampling.",
+  "cases": []
+}

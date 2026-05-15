@@ -1,0 +1,1710 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Autoresearch Live Dashboard</title>
+    <style>
+      :root {
+        --bg: #09111f;
+        --panel: #101b2e;
+        --panel-2: #13213a;
+        --text: #e8eefc;
+        --muted: #9fb0d0;
+        --accent: #54d2ff;
+        --accent-2: #8cff98;
+        --accent-3: #ffb454;
+        --bad: #ff6b7a;
+        --grid: rgba(255, 255, 255, 0.08);
+        --border: rgba(255, 255, 255, 0.12);
+      }
+
+      * { box-sizing: border-box; }
+
+      body {
+        margin: 0;
+        font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        background:
+          radial-gradient(circle at top left, rgba(84, 210, 255, 0.14), transparent 32%),
+          radial-gradient(circle at top right, rgba(140, 255, 152, 0.12), transparent 28%),
+          linear-gradient(180deg, #07101c, #0a1425 60%, #08111d);
+        color: var(--text);
+        min-height: 100vh;
+        overflow-x: hidden;
+      }
+
+      .app-shell {
+        display: grid;
+        grid-template-columns: 340px minmax(0, 1fr);
+        min-height: 100vh;
+      }
+
+      .session-sidebar {
+        position: sticky;
+        top: 0;
+        height: 100vh;
+        overflow: hidden;
+        border-right: 1px solid var(--border);
+        background: rgba(9, 17, 31, 0.92);
+        backdrop-filter: blur(14px);
+        transition: width 180ms ease, transform 180ms ease;
+      }
+
+      .sidebar-inner {
+        display: grid;
+        grid-template-rows: auto auto minmax(0, 1fr);
+        gap: 12px;
+        height: 100%;
+        padding: 18px 14px;
+      }
+
+      .sidebar-head {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 10px;
+      }
+
+      .sidebar-title {
+        min-width: 0;
+      }
+
+      .sidebar-title strong {
+        display: block;
+        font-size: 15px;
+      }
+
+      .sidebar-title span {
+        display: block;
+        margin-top: 3px;
+        color: var(--muted);
+        font-size: 12px;
+      }
+
+      .sidebar-toggle {
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        background: rgba(255, 255, 255, 0.05);
+        color: var(--text);
+        width: 34px;
+        height: 34px;
+        cursor: pointer;
+        font: inherit;
+        font-size: 18px;
+        line-height: 1;
+      }
+
+      .session-list {
+        display: grid;
+        align-content: start;
+        gap: 8px;
+        overflow-x: hidden;
+        overflow-y: auto;
+        scrollbar-gutter: stable;
+        padding-right: 8px;
+      }
+
+      .session-item {
+        width: 100%;
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        background: rgba(255, 255, 255, 0.035);
+        color: var(--text);
+        cursor: pointer;
+        padding: 9px 10px;
+        text-align: left;
+        font: inherit;
+      }
+
+      .session-item:hover,
+      .session-item.active {
+        border-color: rgba(84, 210, 255, 0.65);
+        background: rgba(84, 210, 255, 0.12);
+      }
+
+      .session-item.active {
+        box-shadow: inset 4px 0 0 var(--accent);
+      }
+
+      .session-item strong,
+      .session-item span {
+        display: block;
+        max-width: 100%;
+        overflow-wrap: anywhere;
+        white-space: normal;
+      }
+
+      .session-item strong {
+        font-size: 13px;
+        line-height: 1.25;
+      }
+
+      .session-item span {
+        margin-top: 4px;
+        color: var(--muted);
+        font-size: 12px;
+        line-height: 1.3;
+      }
+
+      .session-pill {
+        display: inline-block;
+        margin-top: 7px;
+        border: 1px solid rgba(255, 255, 255, 0.14);
+        border-radius: 999px;
+        padding: 2px 7px;
+        color: var(--muted);
+        font-size: 11px;
+      }
+
+      .main-content {
+        min-width: 0;
+      }
+
+      .wrap {
+        width: min(1280px, calc(100% - 32px));
+        margin: 24px auto 40px;
+        overflow-x: hidden;
+      }
+
+      body.nav-collapsed .app-shell {
+        grid-template-columns: 58px minmax(0, 1fr);
+      }
+
+      body.nav-collapsed .sidebar-inner {
+        padding: 18px 11px;
+      }
+
+      body.nav-collapsed .sidebar-title,
+      body.nav-collapsed .session-search,
+      body.nav-collapsed .session-list {
+        display: none;
+      }
+
+      body.nav-collapsed .sidebar-head {
+        justify-content: center;
+      }
+
+      .hero {
+        display: flex;
+        flex-wrap: wrap;
+        justify-content: space-between;
+        gap: 24px;
+        align-items: flex-start;
+        margin-bottom: 20px;
+      }
+
+      .hero > div:first-child {
+        min-width: 0;
+      }
+
+      h1 {
+        margin: 0;
+        font-size: clamp(26px, 3.2vw, 40px);
+        letter-spacing: 0;
+        line-height: 1.08;
+        overflow-wrap: anywhere;
+      }
+
+      .sub {
+        margin-top: 8px;
+        color: var(--muted);
+        font-size: 14px;
+        line-height: 1.45;
+      }
+
+      .status {
+        background: var(--panel);
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        padding: 12px 16px;
+        min-width: 260px;
+        max-width: 100%;
+        flex: 0 0 auto;
+      }
+
+      .status strong {
+        display: block;
+        font-size: 14px;
+        color: var(--muted);
+      }
+
+      .status span {
+        display: block;
+        margin-top: 4px;
+        font-size: 22px;
+      }
+
+      .grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+        gap: 14px;
+        margin-bottom: 14px;
+      }
+
+      .card,
+      .chart-card {
+        background: linear-gradient(180deg, var(--panel), var(--panel-2));
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        padding: 14px 16px;
+        box-shadow: 0 10px 24px rgba(0, 0, 0, 0.18);
+        min-width: 0;
+      }
+
+      .label {
+        color: var(--muted);
+        font-size: 12px;
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+      }
+
+      .value {
+        margin-top: 8px;
+        font-size: 28px;
+        font-weight: 700;
+        letter-spacing: 0;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+
+      .charts {
+        display: grid;
+        grid-template-columns: minmax(0, 1.45fr) minmax(320px, 0.9fr);
+        gap: 14px;
+        margin-top: 14px;
+        margin-bottom: 14px;
+      }
+
+      .sim-card {
+        display: grid;
+        grid-template-rows: auto minmax(320px, 1fr);
+        min-height: 460px;
+      }
+
+      .sim-frame-wrap {
+        background: #05070b;
+        border: 1px solid var(--border);
+        display: grid;
+        aspect-ratio: 16 / 9;
+        min-height: 0;
+        place-items: start center;
+        overflow: hidden;
+      }
+
+      .sim-frame {
+        display: block;
+        width: 100%;
+        height: 100%;
+        object-fit: cover;
+        object-position: center 76%;
+      }
+
+      .sim-frame.is-hidden {
+        display: none;
+      }
+
+      .sim-placeholder {
+        display: none;
+        width: min(540px, calc(100% - 32px));
+        padding: 22px;
+        border: 1px dashed rgba(255, 255, 255, 0.2);
+        border-radius: 8px;
+        color: var(--muted);
+        line-height: 1.45;
+        text-align: center;
+      }
+
+      .sim-placeholder.is-visible {
+        display: block;
+      }
+
+      .chart-head {
+        display: flex;
+        justify-content: space-between;
+        align-items: baseline;
+        gap: 12px;
+        margin-bottom: 12px;
+      }
+
+      .chart-head h2 {
+        margin: 0;
+        font-size: 18px;
+      }
+
+      .chart-head span {
+        color: var(--muted);
+        font-size: 13px;
+        text-align: right;
+      }
+
+      .visual-controls {
+        display: flex;
+        flex-wrap: wrap;
+        justify-content: flex-end;
+        gap: 6px;
+      }
+
+      .visual-mode {
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        background: rgba(255, 255, 255, 0.04);
+        color: var(--muted);
+        padding: 6px 9px;
+        font: inherit;
+        font-size: 12px;
+        cursor: pointer;
+      }
+
+      .visual-mode:hover,
+      .visual-mode.is-active {
+        border-color: rgba(84, 210, 255, 0.65);
+        color: var(--text);
+        background: rgba(84, 210, 255, 0.14);
+      }
+
+      canvas {
+        width: 100%;
+        height: 300px;
+        display: block;
+      }
+
+      .session-search {
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        background: rgba(255, 255, 255, 0.05);
+        color: var(--text);
+        padding: 8px 10px;
+        font: inherit;
+        font-size: 13px;
+        width: 100%;
+      }
+
+      #lossChart {
+        height: 220px;
+      }
+
+      .meta {
+        margin-top: 14px;
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 10px;
+      }
+
+      .meta div {
+        color: var(--muted);
+        font-size: 14px;
+        min-width: 0;
+      }
+
+      .meta strong {
+        color: var(--text);
+        display: inline-block;
+        max-width: 100%;
+        overflow-wrap: anywhere;
+      }
+
+      .compact-run-meta .candidate-row {
+        grid-column: 1 / -1;
+      }
+
+      .metric-table {
+        width: 100%;
+        border-collapse: collapse;
+        margin-top: 12px;
+        color: var(--muted);
+        font-size: 13px;
+      }
+
+      .metric-table th,
+      .metric-table td {
+        padding: 7px 4px;
+        border-top: 1px solid rgba(255, 255, 255, 0.08);
+        text-align: left;
+      }
+
+      .metric-table th {
+        color: var(--text);
+        font-weight: 600;
+      }
+
+      .raw {
+        max-height: 180px;
+        overflow: auto;
+        margin-top: 12px;
+        padding: 10px;
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        background: rgba(255, 255, 255, 0.04);
+        color: var(--muted);
+        font-size: 12px;
+      }
+
+      .research-card {
+        margin-top: 14px;
+      }
+
+      .meta-grid {
+        display: grid;
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+        gap: 10px;
+        margin-bottom: 12px;
+      }
+
+      .mini-card {
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        padding: 10px;
+        background: rgba(255, 255, 255, 0.035);
+      }
+
+      .mini-card strong {
+        display: block;
+        margin-top: 5px;
+        font-size: 22px;
+        overflow-wrap: anywhere;
+      }
+
+      .table-wrap {
+        max-height: 360px;
+        overflow: auto;
+        border: 1px solid var(--border);
+        border-radius: 8px;
+      }
+
+      .research-table {
+        width: 100%;
+        border-collapse: collapse;
+        font-size: 13px;
+      }
+
+      .research-table th,
+      .research-table td {
+        padding: 8px 10px;
+        border-top: 1px solid rgba(255, 255, 255, 0.08);
+        text-align: left;
+        vertical-align: top;
+      }
+
+      .research-table th {
+        position: sticky;
+        top: 0;
+        z-index: 1;
+        color: var(--muted);
+        background: #101b2e;
+        text-transform: uppercase;
+        font-size: 11px;
+        letter-spacing: 0.06em;
+      }
+
+      .research-table tr.best {
+        background: rgba(140, 255, 152, 0.08);
+      }
+
+      .research-table tr.current {
+        outline: 2px solid rgba(84, 210, 255, 0.5);
+        outline-offset: -2px;
+      }
+
+      .desc-cell {
+        min-width: 280px;
+        max-width: 560px;
+        color: var(--muted);
+        overflow-wrap: anywhere;
+      }
+
+      .tag-pill {
+        display: inline-block;
+        border: 1px solid var(--border);
+        border-radius: 999px;
+        padding: 2px 7px;
+        background: rgba(255, 255, 255, 0.05);
+        white-space: nowrap;
+      }
+
+      .log-tail {
+        max-height: 220px;
+      }
+
+      .active-cycle {
+        display: grid;
+        grid-template-columns: minmax(180px, 0.8fr) minmax(0, 2fr);
+        gap: 12px;
+        align-items: stretch;
+        margin-bottom: 12px;
+      }
+
+      .progress-shell {
+        height: 8px;
+        overflow: hidden;
+        border-radius: 999px;
+        background: rgba(255, 255, 255, 0.08);
+        margin-top: 10px;
+      }
+
+      .progress-fill {
+        width: 0%;
+        height: 100%;
+        border-radius: inherit;
+        background: linear-gradient(90deg, #54d2ff, #8cff98);
+        transition: width 180ms ease;
+      }
+
+      .progress-meta {
+        margin-top: 8px;
+        color: var(--muted);
+        font-size: 13px;
+        line-height: 1.2;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+
+      .progress-meta strong {
+        display: inline;
+        margin: 0;
+        color: var(--text);
+        font-size: 13px;
+      }
+
+      .research-canvases {
+        display: grid;
+        grid-template-columns: minmax(0, 1.1fr) minmax(0, 0.9fr);
+        gap: 12px;
+        margin-bottom: 12px;
+      }
+
+      .canvas-panel {
+        min-width: 0;
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        padding: 10px;
+        background: rgba(255, 255, 255, 0.025);
+      }
+
+      .canvas-panel h3 {
+        margin: 0 0 8px;
+        font-size: 14px;
+        color: var(--text);
+      }
+
+      .canvas-panel canvas {
+        width: 100%;
+        height: auto;
+        display: block;
+      }
+
+      #scoreChart {
+        height: 180px;
+      }
+
+      @media (max-width: 980px) {
+        .app-shell {
+          grid-template-columns: 1fr;
+        }
+
+        .session-sidebar {
+          position: static;
+          height: auto;
+          border-right: 0;
+          border-bottom: 1px solid var(--border);
+        }
+
+        .sidebar-inner {
+          grid-template-rows: auto auto auto;
+        }
+
+        body.nav-collapsed .app-shell {
+          grid-template-columns: 1fr;
+        }
+
+        .hero {
+          align-items: flex-start;
+          flex-direction: column;
+        }
+
+        .grid,
+        .active-cycle,
+        .research-canvases,
+        .meta-grid,
+        .meta {
+          grid-template-columns: 1fr;
+        }
+
+        .charts {
+          grid-template-columns: minmax(0, 1fr);
+        }
+      }
+
+      @media (max-width: 1320px) {
+        .hero {
+          flex-direction: column;
+        }
+
+        .status {
+          width: 100%;
+        }
+
+        .grid {
+          grid-template-columns: repeat(4, minmax(0, 1fr));
+          gap: 10px;
+        }
+
+        .card,
+        .chart-card {
+          padding: 10px 12px;
+        }
+
+        .value {
+          margin-top: 6px;
+          font-size: 24px;
+        }
+
+        .charts {
+          grid-template-columns: minmax(0, 1fr);
+        }
+      }
+
+      @media (max-width: 980px) {
+        .grid,
+        .meta-grid {
+          grid-template-columns: repeat(2, minmax(0, 1fr));
+        }
+      }
+
+      @media (max-width: 620px) {
+        .grid,
+        .meta-grid {
+          grid-template-columns: minmax(0, 1fr);
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="app-shell">
+      <aside class="session-sidebar" aria-label="Session navigation">
+        <div class="sidebar-inner">
+          <div class="sidebar-head">
+            <div class="sidebar-title">
+              <strong>Sessions</strong>
+              <span id="sessionNavStatus">Loading session list</span>
+            </div>
+            <button class="sidebar-toggle" id="sidebarToggle" type="button" aria-label="Collapse session navigation">‹</button>
+          </div>
+          <input class="session-search" id="sessionSearch" type="search" placeholder="Filter sessions" />
+          <div class="session-list" id="sessionList"></div>
+        </div>
+      </aside>
+
+      <main class="main-content">
+        <div class="wrap">
+          <div class="hero">
+            <div>
+              <h1 id="title">Autoresearch Live</h1>
+              <div class="sub" id="subtitle">Defaults to the latest live session. Override with ?session=autoresearch_runs/sessions/&lt;session-id&gt;</div>
+            </div>
+            <div class="status">
+              <strong>Run Status</strong>
+              <span id="runStatus">Waiting for metrics</span>
+            </div>
+          </div>
+
+          <div class="charts">
+            <div class="chart-card sim-card">
+              <div class="chart-head">
+                <h2>Live Simulation</h2>
+                <div>
+                  <div class="visual-controls">
+                    <button class="visual-mode" data-visual-mode="off" type="button">Off</button>
+                    <button class="visual-mode" data-visual-mode="live_frame" type="button">Live Frame</button>
+                    <button class="visual-mode" data-visual-mode="sampled_trajectory" type="button">Sampled Trajectory</button>
+                  </div>
+                  <span id="frameStatus">Waiting for frame</span>
+                </div>
+              </div>
+              <div class="sim-frame-wrap">
+                <img id="simFrame" class="sim-frame" alt="Live simulation frame" />
+                <div id="simPlaceholder" class="sim-placeholder">
+                  Live frames are disabled for this benchmark. Metrics, losses, and
+                  episode history are still streaming.
+                </div>
+              </div>
+            </div>
+
+            <div class="chart-card">
+              <div class="chart-head">
+                <h2>Current Run</h2>
+                <span id="episodesSeen">0 episodes</span>
+              </div>
+              <canvas id="returnChart" width="520" height="300"></canvas>
+              <div class="meta compact-run-meta">
+                <div>Run: <strong id="runId">-</strong></div>
+                <div>Tag: <strong id="tag">-</strong></div>
+                <div class="candidate-row">Candidate: <strong id="candidate">-</strong></div>
+              </div>
+            </div>
+          </div>
+
+          <div class="grid">
+            <div class="card">
+              <div class="label">Step</div>
+              <div class="value" id="stepValue">-</div>
+            </div>
+            <div class="card">
+              <div class="label">Episode</div>
+              <div class="value" id="episodeValue">-</div>
+            </div>
+            <div class="card">
+              <div class="label">Average Return</div>
+              <div class="value" id="avgReturnValue">-</div>
+            </div>
+            <div class="card">
+              <div class="label">Success Rate</div>
+              <div class="value" id="successRateValue">-</div>
+            </div>
+          </div>
+
+          <div class="chart-card research-card">
+            <div class="chart-head">
+              <h2>Autoresearch Loop</h2>
+              <span id="researchStatus">Waiting for results.jsonl</span>
+            </div>
+            <div class="meta-grid">
+              <div class="mini-card">
+                <div class="label">Iterations</div>
+                <strong id="iterationCount">-</strong>
+              </div>
+              <div class="mini-card">
+                <div class="label">Best Score</div>
+                <strong id="bestScore">-</strong>
+              </div>
+              <div class="mini-card">
+                <div class="label">Best Candidate</div>
+                <strong id="bestCandidate">-</strong>
+              </div>
+              <div class="mini-card">
+                <div class="label">Current Cycle</div>
+                <strong id="currentCycle">-</strong>
+              </div>
+            </div>
+            <div class="active-cycle">
+              <div class="mini-card">
+                <div class="label">Active Candidate</div>
+                <strong id="activeCandidate">-</strong>
+                <div class="progress-shell"><div class="progress-fill" id="activeProgress"></div></div>
+                <div class="progress-meta">Progress: <strong id="activeProgressText">-</strong></div>
+              </div>
+              <div class="mini-card">
+                <div class="label">Current Hypothesis</div>
+                <strong id="activeHypothesis">-</strong>
+              </div>
+            </div>
+            <div class="research-canvases">
+              <div class="canvas-panel">
+                <h3>Score History</h3>
+                <canvas id="scoreChart" width="980" height="260"></canvas>
+              </div>
+            </div>
+            <div class="table-wrap">
+              <table class="research-table">
+                <thead>
+                  <tr>
+                    <th>#</th>
+                    <th>cycle</th>
+                    <th>tag</th>
+                    <th>score</th>
+                    <th>eval return</th>
+                    <th>decision</th>
+                    <th>candidate description</th>
+                  </tr>
+                </thead>
+                <tbody id="researchRows"></tbody>
+              </table>
+            </div>
+            <pre class="raw log-tail" id="logTail">No log yet.</pre>
+          </div>
+
+          <div class="charts">
+            <div class="chart-card">
+              <div class="chart-head">
+                <h2>Latest Losses / Updates</h2>
+                <span>Generic payload</span>
+              </div>
+              <canvas id="lossChart" width="360" height="220"></canvas>
+              <table class="metric-table">
+                <thead>
+                  <tr>
+                    <th>Metric</th>
+                    <th>Value</th>
+                  </tr>
+                </thead>
+                <tbody id="metricRows"></tbody>
+              </table>
+              <pre class="raw" id="rawPayload">{}</pre>
+            </div>
+          </div>
+        </div>
+      </main>
+    </div>
+
+    <script>
+      const params = new URLSearchParams(window.location.search);
+      const requestedSession = params.get("session");
+      let shouldFollowLatestSession = !requestedSession;
+      let session = (requestedSession || "").replace(/\/$/, "");
+      const explicitMetrics = params.get("metrics");
+      const explicitFrame = params.get("frame");
+      let metricsUrl = explicitMetrics || (session ? `/${session}/live/current_run_metrics.json` : "");
+      let frameUrl = explicitFrame || (session ? `/${session}/live/current_run_frame.jpg` : "");
+      let sessionSource = requestedSession ? "query" : "latest";
+      let latestSessionCheckedAt = 0;
+
+      const returnCanvas = document.getElementById("returnChart");
+      const lossCanvas = document.getElementById("lossChart");
+      const scoreCanvas = document.getElementById("scoreChart");
+      const returnCtx = returnCanvas.getContext("2d");
+      const lossCtx = lossCanvas.getContext("2d");
+      const scoreCtx = scoreCanvas.getContext("2d");
+      const simFrame = document.getElementById("simFrame");
+      const simPlaceholder = document.getElementById("simPlaceholder");
+      let frameRefreshActive = false;
+      let frameRefreshTimer = null;
+      let selectedVisualMode = "sampled_trajectory";
+      let visualModeOverride = null;
+      let displayedFrameKind = "sampled_trajectory";
+      let trajectoryManifestPath = "";
+      let trajectoryFrames = [];
+      let trajectoryFrameIndex = 0;
+      let trajectoryFrameDelayMs = 1000;
+      let trajectorySampleLabel = "";
+      let latestRun = {};
+      let latestResults = [];
+      let latestLogText = "";
+      let dashboardSessions = [];
+      let sessionFilter = "";
+
+      const sidebarToggle = document.getElementById("sidebarToggle");
+      const sessionSearch = document.getElementById("sessionSearch");
+
+      function updateText(id, value) {
+        document.getElementById(id).textContent = value;
+      }
+
+      function sessionDisplayLabel() {
+        const suffix = sessionSource === "live_session.json" ? " (latest live)" : "";
+        return `${session}${suffix}`;
+      }
+
+      async function fetchLiveSessionPath() {
+        try {
+          const response = await fetch(`/autoresearch_runs/live_session.json?t=${Date.now()}`, { cache: "no-store" });
+          if (response.ok) {
+            const payload = await response.json();
+            const pointer = payload.session_path || payload.session || payload.path;
+            if (pointer) {
+              return String(pointer).replace(/^\//, "").replace(/\/$/, "");
+            }
+          }
+        } catch (_) {}
+        return "";
+      }
+
+      function setSession(nextSession, source) {
+        session = nextSession;
+        sessionSource = source;
+        metricsUrl = explicitMetrics || `/${session}/live/current_run_metrics.json`;
+        frameUrl = explicitFrame || `/${session}/live/current_run_frame.jpg`;
+        latestRun = {};
+        latestResults = [];
+        latestLogText = "";
+        trajectoryManifestPath = "";
+        trajectoryFrames = [];
+        trajectoryFrameIndex = 0;
+        updateText("subtitle", sessionDisplayLabel());
+        renderSessionList();
+      }
+
+      function selectSession(nextSession) {
+        if (!nextSession || nextSession === session) return;
+        shouldFollowLatestSession = false;
+        setSession(nextSession, "query");
+        const url = new URL(window.location.href);
+        url.searchParams.set("session", nextSession);
+        window.history.replaceState({}, "", `${url.pathname}?${url.searchParams.toString()}`);
+        updateText("runStatus", "Loading selected session");
+        scheduleFrameRefresh(0);
+        refresh();
+        refreshResearch();
+      }
+
+      function sessionSummaryLine(item) {
+        const parts = [item.status];
+        if (Number.isFinite(Number(item.episodes))) parts.push(`${item.episodes} eps`);
+        if (Number.isFinite(Number(item.avg_return))) parts.push(`avg ${formatNumber(item.avg_return, 1)}`);
+        return parts.filter(Boolean).join(" · ");
+      }
+
+      function renderSessionList() {
+        const list = document.getElementById("sessionList");
+        const query = sessionFilter.trim().toLowerCase();
+        const filtered = dashboardSessions.filter((item) => {
+          const haystack = `${item.name || ""} ${item.label || ""} ${item.path || ""}`.toLowerCase();
+          return !query || haystack.includes(query);
+        });
+        updateText("sessionNavStatus", `${filtered.length} sessions`);
+        list.innerHTML = filtered
+          .map((item) => {
+            const active = item.path === session ? " active" : "";
+            const current = item.is_current ? "<span class=\"session-pill\">current</span>" : "";
+            return `<button class="session-item${active}" type="button" data-session="${escapeHtml(item.path)}">
+              <strong>${escapeHtml(item.label || item.name || item.path)}</strong>
+              <span>${escapeHtml(item.name || item.path)}</span>
+              <span>${escapeHtml(sessionSummaryLine(item))}</span>
+              ${current}
+            </button>`;
+          })
+          .join("") || "<div class=\"sub\">No sessions found</div>";
+        list.querySelectorAll("[data-session]").forEach((button) => {
+          button.addEventListener("click", () => selectSession(button.dataset.session));
+        });
+      }
+
+      async function refreshSessionList() {
+        try {
+          const response = await fetch(`/_autoresearch/sessions?t=${Date.now()}`, { cache: "no-store" });
+          if (!response.ok) throw new Error(`HTTP ${response.status}`);
+          const payload = await response.json();
+          dashboardSessions = Array.isArray(payload.sessions) ? payload.sessions : [];
+          renderSessionList();
+        } catch (error) {
+          updateText("sessionNavStatus", "Session list unavailable");
+        }
+      }
+
+      async function resolveSession() {
+        if (session) return;
+        updateText("subtitle", "Resolving latest live session...");
+        const liveSession = await fetchLiveSessionPath();
+        if (liveSession) {
+          setSession(liveSession, "live_session.json");
+          return;
+        }
+        if (!session) {
+          setSession("autoresearch_runs/sessions/latest", "fallback");
+        }
+      }
+
+      async function initializeSession() {
+        await resolveSession();
+        updateText("subtitle", sessionDisplayLabel());
+      }
+
+      async function refreshLatestSessionPointer() {
+        if (!shouldFollowLatestSession) return;
+        const now = Date.now();
+        if (now - latestSessionCheckedAt < 2000) return;
+        latestSessionCheckedAt = now;
+        const liveSession = await fetchLiveSessionPath();
+        if (liveSession && liveSession !== session) {
+          setSession(liveSession, "live_session.json");
+          updateText("runStatus", "Switched to latest live session");
+          scheduleFrameRefresh(0);
+        }
+      }
+
+      function formatNumber(value, digits = 3) {
+        const numeric = Number(value);
+        if (!Number.isFinite(numeric)) return "-";
+        return numeric.toFixed(digits);
+      }
+
+      function formatPct(value) {
+        return `${(100 * Number(value || 0)).toFixed(1)}%`;
+      }
+
+      function candidateLabel(candidate) {
+        if (!candidate) return "-";
+        if (candidate.description) return candidate.description;
+        if (candidate.algorithm || candidate.reward_recipe) {
+          return [candidate.algorithm, candidate.reward_recipe].filter(Boolean).join(" / ");
+        }
+        return JSON.stringify(candidate);
+      }
+
+      function shortText(value, limit = 90) {
+        const text = String(value ?? "-");
+        return text.length > limit ? `${text.slice(0, limit - 1)}...` : text;
+      }
+
+      function escapeHtml(value) {
+        return String(value ?? "")
+          .replaceAll("&", "&amp;")
+          .replaceAll("<", "&lt;")
+          .replaceAll(">", "&gt;")
+          .replaceAll('"', "&quot;")
+          .replaceAll("'", "&#39;");
+      }
+
+      function activeVisualMode() {
+        return (
+          visualModeOverride ||
+          latestRun.visual_control?.visual_mode ||
+          latestRun.visual?.mode ||
+          selectedVisualMode ||
+          "sampled_trajectory"
+        );
+      }
+
+      function updateVisualControls(mode = activeVisualMode()) {
+        selectedVisualMode = mode;
+        document.querySelectorAll("[data-visual-mode]").forEach((button) => {
+          button.classList.toggle("is-active", button.dataset.visualMode === mode);
+        });
+      }
+
+      async function setVisualMode(mode) {
+        selectedVisualMode = mode;
+        visualModeOverride = mode;
+        updateVisualControls(mode);
+        if (mode === "off") {
+          showFramePlaceholder("Visual rendering is off. Metrics, losses, and episode history are still streaming.");
+        } else if (mode === "sampled_trajectory") {
+          showFramePlaceholder("Sampled trajectory mode will begin at the next sampled episode boundary.");
+        }
+        try {
+          const control = { visual_mode: mode };
+          if (mode === "sampled_trajectory") control.trajectory_frame_stride = 2;
+          const response = await fetch("/_autoresearch/control", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ session, control }),
+          });
+          const payload = await response.json();
+          if (!response.ok || !payload.ok) throw new Error(payload.error || `HTTP ${response.status}`);
+          latestRun.visual_control = payload.control;
+          visualModeOverride = payload.control.visual_mode;
+          updateVisualControls(payload.control.visual_mode);
+          updateText("frameStatus", `Mode: ${payload.control.visual_mode.replaceAll("_", " ")}`);
+        } catch (error) {
+          visualModeOverride = null;
+          updateText("frameStatus", `Control update failed: ${error.message}`);
+          updateVisualControls(activeVisualMode());
+        } finally {
+          scheduleFrameRefresh(0);
+        }
+      }
+
+      document.querySelectorAll("[data-visual-mode]").forEach((button) => {
+        button.addEventListener("click", () => setVisualMode(button.dataset.visualMode));
+      });
+
+      sidebarToggle.addEventListener("click", () => {
+        const collapsed = document.body.classList.toggle("nav-collapsed");
+        sidebarToggle.textContent = collapsed ? "›" : "‹";
+        sidebarToggle.setAttribute("aria-label", collapsed ? "Expand session navigation" : "Collapse session navigation");
+      });
+
+      sessionSearch.addEventListener("input", () => {
+        sessionFilter = sessionSearch.value;
+        renderSessionList();
+      });
+
+      function normalizeScore(row) {
+        const value = Number(row?.score ?? row?.objective?.value ?? NaN);
+        return Number.isFinite(value) ? value : NaN;
+      }
+
+      function chartGeometry(width, height, options = {}) {
+        return {
+          left: options.leftPad ?? 56,
+          right: options.rightPad ?? 16,
+          top: options.topPad ?? 20,
+          bottom: options.bottomPad ?? 42,
+        };
+      }
+
+      function prepareCanvas(ctx) {
+        const canvas = ctx.canvas;
+        const rect = canvas.getBoundingClientRect();
+        const dpr = window.devicePixelRatio || 1;
+        const width = Math.max(1, Math.round(rect.width));
+        const height = Math.max(1, Math.round(rect.height));
+        const pixelWidth = Math.max(1, Math.round(width * dpr));
+        const pixelHeight = Math.max(1, Math.round(height * dpr));
+        if (canvas.width !== pixelWidth || canvas.height !== pixelHeight) {
+          canvas.width = pixelWidth;
+          canvas.height = pixelHeight;
+        }
+        ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+        return { width, height };
+      }
+
+      function drawAxisLabels(ctx, width, height, geometry, options = {}) {
+        ctx.fillStyle = "rgba(255,255,255,0.62)";
+        ctx.font = "12px sans-serif";
+        ctx.textAlign = "center";
+        ctx.textBaseline = "alphabetic";
+        if (options.xLabel) {
+          ctx.fillText(options.xLabel, geometry.left + (width - geometry.left - geometry.right) / 2, height - 8);
+        }
+        if (options.yLabel) {
+          ctx.save();
+          ctx.translate(14, geometry.top + (height - geometry.top - geometry.bottom) / 2);
+          ctx.rotate(-Math.PI / 2);
+          ctx.fillText(options.yLabel, 0, 0);
+          ctx.restore();
+        }
+        ctx.textAlign = "left";
+      }
+
+      function drawChartBase(ctx, options = {}) {
+        const { width, height } = prepareCanvas(ctx);
+        const geometry = chartGeometry(width, height, options);
+        const plotW = width - geometry.left - geometry.right;
+        const plotH = height - geometry.top - geometry.bottom;
+        ctx.clearRect(0, 0, width, height);
+        ctx.fillStyle = "rgba(255,255,255,0.02)";
+        ctx.fillRect(0, 0, width, height);
+
+        ctx.strokeStyle = "rgba(255,255,255,0.08)";
+        ctx.lineWidth = 1;
+        for (let i = 1; i < 4; i++) {
+          const y = geometry.top + (plotH / 4) * i;
+          ctx.beginPath();
+          ctx.moveTo(geometry.left, y);
+          ctx.lineTo(width - geometry.right, y);
+          ctx.stroke();
+        }
+        ctx.strokeStyle = "rgba(255,255,255,0.16)";
+        ctx.beginPath();
+        ctx.moveTo(geometry.left, geometry.top);
+        ctx.lineTo(geometry.left, height - geometry.bottom);
+        ctx.lineTo(width - geometry.right, height - geometry.bottom);
+        ctx.stroke();
+        drawAxisLabels(ctx, width, height, geometry, options);
+        return { width, height, ...geometry, plotW, plotH };
+      }
+
+      function drawLineChart(ctx, values, color, options = {}) {
+        const chart = drawChartBase(ctx, options);
+
+        if (!values.length) {
+          ctx.fillStyle = "rgba(255,255,255,0.35)";
+          ctx.font = "16px sans-serif";
+          ctx.fillText(options.emptyText || "No data yet", chart.left + 8, chart.top + 8);
+          return chart;
+        }
+
+        let min = Math.min(...values);
+        let max = Math.max(...values);
+        if (Math.abs(max - min) < 1e-6) {
+          min -= 1;
+          max += 1;
+        }
+
+        ctx.strokeStyle = color;
+        ctx.lineWidth = 3;
+        ctx.beginPath();
+        values.forEach((value, index) => {
+          const x = chart.left + (chart.plotW * index) / Math.max(values.length - 1, 1);
+          const t = (value - min) / (max - min);
+          const y = chart.height - chart.bottom - t * chart.plotH;
+          if (index === 0) ctx.moveTo(x, y);
+          else ctx.lineTo(x, y);
+        });
+        ctx.stroke();
+
+        ctx.fillStyle = "rgba(255,255,255,0.7)";
+        ctx.font = "12px sans-serif";
+        ctx.textAlign = "left";
+        ctx.fillText(max.toFixed(2), chart.left + 6, chart.top + 14);
+        ctx.fillText(min.toFixed(2), chart.left + 6, chart.height - chart.bottom - 6);
+        return { ...chart, min, max };
+      }
+
+      function niceTickStep(rawStep) {
+        if (!Number.isFinite(rawStep) || rawStep <= 1) return 1;
+        const magnitude = 10 ** Math.floor(Math.log10(rawStep));
+        const normalized = rawStep / magnitude;
+        if (normalized <= 1) return magnitude;
+        if (normalized <= 2) return 2 * magnitude;
+        if (normalized <= 5) return 5 * magnitude;
+        return 10 * magnitude;
+      }
+
+      function tickIndexesForCount(count, plotW, minLabelPx = 44, showAllUpTo = 0) {
+        if (count <= 0) return [];
+        if (count <= showAllUpTo) return Array.from({ length: count }, (_, index) => index);
+        const maxTicks = Math.max(2, Math.floor(plotW / minLabelPx));
+        if (count <= maxTicks) return Array.from({ length: count }, (_, index) => index);
+        const step = niceTickStep((count - 1) / Math.max(maxTicks - 1, 1));
+        const indexes = new Set([0, count - 1]);
+        for (let index = step - 1; index < count - 1; index += step) {
+          indexes.add(index);
+        }
+        return [...indexes].sort((a, b) => a - b);
+      }
+
+      function drawXTicks(ctx, chart, count, labelForIndex, options = {}) {
+        const indexes = tickIndexesForCount(count, chart.plotW, options.minLabelPx ?? 44, options.showAllUpTo ?? 0);
+        const axisY = chart.height - chart.bottom;
+        ctx.save();
+        ctx.font = options.font || "11px sans-serif";
+        ctx.textAlign = "center";
+        ctx.textBaseline = "top";
+        for (const index of indexes) {
+          const x = chart.left + (chart.plotW * index) / Math.max(count - 1, 1);
+          ctx.strokeStyle = "rgba(255,255,255,0.22)";
+          ctx.lineWidth = 1;
+          ctx.beginPath();
+          ctx.moveTo(x, axisY);
+          ctx.lineTo(x, axisY + 6);
+          ctx.stroke();
+          if (options.gridLines) {
+            ctx.strokeStyle = "rgba(255,255,255,0.06)";
+            ctx.beginPath();
+            ctx.moveTo(x, chart.top);
+            ctx.lineTo(x, axisY);
+            ctx.stroke();
+          }
+          ctx.fillStyle = "rgba(255,255,255,0.64)";
+          ctx.fillText(labelForIndex(index), x, axisY + 10);
+        }
+        ctx.restore();
+      }
+
+      function drawXAxisCaption(ctx, chart, label, options = {}) {
+        ctx.save();
+        ctx.fillStyle = "rgba(255,255,255,0.62)";
+        ctx.font = "12px sans-serif";
+        ctx.textAlign = options.align || "left";
+        ctx.textBaseline = "alphabetic";
+        const x = options.align === "center" ? chart.left + chart.plotW / 2 : chart.left;
+        ctx.fillText(label, x, chart.height - 10);
+        ctx.restore();
+      }
+
+      function scoreTickLabel(record, index) {
+        return String(index + 1);
+      }
+
+      function drawScoreXTicks(ctx, chart, records) {
+        drawXTicks(scoreCtx, chart, records.length, (index) => scoreTickLabel(records[index], index), {
+          minLabelPx: 28,
+          showAllUpTo: 20,
+        });
+      }
+
+      function drawScoreXAxisCaption(ctx, chart) {
+        drawXAxisCaption(ctx, chart, "Iteration");
+      }
+
+      function drawLossBars(losses) {
+        const { width, height } = prepareCanvas(lossCtx);
+        lossCtx.clearRect(0, 0, width, height);
+        lossCtx.fillStyle = "rgba(255,255,255,0.02)";
+        lossCtx.fillRect(0, 0, width, height);
+
+        const numeric = Object.entries(losses || {})
+          .filter(([, value]) => Number.isFinite(Number(value)))
+          .slice(0, 4)
+          .map(([label, value], index) => ({
+            label,
+            value: Number(value),
+            color: ["#54d2ff", "#8cff98", "#ffb454", "#ff6b7a"][index % 4],
+          }));
+
+        if (!numeric.length) {
+          lossCtx.fillStyle = "rgba(255,255,255,0.35)";
+          lossCtx.font = "16px sans-serif";
+          lossCtx.fillText("No update stats yet", 16, 28);
+          return;
+        }
+
+        const maxValue = Math.max(...numeric.map((item) => Math.abs(item.value)), 1e-3);
+        const barWidth = Math.max(36, Math.min(72, (width - 80) / numeric.length - 14));
+        const baseY = height - 38;
+        const maxBarHeight = height - 86;
+
+        numeric.forEach((item, index) => {
+          const x = 36 + index * (barWidth + 18);
+          const scaled = (Math.abs(item.value) / maxValue) * maxBarHeight;
+          const y = baseY - scaled;
+          lossCtx.fillStyle = item.color;
+          lossCtx.fillRect(x, y, barWidth, scaled);
+          lossCtx.fillStyle = "#e8eefc";
+          lossCtx.font = "12px sans-serif";
+          lossCtx.fillText(item.label.slice(0, 10), x, height - 14);
+          lossCtx.fillText(item.value.toFixed(3), x, Math.max(14, y - 8));
+        });
+      }
+
+      function drawScoreChart(records) {
+        const scores = records.map(normalizeScore).filter(Number.isFinite);
+        const best = [];
+        let bestSoFar = -Infinity;
+        for (const score of scores) {
+          bestSoFar = Math.max(bestSoFar, score);
+          best.push(bestSoFar);
+        }
+        const chart = drawLineChart(scoreCtx, scores, "#54d2ff", {
+          emptyText: "No completed candidates yet",
+          bottomPad: 60,
+          yLabel: "Score",
+        });
+        if (!scores.length) return;
+        drawScoreXTicks(scoreCtx, chart, records);
+        drawScoreXAxisCaption(scoreCtx, chart);
+        let min = Math.min(...scores, ...best);
+        let max = Math.max(...scores, ...best);
+        if (Math.abs(max - min) < 1e-6) {
+          min -= 1;
+          max += 1;
+        }
+        scoreCtx.strokeStyle = "#8cff98";
+        scoreCtx.lineWidth = 2;
+        scoreCtx.beginPath();
+        best.forEach((value, index) => {
+          const x = chart.left + (chart.plotW * index) / Math.max(best.length - 1, 1);
+          const y = chart.height - chart.bottom - ((value - min) / (max - min)) * chart.plotH;
+          if (index === 0) scoreCtx.moveTo(x, y);
+          else scoreCtx.lineTo(x, y);
+        });
+        scoreCtx.stroke();
+        scoreCtx.font = "12px sans-serif";
+        scoreCtx.textAlign = "left";
+        const legendX = Math.max(chart.left + 8, chart.width - chart.right - 168);
+        const legendY = chart.height - 24;
+        scoreCtx.strokeStyle = "#54d2ff";
+        scoreCtx.lineWidth = 3;
+        scoreCtx.beginPath();
+        scoreCtx.moveTo(legendX, legendY + 6);
+        scoreCtx.lineTo(legendX + 24, legendY + 6);
+        scoreCtx.stroke();
+        scoreCtx.fillStyle = "rgba(255,255,255,0.74)";
+        scoreCtx.fillText("score", legendX + 30, legendY + 10);
+        scoreCtx.strokeStyle = "#8cff98";
+        scoreCtx.lineWidth = 2;
+        scoreCtx.beginPath();
+        scoreCtx.moveTo(legendX + 86, legendY + 6);
+        scoreCtx.lineTo(legendX + 110, legendY + 6);
+        scoreCtx.stroke();
+        scoreCtx.fillText("best", legendX + 116, legendY + 10);
+      }
+
+      function formatDuration(totalSeconds) {
+        const seconds = Math.max(0, Math.round(Number(totalSeconds) || 0));
+        const hours = Math.floor(seconds / 3600);
+        const minutes = Math.floor((seconds % 3600) / 60);
+        const secs = seconds % 60;
+        if (hours > 0) return `${hours}:${String(minutes).padStart(2, "0")}:${String(secs).padStart(2, "0")}`;
+        return `${minutes}:${String(secs).padStart(2, "0")}`;
+      }
+
+      function activeTimeProgress(trainSeconds) {
+        const startedAt = Number(latestRun.started_at || 0);
+        const updatedAt = Number(latestRun.updated_at || 0);
+        const status = String(latestRun.current?.status || latestRun.status || "");
+        if (!(startedAt > 0)) return 0;
+        const now = Date.now() / 1000;
+        const endpoint = status === "finished" ? updatedAt || now : Math.max(updatedAt || 0, now);
+        return Math.max(0, Math.min(trainSeconds, endpoint - startedAt));
+      }
+
+      function renderActiveCycle() {
+        const trainSeconds = Number(latestRun.train_seconds || 0);
+        const total = Number(latestRun.train_episodes || 0);
+        const complete = Number(latestRun.episodes_complete || latestRun.current?.episodes_complete || 0);
+        const currentEpisode = Number(document.getElementById("episodeValue").textContent || 0);
+        const effectiveComplete = Number.isFinite(currentEpisode) && currentEpisode > 0 ? currentEpisode : complete;
+        let pct = total > 0 ? Math.max(0, Math.min(100, Math.round((effectiveComplete / total) * 100))) : 0;
+        let progressText = total > 0 ? `${pct}% · ${effectiveComplete}/${total} eps` : "-";
+        if (trainSeconds > 0) {
+          const elapsedSeconds = activeTimeProgress(trainSeconds);
+          pct = Math.max(0, Math.min(100, Math.round((elapsedSeconds / trainSeconds) * 100)));
+          progressText = `${pct}% · ${formatDuration(elapsedSeconds)}/${formatDuration(trainSeconds)}`;
+        }
+        updateText("activeCandidate", latestRun.tag || "-");
+        updateText("activeProgressText", progressText);
+        updateText("activeHypothesis", candidateLabel(latestRun.candidate));
+        document.getElementById("activeProgress").style.width = `${pct}%`;
+      }
+
+      function decisionFor(row, bestBefore) {
+        const score = normalizeScore(row);
+        if (!Number.isFinite(score)) return "unknown";
+        if (score > bestBefore) return "promote";
+        if (score === bestBefore) return "frontier";
+        return "reject";
+      }
+
+      function renderResearch(records, logText = "") {
+        latestResults = records;
+        const currentRunId = latestRun.run_id;
+        let bestRecord = null;
+        let bestScoreValue = -Infinity;
+        let bestBefore = -Infinity;
+        const rows = records.map((row, index) => {
+          const score = normalizeScore(row);
+          const decision = decisionFor(row, bestBefore);
+          if (Number.isFinite(score)) bestBefore = Math.max(bestBefore, score);
+          if (Number.isFinite(score) && score > bestScoreValue) {
+            bestScoreValue = score;
+            bestRecord = row;
+          }
+          const cycle = row.evolution?.epoch ?? index + 1;
+          const isBest = bestRecord === row;
+          const isCurrent = row.run_id && row.run_id === currentRunId;
+          return `<tr class="${[isBest ? "best" : "", isCurrent ? "current" : ""].filter(Boolean).join(" ")}">
+            <td>${index + 1}</td>
+            <td>${cycle}</td>
+            <td><span class="tag-pill">${escapeHtml(shortText(row.tag || row.run_id, 34))}</span></td>
+            <td>${formatNumber(score, 2)}</td>
+            <td>${formatNumber(row.eval?.avg_return, 2)}</td>
+            <td><span class="tag-pill">${escapeHtml(decision)}</span></td>
+            <td class="desc-cell">${escapeHtml(candidateLabel(row.candidate))}</td>
+          </tr>`;
+        }).join("");
+
+        updateText("iterationCount", records.length);
+        updateText("bestScore", Number.isFinite(bestScoreValue) ? formatNumber(bestScoreValue, 2) : "-");
+        updateText("bestCandidate", bestRecord ? shortText(bestRecord.tag || bestRecord.run_id, 44) : "-");
+        updateText("currentCycle", latestRun.tag || "-");
+        updateText("researchStatus", records.length ? "Live results.jsonl" : "Waiting for completed runs");
+        document.getElementById("researchRows").innerHTML = rows || "<tr><td colspan='7'>No completed candidates yet</td></tr>";
+        document.getElementById("logTail").textContent = logText || "No log yet.";
+        drawScoreChart(records);
+        renderActiveCycle();
+      }
+
+      async function refreshResearch() {
+        try {
+          await refreshLatestSessionPointer();
+          const resultsResponse = await fetch(`/${session}/results.jsonl?t=${Date.now()}`, { cache: "no-store" });
+          const records = [];
+          if (resultsResponse.ok) {
+            const text = await resultsResponse.text();
+            for (const line of text.split("\n")) {
+              const trimmed = line.trim();
+              if (!trimmed) continue;
+              try {
+                records.push(JSON.parse(trimmed));
+              } catch (_) {}
+            }
+          }
+          let logText = "";
+          const logResponse = await fetch(`/${session}/outer_loop_log.md?t=${Date.now()}`, { cache: "no-store" });
+          if (logResponse.ok) {
+            const fullLog = await logResponse.text();
+            logText = fullLog.slice(-6000);
+          }
+          latestLogText = logText;
+          renderResearch(records, logText);
+        } catch (error) {
+          updateText("researchStatus", "Waiting for results.jsonl");
+          renderResearch(latestResults, "");
+        }
+      }
+
+      function updateMetricRows(current, infoMetrics) {
+        const entries = [
+          ["episode_return", current.episode_return],
+          ["episode_length", current.episode_length],
+          ...Object.entries(infoMetrics || {}),
+        ];
+        document.getElementById("metricRows").innerHTML = entries
+          .map(([key, value]) => `<tr><td>${key}</td><td>${formatNumber(value)}</td></tr>`)
+          .join("");
+      }
+
+      async function refresh() {
+        try {
+          await refreshLatestSessionPointer();
+          const response = await fetch(`${metricsUrl}?t=${Date.now()}`, { cache: "no-store" });
+          if (!response.ok) throw new Error(`HTTP ${response.status}`);
+          const data = await response.json();
+          const episodes = data.episodes ?? [];
+          const current = data.current ?? {};
+          const run = data.run ?? {};
+          latestRun = run;
+          latestRun.current = current;
+          if (data.visual) latestRun.visual = data.visual;
+          if (data.visual_control) latestRun.visual_control = data.visual_control;
+          updateVisualControls(activeVisualMode());
+          const candidate = run.candidate ?? {};
+          const infoMetrics = current.info_metrics ?? {};
+
+          updateText("title", run.run_id || "Autoresearch Live");
+          updateText("subtitle", sessionDisplayLabel());
+          updateText("runStatus", current.status ?? run.status ?? "running");
+          updateText("stepValue", current.step ?? "-");
+          updateText("episodeValue", current.episode ?? "-");
+          updateText("avgReturnValue", formatNumber(current.avg_return, 2));
+          updateText("successRateValue", formatPct(current.success_rate));
+          updateText("episodesSeen", `${episodes.length} episodes`);
+          updateText("runId", run.run_id ?? "-");
+          updateText("tag", run.tag ?? "-");
+          updateText("candidate", candidateLabel(candidate));
+
+          const returnChart = drawLineChart(
+            returnCtx,
+            episodes.map((entry) => Number(entry.return ?? 0)),
+            "#54d2ff",
+            { emptyText: "No episodes yet", bottomPad: 56, yLabel: "Return" },
+          );
+          if (episodes.length) {
+            drawXTicks(
+              returnCtx,
+              returnChart,
+              episodes.length,
+              (index) => {
+                const episode = Number(episodes[index]?.episode);
+                return Number.isFinite(episode) ? String(episode) : String(index + 1);
+              },
+              { minLabelPx: 42 },
+            );
+            drawXAxisCaption(returnCtx, returnChart, "Episode");
+          }
+          drawLossBars(data.latest_losses);
+          updateMetricRows(current, infoMetrics);
+          document.getElementById("rawPayload").textContent = JSON.stringify(data, null, 2);
+          renderResearch(latestResults, latestLogText);
+        } catch (error) {
+          updateText("runStatus", "Waiting for metrics");
+          drawLineChart(returnCtx, [], "#54d2ff", { bottomPad: 56, yLabel: "Return" });
+          drawLossBars(null);
+        }
+      }
+
+      function scheduleFrameRefresh(delayMs = 0) {
+        if (frameRefreshTimer !== null) window.clearTimeout(frameRefreshTimer);
+        frameRefreshTimer = window.setTimeout(refreshFrame, delayMs);
+      }
+
+      function showFramePlaceholder(message) {
+        simFrame.classList.add("is-hidden");
+        simPlaceholder.classList.add("is-visible");
+        simPlaceholder.textContent = message;
+      }
+
+      async function refreshSampledTrajectoryFrame() {
+        const visual = latestRun.visual || {};
+        const manifestPath = latestRun.trajectory_manifest_path || visual.trajectory_manifest_path;
+        if (!manifestPath) {
+          const sampledStatus = visual.sampled_status || "waiting";
+          const activeSample = visual.active_sample_index ? ` #${visual.active_sample_index}` : "";
+          updateText("frameStatus", `Sampled trajectory${activeSample}: ${sampledStatus.replaceAll("_", " ")}`);
+          showFramePlaceholder("Waiting for the next sampled trajectory. Switching into this mode during an episode starts at the next episode boundary.");
+          scheduleFrameRefresh(1000);
+          return;
+        }
+        try {
+          const response = await fetch(`/${manifestPath}?t=${Date.now()}`, { cache: "no-store" });
+          if (!response.ok) throw new Error(`HTTP ${response.status}`);
+          const manifest = await response.json();
+          const frames = Array.isArray(manifest.frames) ? manifest.frames.filter(Boolean) : [];
+          const sampleLabel = manifest.sample_index ? ` #${manifest.sample_index}` : "";
+          const episodeLabel = manifest.episode ? ` episode ${manifest.episode}` : "";
+          trajectorySampleLabel = `${sampleLabel}${episodeLabel}`.trim();
+          if (!frames.length) {
+            updateText("frameStatus", `Sampled trajectory${sampleLabel}${episodeLabel}: ${manifest.status || "recording"}`);
+            showFramePlaceholder("Sampling trajectory frames. No frame has been written yet.");
+            scheduleFrameRefresh(1000);
+            return;
+          }
+          if (trajectoryManifestPath !== manifestPath || trajectoryFrames.length !== frames.length) {
+            trajectoryManifestPath = manifestPath;
+            trajectoryFrames = frames;
+            trajectoryFrameIndex = Math.min(trajectoryFrameIndex, Math.max(frames.length - 1, 0));
+          }
+          trajectoryFrameDelayMs = Math.max(50, Math.round(1000 / Number(manifest.playback_fps || 20)));
+          displayedFrameKind = "sampled_trajectory";
+          simPlaceholder.classList.remove("is-visible");
+          simFrame.classList.remove("is-hidden");
+          if (frameRefreshActive) return;
+          const framePath = trajectoryFrames[trajectoryFrameIndex % trajectoryFrames.length];
+          trajectoryFrameIndex = (trajectoryFrameIndex + 1) % trajectoryFrames.length;
+          frameRefreshActive = true;
+          simFrame.src = `/${framePath}?t=${Date.now()}`;
+        } catch (error) {
+          updateText("frameStatus", "Sampled trajectory unavailable");
+          showFramePlaceholder("Waiting for a readable sampled trajectory manifest.");
+          scheduleFrameRefresh(1000);
+        }
+      }
+
+      function refreshFrame() {
+        frameRefreshTimer = null;
+        const mode = activeVisualMode();
+        updateVisualControls(mode);
+        if (mode === "off") {
+          frameRefreshActive = false;
+          displayedFrameKind = "off";
+          updateText("frameStatus", "Visuals off");
+          showFramePlaceholder("Visual rendering is off. Metrics, losses, and episode history are still streaming.");
+          scheduleFrameRefresh(1000);
+          return;
+        }
+        if (mode === "sampled_trajectory") {
+          refreshSampledTrajectoryFrame();
+          return;
+        }
+        const activeFrameUrl = explicitFrame || (latestRun.frame_path ? `/${latestRun.frame_path}` : frameUrl);
+        const expectsFrames = Boolean(explicitFrame || latestRun.frame_path || latestRun.render_mode === "rgb_array");
+        if (!expectsFrames) {
+          updateText("frameStatus", "Frames disabled");
+          showFramePlaceholder("Live frames are disabled for this benchmark. Metrics, losses, and episode history are still streaming.");
+          scheduleFrameRefresh(1000);
+          return;
+        }
+        if (frameRefreshActive) return;
+        frameRefreshActive = true;
+        displayedFrameKind = "live_frame";
+        simPlaceholder.classList.remove("is-visible");
+        simFrame.classList.remove("is-hidden");
+        simFrame.src = `${activeFrameUrl}?t=${Date.now()}`;
+      }
+
+      simFrame.addEventListener("load", () => {
+        frameRefreshActive = false;
+        if (displayedFrameKind === "off") {
+          updateText("frameStatus", "Visuals off");
+          scheduleFrameRefresh(1000);
+        } else if (displayedFrameKind === "sampled_trajectory") {
+          const sampleLabel = trajectorySampleLabel ? ` ${trajectorySampleLabel}` : "";
+          updateText("frameStatus", `Sampled trajectory${sampleLabel} - ${trajectoryFrames.length} frames`);
+          window.requestAnimationFrame(() => scheduleFrameRefresh(trajectoryFrameDelayMs));
+        } else {
+          updateText("frameStatus", "Live frame");
+          window.requestAnimationFrame(() => scheduleFrameRefresh(1000));
+        }
+      });
+
+      simFrame.addEventListener("error", () => {
+        frameRefreshActive = false;
+        if (displayedFrameKind === "sampled_trajectory") {
+          updateText("frameStatus", "No sampled frame yet");
+          showFramePlaceholder("Waiting for sampled trajectory frames. Metrics are still streaming.");
+          scheduleFrameRefresh(1000);
+        } else {
+          updateText("frameStatus", "No frame yet");
+          showFramePlaceholder("Waiting for the first live frame. Metrics are still streaming.");
+          scheduleFrameRefresh(1000);
+        }
+      });
+
+      async function startDashboard() {
+        await initializeSession();
+        refreshSessionList();
+        refresh();
+        refreshFrame();
+        refreshResearch();
+        setInterval(refreshSessionList, 5000);
+        setInterval(refresh, 500);
+        setInterval(refreshResearch, 2000);
+      }
+
+      startDashboard();
+    </script>
+  </body>
+</html>
