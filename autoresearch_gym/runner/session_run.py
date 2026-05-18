@@ -132,6 +132,7 @@ def write_live_session_pointer(base_dir: Path, session_dir: Path, args: argparse
         "tag": args.tag,
         "search_mode": args.search_mode,
         "source": "session_run",
+        "latest_alias_path": _repo_relative_unresolved_path(latest_alias),
     }
     try:
         latest_alias.parent.mkdir(parents=True, exist_ok=True)
@@ -139,7 +140,6 @@ def write_live_session_pointer(base_dir: Path, session_dir: Path, args: argparse
             latest_alias.unlink()
         if not latest_alias.exists():
             latest_alias.symlink_to(session_dir.resolve(), target_is_directory=True)
-            pointer["latest_alias_path"] = _repo_relative_unresolved_path(latest_alias)
     except OSError as error:
         pointer["latest_alias_error"] = str(error)
     (base_dir / "live_session.json").write_text(json.dumps(pointer, indent=2), encoding="utf-8")
