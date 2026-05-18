@@ -880,6 +880,11 @@
       let latestRun = {};
       let latestResults = [];
       let latestLogText = "";
+      let latestEpisodes = [];
+      let bestGhostRunId = "";
+      let bestGhostLabel = "";
+      let bestGhostEpisodes = [];
+      let bestGhostLoadToken = 0;
       let dashboardSessions = [];
       let sessionFilter = "";
 
@@ -917,6 +922,11 @@
         latestRun = {};
         latestResults = [];
         latestLogText = "";
+        latestEpisodes = [];
+        bestGhostRunId = "";
+        bestGhostLabel = "";
+        bestGhostEpisodes = [];
+        bestGhostLoadToken += 1;
         trajectoryManifestPath = "";
         trajectoryFrames = [];
         trajectoryFrameIndex = 0;
@@ -1222,6 +1232,161 @@
         return { ...chart, min, max };
       }
 
+      function finiteValues(values) {
+        return values.map((value) => Number(value)).filter(Number.isFinite);
+      }
+
+      function drawSeries(ctx, chart, values, min, max, options = {}) {
+        const finite = finiteValues(values);
+        if (!finite.length) return;
+        ctx.save();
+        ctx.strokeStyle = options.color || "#54d2ff";
+        ctx.lineWidth = options.lineWidth || 2;
+        ctx.globalAlpha = options.alpha ?? 1;
+        if (options.dash) ctx.setLineDash(options.dash);
+        ctx.beginPath();
+        let started = false;
+        values.forEach((rawValue, index) => {
+          const value = Number(rawValue);
+          if (!Number.isFinite(value)) {
+            started = false;
+            return;
+          }
+          const x = chart.left + (chart.plotW * index) / Math.max(values.length - 1, 1);
+          const y = chart.height - chart.bottom - ((value - min) / (max - min)) * chart.plotH;
+          if (!started) {
+            ctx.moveTo(x, y);
+            started = true;
+          } else {
+            ctx.lineTo(x, y);
+          }
+        });
+        ctx.stroke();
+        if (finite.length === 1) {
+          const index = values.findIndex((value) => Number.isFinite(Number(value)));
+          const value = Number(values[index]);
+          const x = chart.left + (chart.plotW * index) / Math.max(values.length - 1, 1);
+          const y = chart.height - chart.bottom - ((value - min) / (max - min)) * chart.plotH;
+          ctx.fillStyle = options.color || "#54d2ff";
+          ctx.beginPath();
+          ctx.arc(x, y, options.pointRadius || 3, 0, Math.PI * 2);
+          ctx.fill();
+        }
+        ctx.restore();
+      }
+
+      function episodeNumberFor(entry, index) {
+        const episode = Number(entry?.episode);
+        return Number.isFinite(episode) && episode > 0 ? Math.round(episode) : index + 1;
+      }
+
+      function ghostReturnsFor(currentEpisodes) {
+        if (!bestGhostEpisodes.length || !currentEpisodes.length) return [];
+        return currentEpisodes.map((entry, index) => {
+          const episodeNumber = episodeNumberFor(entry, index);
+          return Number(bestGhostEpisodes[episodeNumber - 1]?.return ?? NaN);
+        });
+      }
+
+      function drawReturnLegend(ctx, chart, ghostLabel) {
+        const legendX = Math.max(chart.left + 8, chart.width - chart.right - 230);
+        const legendY = chart.top + 10;
+        ctx.save();
+        ctx.font = "12px sans-serif";
+        ctx.textAlign = "left";
+        ctx.textBaseline = "middle";
+        ctx.strokeStyle = "#54d2ff";
+        ctx.lineWidth = 3;
+        ctx.beginPath();
+        ctx.moveTo(legendX, legendY + 6);
+        ctx.lineTo(legendX + 24, legendY + 6);
+        ctx.stroke();
+        ctx.fillStyle = "rgba(255,255,255,0.74)";
+        ctx.fillText("current", legendX + 30, legendY + 6);
+        if (ghostLabel) {
+          const endedLabel =
+            latestEpisodes.length > bestGhostEpisodes.length ? `ended: ${bestGhostEpisodes.length} eps` : "";
+          ctx.strokeStyle = "rgba(255, 180, 84, 0.78)";
+          ctx.lineWidth = 2;
+          ctx.setLineDash([6, 5]);
+          ctx.beginPath();
+          ctx.moveTo(legendX + 92, legendY + 6);
+          ctx.lineTo(legendX + 116, legendY + 6);
+          ctx.stroke();
+          ctx.setLineDash([]);
+          ctx.fillText(`best: ${shortText(ghostLabel, 15)}`, legendX + 122, legendY + 6);
+          if (endedLabel) {
+            ctx.fillStyle = "rgba(255, 180, 84, 0.9)";
+            ctx.fillText(endedLabel, legendX + 122, legendY + 22);
+          }
+        }
+        ctx.restore();
+      }
+
+      function drawGhostEndpoint(ctx, chart, episodes, ghostValues, min, max) {
+        if (!bestGhostEpisodes.length || !episodes.length) return;
+        const endpointIndex = Math.min(bestGhostEpisodes.length, episodes.length) - 1;
+        const endpointValue = Number(ghostValues[endpointIndex]);
+        if (endpointIndex < 0 || !Number.isFinite(endpointValue)) return;
+
+        const x = chart.left + (chart.plotW * endpointIndex) / Math.max(episodes.length - 1, 1);
+        const y = chart.height - chart.bottom - ((endpointValue - min) / (max - min)) * chart.plotH;
+        ctx.save();
+        ctx.fillStyle = "#ffb454";
+        ctx.strokeStyle = "rgba(5, 7, 11, 0.82)";
+        ctx.lineWidth = 3;
+        ctx.beginPath();
+        ctx.arc(x, y, 4, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.stroke();
+        ctx.restore();
+      }
+
+      function drawReturnChart(episodes) {
+        const currentValues = episodes.map((entry) => Number(entry.return ?? 0));
+        const ghostValues = ghostReturnsFor(episodes);
+        const allValues = [...finiteValues(currentValues), ...finiteValues(ghostValues)];
+        const chart = drawChartBase(returnCtx, { emptyText: "No episodes yet", bottomPad: 56, yLabel: "Return" });
+
+        if (!currentValues.length) {
+          returnCtx.fillStyle = "rgba(255,255,255,0.35)";
+          returnCtx.font = "16px sans-serif";
+          returnCtx.fillText("No episodes yet", chart.left + 8, chart.top + 8);
+          return chart;
+        }
+
+        let min = allValues.length ? Math.min(...allValues) : 0;
+        let max = allValues.length ? Math.max(...allValues) : 1;
+        if (Math.abs(max - min) < 1e-6) {
+          min -= 1;
+          max += 1;
+        }
+
+        drawSeries(returnCtx, chart, ghostValues, min, max, {
+          color: "#ffb454",
+          lineWidth: 2,
+          alpha: 0.72,
+          dash: [6, 5],
+          pointRadius: 2.5,
+        });
+        drawSeries(returnCtx, chart, currentValues, min, max, {
+          color: "#54d2ff",
+          lineWidth: 3,
+          pointRadius: 3,
+        });
+        if (latestEpisodes.length > bestGhostEpisodes.length) {
+          drawGhostEndpoint(returnCtx, chart, episodes, ghostValues, min, max);
+        }
+
+        returnCtx.fillStyle = "rgba(255,255,255,0.7)";
+        returnCtx.font = "12px sans-serif";
+        returnCtx.textAlign = "left";
+        returnCtx.fillText(max.toFixed(2), chart.left + 6, chart.top + 14);
+        returnCtx.fillText(min.toFixed(2), chart.left + 6, chart.height - chart.bottom - 6);
+        drawReturnLegend(returnCtx, chart, bestGhostEpisodes.length ? bestGhostLabel : "");
+        return { ...chart, min, max };
+      }
+
       function niceTickStep(rawStep) {
         if (!Number.isFinite(rawStep) || rawStep <= 1) return 1;
         const magnitude = 10 ** Math.floor(Math.log10(rawStep));
@@ -1438,6 +1603,53 @@
         return "reject";
       }
 
+      function bestCompletedRecord(records, currentRunId) {
+        let bestRecord = null;
+        let bestScoreValue = -Infinity;
+        for (const row of records) {
+          if (currentRunId && row.run_id === currentRunId) continue;
+          const score = normalizeScore(row);
+          if (Number.isFinite(score) && score > bestScoreValue) {
+            bestScoreValue = score;
+            bestRecord = row;
+          }
+        }
+        return bestRecord;
+      }
+
+      async function loadBestGhostEpisodes(record) {
+        const nextRunId = record?.run_id || "";
+        if (!nextRunId) {
+          if (!bestGhostRunId && !bestGhostEpisodes.length) return;
+          bestGhostRunId = "";
+          bestGhostLabel = "";
+          bestGhostEpisodes = [];
+          bestGhostLoadToken += 1;
+          drawReturnChart(latestEpisodes);
+          return;
+        }
+        if (nextRunId === bestGhostRunId) return;
+        bestGhostRunId = nextRunId;
+        bestGhostLabel = record.tag || record.run_id || "previous best";
+        bestGhostEpisodes = [];
+        const token = (bestGhostLoadToken += 1);
+        drawReturnChart(latestEpisodes);
+        try {
+          const response = await fetch(`/${session}/runs/${encodeURIComponent(nextRunId)}/train_episodes.json?t=${Date.now()}`, {
+            cache: "no-store",
+          });
+          if (!response.ok) throw new Error(`HTTP ${response.status}`);
+          const payload = await response.json();
+          if (token !== bestGhostLoadToken || nextRunId !== bestGhostRunId) return;
+          bestGhostEpisodes = Array.isArray(payload) ? payload : [];
+          drawReturnChart(latestEpisodes);
+        } catch (_) {
+          if (token !== bestGhostLoadToken || nextRunId !== bestGhostRunId) return;
+          bestGhostEpisodes = [];
+          drawReturnChart(latestEpisodes);
+        }
+      }
+
       function renderResearch(records, logText = "") {
         latestResults = records;
         const currentRunId = latestRun.run_id;
@@ -1475,6 +1687,7 @@
         document.getElementById("logTail").textContent = logText || "No log yet.";
         drawScoreChart(records);
         renderActiveCycle();
+        loadBestGhostEpisodes(bestCompletedRecord(records, currentRunId));
       }
 
       async function refreshResearch() {
@@ -1524,6 +1737,7 @@
           if (!response.ok) throw new Error(`HTTP ${response.status}`);
           const data = await response.json();
           const episodes = data.episodes ?? [];
+          latestEpisodes = Array.isArray(episodes) ? episodes : [];
           const current = data.current ?? {};
           const run = data.run ?? {};
           latestRun = run;
@@ -1541,24 +1755,20 @@
           updateText("episodeValue", current.episode ?? "-");
           updateText("avgReturnValue", formatNumber(current.avg_return, 2));
           updateText("successRateValue", formatPct(current.success_rate));
-          updateText("episodesSeen", `${episodes.length} episodes`);
+          const ghostLabel = bestGhostEpisodes.length ? ` · ghost ${shortText(bestGhostLabel, 28)}` : "";
+          updateText("episodesSeen", `${latestEpisodes.length} episodes${ghostLabel}`);
           updateText("runId", run.run_id ?? "-");
           updateText("tag", run.tag ?? "-");
           updateText("candidate", candidateLabel(candidate));
 
-          const returnChart = drawLineChart(
-            returnCtx,
-            episodes.map((entry) => Number(entry.return ?? 0)),
-            "#54d2ff",
-            { emptyText: "No episodes yet", bottomPad: 56, yLabel: "Return" },
-          );
-          if (episodes.length) {
+          const returnChart = drawReturnChart(latestEpisodes);
+          if (latestEpisodes.length) {
             drawXTicks(
               returnCtx,
               returnChart,
-              episodes.length,
+              latestEpisodes.length,
               (index) => {
-                const episode = Number(episodes[index]?.episode);
+                const episode = Number(latestEpisodes[index]?.episode);
                 return Number.isFinite(episode) ? String(episode) : String(index + 1);
               },
               { minLabelPx: 42 },
@@ -1571,7 +1781,8 @@
           renderResearch(latestResults, latestLogText);
         } catch (error) {
           updateText("runStatus", "Waiting for metrics");
-          drawLineChart(returnCtx, [], "#54d2ff", { bottomPad: 56, yLabel: "Return" });
+          latestEpisodes = [];
+          drawReturnChart([]);
           drawLossBars(null);
         }
       }
