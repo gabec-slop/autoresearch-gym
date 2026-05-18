@@ -15,6 +15,8 @@ import torch.optim as optim
 from gymnasium import spaces
 from torch.distributions import Normal
 
+from autoresearch_gym.runner.curves import elapsed_seconds_since, make_train_episode_record, scalar_info_metrics
+
 try:
     from torch.utils.tensorboard import SummaryWriter
 except ModuleNotFoundError:  # pragma: no cover - keeps the seed runnable without tensorboard.
@@ -326,6 +328,8 @@ def train_agent(
                 current_episode=episode,
                 episode_return=episodic_return,
                 episode_length=episodic_length,
+                agent=agent,
+                elapsed_seconds=elapsed_seconds_since(start_time),
             )
 
         while not (terminated or truncated) and (deadline is None or time.time() < deadline):
@@ -419,19 +423,19 @@ def train_agent(
                     current_episode=episode,
                     episode_return=episodic_return,
                     episode_length=episodic_length,
-                )
+                agent=agent,
+                elapsed_seconds=elapsed_seconds_since(start_time),
+            )
 
-        episode_record = {
-            "episode": episode,
-            "return": float(episodic_return),
-            "length": int(episodic_length),
-            "success": bool(info.get("is_success", False)),
-            "info_metrics": {
-                key: float(value)
-                for key, value in info.items()
-                if isinstance(value, (int, float, np.integer, np.floating))
-            },
-        }
+        episode_record = make_train_episode_record(
+            episode=episode,
+            return_value=episodic_return,
+            length=episodic_length,
+            success=bool(info.get("is_success", False)),
+            step=global_step,
+            elapsed_seconds=elapsed_seconds_since(start_time),
+            info_metrics=scalar_info_metrics(info),
+        )
         episode_records.append(episode_record)
         writer.add_scalar("charts/episodic_return", episodic_return, global_step)
         writer.add_scalar("charts/episodic_length", episodic_length, global_step)
@@ -446,6 +450,8 @@ def train_agent(
                 current_episode=episode,
                 episode_return=episodic_return,
                 episode_length=episodic_length,
+                agent=agent,
+                elapsed_seconds=elapsed_seconds_since(start_time),
             )
         if deadline is not None and time.time() >= deadline:
             break

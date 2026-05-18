@@ -246,6 +246,23 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default=10.0,
         help="Minimum seconds between compact status lines.",
     )
+    parser.add_argument(
+        "--probe-interval-seconds",
+        type=float,
+        default=None,
+        help="Override the deterministic train-time policy probe cadence.",
+    )
+    parser.add_argument(
+        "--probe-episodes",
+        type=int,
+        default=None,
+        help="Override deterministic train-time policy probe episodes per probe.",
+    )
+    parser.add_argument(
+        "--no-train-probe",
+        action="store_true",
+        help="Disable deterministic train-time policy probes for throughput-sensitive runs.",
+    )
     parser.add_argument("--no-record", action="store_true")
     parser.add_argument(
         "--search-mode",
@@ -344,6 +361,9 @@ def main(argv: list[str] | None = None) -> None:
         status_interval_seconds=args.status_interval_seconds,
         compact_status=args.compact_status,
         compact_status_file=args.compact_status_file,
+        train_probe_enabled=False if args.no_train_probe else None,
+        train_probe_interval_seconds=args.probe_interval_seconds,
+        train_probe_episodes=args.probe_episodes,
     )
     append_outer_loop_log(session_dir, summary)
     print(json.dumps(summary, indent=2))

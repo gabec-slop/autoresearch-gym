@@ -133,6 +133,31 @@ Every seed trainable must expose:
 If checkpoint rendering should work, also expose `Agent` and
 `load_agent_checkpoint(...)` using the established local pattern.
 
+`train_agent(...)` must return dashboard/autoresearch curve data in
+`episode_records`. New records should use the shared constructors in
+`autoresearch_gym.runner.curves` so every task speaks the same logging contract.
+The standard record types are:
+
+- `train_episode`: one completed training episode.
+- `train_collection_window`: sampled/windowed collection stats for highly
+  batched simulators. Use this instead of logging every world episode when doing
+  so would add too much storage or synchronization overhead.
+- `policy_probe`: deterministic train-time policy performance. The runner owns
+  generic probes when the agent exposes `act(obs, deterministic=True)`; special
+  external trainers may implement `probe_policy(...)`.
+
+If training completes any episodes or steps, `episode_records` must contain
+records with at least `record_type`, `return`, `length`, and a charting axis such
+as `step`, `elapsed_seconds`, or `episode`. Windowed records must include
+`episodes_in_window`. Older artifacts without `record_type` remain dashboard
+compatible and are treated as `train_episode`, but new seeds should emit typed
+records.
+
+Runner-owned probes must not affect the training recipe or episode cap. Seeds
+should pass the current `agent` into `live_callback(...)`; the runner records
+policy probes separately for live/final artifacts and aggregates collection
+records separately from probe records.
+
 Use CleanRL-style explicit code over hidden abstractions. Shared utilities are
 acceptable only when they preserve readability and do not hide the training
 recipe from the autoresearch loop.

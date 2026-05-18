@@ -67,6 +67,11 @@ Panda/PyBullet and PandaGym tasks:
 uv sync --extra panda
 ```
 
+If `pybullet` does not have a compatible wheel for your Python/platform
+combination, `uv sync --extra panda` may try to build it locally. On Windows
+that requires Microsoft Visual C++ Build Tools. MuJoCo tasks can still be run
+without the `panda` extra.
+
 Development tools:
 
 ```powershell
@@ -98,3 +103,15 @@ Verify CUDA before launching longer runs:
 ```powershell
 uv run python -c "import torch; print(torch.cuda.is_available()); print(torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'no cuda')"
 ```
+
+Or run the package health check:
+
+```powershell
+uv run autoresearch-gym doctor --strict
+```
+
+The health check prints JSON with the installed Torch version, Torch CUDA
+runtime, selected training device, and any GPUs visible to `nvidia-smi`. In
+`--strict` mode it exits nonzero if `nvidia-smi` sees an NVIDIA GPU but
+`torch.cuda.is_available()` is false. That usually means the venv installed a
+CPU-only Torch wheel and should be repaired with the PyTorch selector command.

@@ -42,6 +42,16 @@ CUDA Torch wheels, use the current command from the official PyTorch selector
 after syncing the desired extra. See [docs/INSTALL.md](docs/INSTALL.md) for the
 full platform notes.
 
+Check the resolved accelerator before longer runs:
+
+```bash
+uv run autoresearch-gym doctor --strict
+```
+
+`doctor` reports the PyTorch build, selected training device, and any NVIDIA
+GPUs visible through `nvidia-smi`. It exits nonzero in `--strict` mode when an
+NVIDIA GPU is present but the current Python environment has CPU-only Torch.
+
 Bundled tasks:
 
 | Task | Benchmark | Seed |
@@ -52,6 +62,7 @@ Bundled tasks:
 | FetchPushDense | `autoresearch_gym/tasks/fetch_push_dense_v0/benchmark.json` | `autoresearch_gym/tasks/fetch_push_dense_v0/seed_trainable.py` or `seed_trainable_her.py` |
 | Panda pick-and-place | `autoresearch_gym/tasks/panda_pick_and_place_v0/benchmark.json` | `autoresearch_gym/tasks/panda_pick_and_place_v0/seed_trainable.py` or `seed_trainable_her.py` |
 | Panda bat-to-goal | `autoresearch_gym/tasks/bat_to_goal_v0/benchmark.json` | `autoresearch_gym/tasks/bat_to_goal_v0/seed_trainable.py` |
+| MJLab Unitree G1 side kick | `autoresearch_gym/tasks/mjlab_g1_side_kick_v0/benchmark.json` | `autoresearch_gym/tasks/mjlab_g1_side_kick_v0/seed_trainable.py` |
 
 ## Testing Seed Performance Of A Task (With Dashboard)
 
@@ -190,6 +201,14 @@ flowchart LR
 - Keep stdout clean for the final JSON summary. Use `--compact-status-file` for
   live monitoring, especially with Claude Code or Codex runs where streamed
   terminal output may be buffered, summarized, or hidden.
+- Training curves are part of the public runner contract. New seeds should emit
+  typed `episode_records`: `train_episode`, `train_collection_window`, and, via
+  runner-owned deterministic checks, `policy_probe`. Old run artifacts without
+  `record_type` still render as collection episodes for dashboard compatibility.
+- Deterministic train-time probes are enabled by default when the agent exposes
+  `act(obs, deterministic=True)`. Use `--no-train-probe` for throughput-only
+  timing, or override cadence with `--probe-interval-seconds` and
+  `--probe-episodes`.
 - Claude Code, and sometimes Codex, may try to batch-plan several candidates up
   front. Push the agent back to the strict autoresearch loop: write one
   candidate, run it, inspect the evidence, update the research log, then choose

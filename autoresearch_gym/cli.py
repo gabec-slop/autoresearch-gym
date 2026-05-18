@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import subprocess
 import sys
 import time
 import webbrowser
@@ -11,7 +12,7 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
 from autoresearch_gym.runner import render_rollouts, session_run
-from autoresearch_gym.runner.experiment import DEFAULT_VISUAL_CONTROL, normalize_visual_control, write_json_atomic
+from autoresearch_gym.runner.experiment import DEFAULT_VISUAL_CONTROL, normalize_visual_control, select_device, write_json_atomic
 
 
 def _repo_root() -> Path:
@@ -76,6 +77,10 @@ class DashboardHandler(SimpleHTTPRequestHandler):
     def __init__(self, *args: object, dashboard_root: Path, **kwargs: object) -> None:
         self.dashboard_root = dashboard_root.resolve()
         super().__init__(*args, **kwargs)
+
+    def end_headers(self) -> None:
+        self.send_header("Cache-Control", "no-store")
+        super().end_headers()
 
     def _send_json(self, status: int, payload: dict[str, object]) -> None:
         encoded = json.dumps(payload, indent=2).encode("utf-8")
@@ -236,6 +241,88 @@ def cmd_render_rollouts(argv: list[str]) -> int:
     return 0
 
 
+def _nvidia_smi_gpus() -> list[dict[str, object]]:
+    try:
+        completed = subprocess.run(
+            [
+                "nvidia-smi",
+                "--query-gpu=name,memory.total,driver_version",
+                "--format=csv,noheader,nounits",
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return []
+    if completed.returncode != 0:
+        return []
+    gpus: list[dict[str, object]] = []
+    for line in completed.stdout.splitlines():
+        parts = [part.strip() for part in line.split(",")]
+        if len(parts) < 3 or not parts[0]:
+            continue
+        try:
+            memory_mb: int | None = int(float(parts[1]))
+        except ValueError:
+            memory_mb = None
+        gpus.append({"name": parts[0], "memory_total_mb": memory_mb, "driver_version": parts[2]})
+    return gpus
+
+
+def cmd_doctor(args: argparse.Namespace) -> int:
+    checks: list[dict[str, object]] = []
+    torch_info: dict[str, object] = {"installed": False}
+    selected_device = "unavailable"
+    try:
+        import torch
+
+        mps_backend = getattr(getattr(torch, "backends", None), "mps", None)
+        torch_info.update(
+            {
+                "installed": True,
+                "version": getattr(torch, "__version__", None),
+                "cuda_version": getattr(getattr(torch, "version", None), "cuda", None),
+                "cuda_available": bool(torch.cuda.is_available()),
+                "cuda_device_count": int(torch.cuda.device_count()),
+                "cuda_devices": [
+                    torch.cuda.get_device_name(index)
+                    for index in range(torch.cuda.device_count())
+                    if torch.cuda.is_available()
+                ],
+                "mps_available": bool(mps_backend and mps_backend.is_available()),
+            }
+        )
+        selected_device = str(select_device(args.device))
+    except ModuleNotFoundError as exc:
+        torch_info["error"] = str(exc)
+
+    nvidia_gpus = _nvidia_smi_gpus()
+    checks.append(
+        {
+            "name": "nvidia_cuda_torch",
+            "status": "warn" if nvidia_gpus and not torch_info.get("cuda_available") else "ok",
+            "message": (
+                "NVIDIA GPU detected by nvidia-smi, but this Python environment cannot use CUDA through PyTorch."
+                if nvidia_gpus and not torch_info.get("cuda_available")
+                else "No NVIDIA/PyTorch CUDA mismatch detected."
+            ),
+        }
+    )
+    payload = {
+        "ok": all(check["status"] == "ok" for check in checks),
+        "selected_device": selected_device,
+        "torch": torch_info,
+        "nvidia_smi_gpus": nvidia_gpus,
+        "checks": checks,
+    }
+    print(json.dumps(payload, indent=2))
+    if args.strict and not payload["ok"]:
+        return 1
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="autoresearch-gym", description="Run and inspect Gymnasium autoresearch sessions.")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -262,6 +349,10 @@ def build_parser() -> argparse.ArgumentParser:
     dashboard_parser.add_argument("--open", action="store_true")
 
     subparsers.add_parser("render-rollouts", help="Render rollout GIFs from a saved MuJoCo checkpoint run.")
+
+    doctor_parser = subparsers.add_parser("doctor", help="Check simulator and accelerator installation state.")
+    doctor_parser.add_argument("--device", default="auto", choices=["auto", "cpu", "cuda", "mps"])
+    doctor_parser.add_argument("--strict", action="store_true", help="Exit nonzero when a check reports a warning.")
     return parser
 
 
@@ -277,6 +368,8 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_init_session(args)
     if args.command == "dashboard":
         return cmd_dashboard(args)
+    if args.command == "doctor":
+        return cmd_doctor(args)
     parser.error(f"Unknown command: {args.command}")
     return 2
 
