@@ -338,6 +338,33 @@
         text-align: right;
       }
 
+      .chart-legend {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 12px;
+        margin: -4px 0 10px;
+        color: var(--muted);
+        font-size: 12px;
+      }
+
+      .legend-item {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        min-height: 18px;
+      }
+
+      .legend-swatch {
+        display: inline-block;
+        width: 22px;
+        height: 0;
+        border-top: 3px solid var(--swatch-color);
+      }
+
+      .legend-swatch.dashed {
+        border-top-style: dashed;
+      }
+
       .visual-controls {
         display: flex;
         flex-wrap: wrap;
@@ -736,10 +763,15 @@
                 <h2>Current Run</h2>
                 <span id="episodesSeen">0 episodes</span>
               </div>
+              <div class="chart-legend" aria-label="Current run return legend">
+                <span class="legend-item"><span class="legend-swatch" style="--swatch-color: #54d2ff"></span>Collection</span>
+                <span class="legend-item"><span class="legend-swatch" style="--swatch-color: #8cff98"></span>Policy probe</span>
+                <span class="legend-item"><span class="legend-swatch dashed" style="--swatch-color: #ffb454"></span>Previous best</span>
+              </div>
               <canvas id="returnChart" width="520" height="300"></canvas>
               <div class="meta compact-run-meta">
-                <div>Run: <strong id="runId">-</strong></div>
                 <div>Tag: <strong id="tag">-</strong></div>
+                <div>Previous best tag: <strong id="previousBestTag">-</strong></div>
                 <div class="candidate-row">Candidate: <strong id="candidate">-</strong></div>
               </div>
             </div>
@@ -884,6 +916,7 @@
       let bestGhostRunId = "";
       let bestGhostLabel = "";
       let bestGhostEpisodes = [];
+      let bestGhostCandidateKey = "";
       let bestGhostLoadToken = 0;
       let dashboardSessions = [];
       let sessionFilter = "";
@@ -1246,14 +1279,16 @@
         if (options.dash) ctx.setLineDash(options.dash);
         ctx.beginPath();
         let started = false;
+        const points = [];
         values.forEach((rawValue, index) => {
           const value = Number(rawValue);
           if (!Number.isFinite(value)) {
-            started = false;
+            if (!options.connectGaps) started = false;
             return;
           }
           const x = chart.left + (chart.plotW * index) / Math.max(values.length - 1, 1);
           const y = chart.height - chart.bottom - ((value - min) / (max - min)) * chart.plotH;
+          points.push({ x, y });
           if (!started) {
             ctx.moveTo(x, y);
             started = true;
@@ -1262,15 +1297,13 @@
           }
         });
         ctx.stroke();
-        if (finite.length === 1) {
-          const index = values.findIndex((value) => Number.isFinite(Number(value)));
-          const value = Number(values[index]);
-          const x = chart.left + (chart.plotW * index) / Math.max(values.length - 1, 1);
-          const y = chart.height - chart.bottom - ((value - min) / (max - min)) * chart.plotH;
+        if (options.showPoints || finite.length === 1) {
           ctx.fillStyle = options.color || "#54d2ff";
-          ctx.beginPath();
-          ctx.arc(x, y, options.pointRadius || 3, 0, Math.PI * 2);
-          ctx.fill();
+          points.forEach(({ x, y }) => {
+            ctx.beginPath();
+            ctx.arc(x, y, options.pointRadius || 3, 0, Math.PI * 2);
+            ctx.fill();
+          });
         }
         ctx.restore();
       }
@@ -1282,50 +1315,47 @@
 
       function ghostReturnsFor(currentEpisodes) {
         if (!bestGhostEpisodes.length || !currentEpisodes.length) return [];
-        return currentEpisodes.map((entry, index) => {
-          const episodeNumber = episodeNumberFor(entry, index);
-          return Number(bestGhostEpisodes[episodeNumber - 1]?.return ?? NaN);
+        const ghostCollection = bestGhostEpisodes.filter((entry) => !isPolicyProbe(entry));
+        let collectionIndex = 0;
+        return currentEpisodes.map((entry) => {
+          if (isPolicyProbe(entry)) return NaN;
+          const value = Number(ghostCollection[collectionIndex]?.return ?? NaN);
+          collectionIndex += 1;
+          return value;
         });
       }
 
-      function drawReturnLegend(ctx, chart, ghostLabel) {
-        const legendX = Math.max(chart.left + 8, chart.width - chart.right - 230);
-        const legendY = chart.top + 10;
-        ctx.save();
-        ctx.font = "12px sans-serif";
-        ctx.textAlign = "left";
-        ctx.textBaseline = "middle";
-        ctx.strokeStyle = "#54d2ff";
-        ctx.lineWidth = 3;
-        ctx.beginPath();
-        ctx.moveTo(legendX, legendY + 6);
-        ctx.lineTo(legendX + 24, legendY + 6);
-        ctx.stroke();
-        ctx.fillStyle = "rgba(255,255,255,0.74)";
-        ctx.fillText("current", legendX + 30, legendY + 6);
-        if (ghostLabel) {
-          const endedLabel =
-            latestEpisodes.length > bestGhostEpisodes.length ? `ended: ${bestGhostEpisodes.length} eps` : "";
-          ctx.strokeStyle = "rgba(255, 180, 84, 0.78)";
-          ctx.lineWidth = 2;
-          ctx.setLineDash([6, 5]);
-          ctx.beginPath();
-          ctx.moveTo(legendX + 92, legendY + 6);
-          ctx.lineTo(legendX + 116, legendY + 6);
-          ctx.stroke();
-          ctx.setLineDash([]);
-          ctx.fillText(`best: ${shortText(ghostLabel, 15)}`, legendX + 122, legendY + 6);
-          if (endedLabel) {
-            ctx.fillStyle = "rgba(255, 180, 84, 0.9)";
-            ctx.fillText(endedLabel, legendX + 122, legendY + 22);
+      function isPolicyProbe(entry) {
+        return String(entry?.record_type || "") === "policy_probe";
+      }
+
+      function splitReturnSeries(episodes) {
+        const collectionValues = [];
+        const probeValues = [];
+        episodes.forEach((entry) => {
+          const value = Number(entry?.return ?? NaN);
+          if (isPolicyProbe(entry)) {
+            collectionValues.push(NaN);
+            probeValues.push(value);
+          } else {
+            collectionValues.push(value);
+            probeValues.push(NaN);
           }
-        }
-        ctx.restore();
+        });
+        return { collectionValues, probeValues };
+      }
+
+      function episodeRecordCounts(episodes) {
+        const probeCount = episodes.filter(isPolicyProbe).length;
+        return { probeCount, collectionCount: episodes.length - probeCount };
       }
 
       function drawGhostEndpoint(ctx, chart, episodes, ghostValues, min, max) {
         if (!bestGhostEpisodes.length || !episodes.length) return;
-        const endpointIndex = Math.min(bestGhostEpisodes.length, episodes.length) - 1;
+        let endpointIndex = Math.min(bestGhostEpisodes.length, episodes.length) - 1;
+        while (endpointIndex >= 0 && !Number.isFinite(Number(ghostValues[endpointIndex]))) {
+          endpointIndex -= 1;
+        }
         const endpointValue = Number(ghostValues[endpointIndex]);
         if (endpointIndex < 0 || !Number.isFinite(endpointValue)) return;
 
@@ -1343,12 +1373,16 @@
       }
 
       function drawReturnChart(episodes) {
-        const currentValues = episodes.map((entry) => Number(entry.return ?? 0));
+        const { collectionValues, probeValues } = splitReturnSeries(episodes);
         const ghostValues = ghostReturnsFor(episodes);
-        const allValues = [...finiteValues(currentValues), ...finiteValues(ghostValues)];
+        const allValues = [
+          ...finiteValues(collectionValues),
+          ...finiteValues(probeValues),
+          ...finiteValues(ghostValues),
+        ];
         const chart = drawChartBase(returnCtx, { emptyText: "No episodes yet", bottomPad: 56, yLabel: "Return" });
 
-        if (!currentValues.length) {
+        if (!allValues.length) {
           returnCtx.fillStyle = "rgba(255,255,255,0.35)";
           returnCtx.font = "16px sans-serif";
           returnCtx.fillText("No episodes yet", chart.left + 8, chart.top + 8);
@@ -1369,10 +1403,17 @@
           dash: [6, 5],
           pointRadius: 2.5,
         });
-        drawSeries(returnCtx, chart, currentValues, min, max, {
+        drawSeries(returnCtx, chart, collectionValues, min, max, {
           color: "#54d2ff",
           lineWidth: 3,
           pointRadius: 3,
+        });
+        drawSeries(returnCtx, chart, probeValues, min, max, {
+          color: "#8cff98",
+          lineWidth: 3,
+          pointRadius: 4,
+          connectGaps: true,
+          showPoints: true,
         });
         if (latestEpisodes.length > bestGhostEpisodes.length) {
           drawGhostEndpoint(returnCtx, chart, episodes, ghostValues, min, max);
@@ -1383,7 +1424,6 @@
         returnCtx.textAlign = "left";
         returnCtx.fillText(max.toFixed(2), chart.left + 6, chart.top + 14);
         returnCtx.fillText(min.toFixed(2), chart.left + 6, chart.height - chart.bottom - 6);
-        drawReturnLegend(returnCtx, chart, bestGhostEpisodes.length ? bestGhostLabel : "");
         return { ...chart, min, max };
       }
 
@@ -1603,48 +1643,73 @@
         return "reject";
       }
 
-      function bestCompletedRecord(records, currentRunId) {
-        let bestRecord = null;
-        let bestScoreValue = -Infinity;
-        for (const row of records) {
-          if (currentRunId && row.run_id === currentRunId) continue;
-          const score = normalizeScore(row);
-          if (Number.isFinite(score) && score > bestScoreValue) {
-            bestScoreValue = score;
-            bestRecord = row;
-          }
-        }
-        return bestRecord;
+      function ghostCandidateRecords(records, currentRunId) {
+        const candidates = [];
+        const seenRunIds = new Set();
+        const addRecord = (row) => {
+          const runId = row?.run_id;
+          if (!runId || runId === currentRunId || seenRunIds.has(runId)) return;
+          seenRunIds.add(runId);
+          candidates.push(row);
+        };
+        const currentRecord = records.find((row) => row.run_id && row.run_id === currentRunId);
+        const parentRunIds = [
+          currentRecord?.evolution?.declared_parent_run_id,
+          currentRecord?.evolution?.parent_run_id,
+          currentRecord?.lineage?.parent_run_id,
+        ].filter(Boolean);
+        parentRunIds.forEach((runId) => addRecord(records.find((row) => row.run_id === runId)));
+
+        records
+          .filter((row) => !currentRunId || row.run_id !== currentRunId)
+          .map((row, index) => ({ row, index, score: normalizeScore(row) }))
+          .filter((entry) => Number.isFinite(entry.score))
+          .sort((a, b) => b.score - a.score || a.index - b.index)
+          .forEach((entry) => addRecord(entry.row));
+        return candidates;
       }
 
-      async function loadBestGhostEpisodes(record) {
-        const nextRunId = record?.run_id || "";
-        if (!nextRunId) {
+      async function loadBestGhostEpisodes(records) {
+        const candidates = Array.isArray(records) ? records.filter(Boolean) : [];
+        const candidateKey = candidates.map((record) => record.run_id || "").filter(Boolean).join("|");
+        if (!candidateKey) {
           if (!bestGhostRunId && !bestGhostEpisodes.length) return;
           bestGhostRunId = "";
           bestGhostLabel = "";
           bestGhostEpisodes = [];
+          bestGhostCandidateKey = "";
           bestGhostLoadToken += 1;
           drawReturnChart(latestEpisodes);
           return;
         }
-        if (nextRunId === bestGhostRunId) return;
-        bestGhostRunId = nextRunId;
-        bestGhostLabel = record.tag || record.run_id || "previous best";
+        if (candidateKey === bestGhostCandidateKey) return;
+        bestGhostCandidateKey = candidateKey;
+        bestGhostRunId = "";
+        bestGhostLabel = "";
         bestGhostEpisodes = [];
         const token = (bestGhostLoadToken += 1);
         drawReturnChart(latestEpisodes);
-        try {
-          const response = await fetch(`/${session}/runs/${encodeURIComponent(nextRunId)}/train_episodes.json?t=${Date.now()}`, {
-            cache: "no-store",
-          });
-          if (!response.ok) throw new Error(`HTTP ${response.status}`);
-          const payload = await response.json();
-          if (token !== bestGhostLoadToken || nextRunId !== bestGhostRunId) return;
-          bestGhostEpisodes = Array.isArray(payload) ? payload : [];
-          drawReturnChart(latestEpisodes);
-        } catch (_) {
-          if (token !== bestGhostLoadToken || nextRunId !== bestGhostRunId) return;
+        for (const record of candidates) {
+          const nextRunId = record?.run_id || "";
+          if (!nextRunId) continue;
+          try {
+            const response = await fetch(`/${session}/runs/${encodeURIComponent(nextRunId)}/train_episodes.json?t=${Date.now()}`, {
+              cache: "no-store",
+            });
+            if (!response.ok) throw new Error(`HTTP ${response.status}`);
+            const payload = await response.json();
+            if (token !== bestGhostLoadToken) return;
+            if (!Array.isArray(payload) || !payload.length) continue;
+            bestGhostRunId = nextRunId;
+            bestGhostLabel = record.tag || record.run_id || "previous best";
+            bestGhostEpisodes = payload;
+            drawReturnChart(latestEpisodes);
+            return;
+          } catch (_) {}
+        }
+        if (token === bestGhostLoadToken) {
+          bestGhostRunId = "";
+          bestGhostLabel = "";
           bestGhostEpisodes = [];
           drawReturnChart(latestEpisodes);
         }
@@ -1687,7 +1752,7 @@
         document.getElementById("logTail").textContent = logText || "No log yet.";
         drawScoreChart(records);
         renderActiveCycle();
-        loadBestGhostEpisodes(bestCompletedRecord(records, currentRunId));
+        loadBestGhostEpisodes(ghostCandidateRecords(records, currentRunId));
       }
 
       async function refreshResearch() {
@@ -1756,9 +1821,13 @@
           updateText("avgReturnValue", formatNumber(current.avg_return, 2));
           updateText("successRateValue", formatPct(current.success_rate));
           const ghostLabel = bestGhostEpisodes.length ? ` · ghost ${shortText(bestGhostLabel, 28)}` : "";
-          updateText("episodesSeen", `${latestEpisodes.length} episodes${ghostLabel}`);
-          updateText("runId", run.run_id ?? "-");
+          const counts = episodeRecordCounts(latestEpisodes);
+          const recordLabel = counts.probeCount
+            ? `${counts.collectionCount} collection / ${counts.probeCount} probe`
+            : `${counts.collectionCount} episodes`;
+          updateText("episodesSeen", `${recordLabel}${ghostLabel}`);
           updateText("tag", run.tag ?? "-");
+          updateText("previousBestTag", bestGhostLabel || "-");
           updateText("candidate", candidateLabel(candidate));
 
           const returnChart = drawReturnChart(latestEpisodes);
@@ -1768,12 +1837,14 @@
               returnChart,
               latestEpisodes.length,
               (index) => {
+                const elapsed = Number(latestEpisodes[index]?.elapsed_seconds);
+                if (Number.isFinite(elapsed)) return `${Math.round(elapsed)}s`;
                 const episode = Number(latestEpisodes[index]?.episode);
                 return Number.isFinite(episode) ? String(episode) : String(index + 1);
               },
               { minLabelPx: 42 },
             );
-            drawXAxisCaption(returnCtx, returnChart, "Episode");
+            drawXAxisCaption(returnCtx, returnChart, "Training time / record");
           }
           drawLossBars(data.latest_losses);
           updateMetricRows(current, infoMetrics);

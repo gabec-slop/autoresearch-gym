@@ -2,20 +2,62 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
+import types
 
 import gymnasium as gym
 import pytest
 
 import autoresearch_gym  # noqa: F401
+from autoresearch_gym import cli
 from autoresearch_gym.runner.experiment import (
     BenchmarkSpec,
+    TrainProbeSpec,
     apply_headless_env_override,
     compact_status_line,
     make_compact_status_writer,
+    make_policy_probe_callback,
     normalize_run_tag,
     utilization_notes,
+    validate_train_curve_contract,
+)
+from autoresearch_gym.runner.curves import (
+    make_policy_probe_record,
+    make_train_episode_record,
 )
 from autoresearch_gym.runner.session_run import parse_args, write_live_session_pointer
+
+
+def test_doctor_warns_when_nvidia_gpu_is_visible_but_torch_cuda_is_unavailable(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    fake_torch = types.SimpleNamespace(
+        __version__="9.9.9+cpu",
+        version=types.SimpleNamespace(cuda=None),
+        cuda=types.SimpleNamespace(
+            is_available=lambda: False,
+            device_count=lambda: 0,
+            get_device_name=lambda index: f"fake cuda {index}",
+        ),
+        backends=types.SimpleNamespace(mps=types.SimpleNamespace(is_available=lambda: False)),
+        device=lambda value: value,
+    )
+    monkeypatch.setitem(sys.modules, "torch", fake_torch)
+    monkeypatch.setattr(
+        cli,
+        "_nvidia_smi_gpus",
+        lambda: [{"name": "NVIDIA GeForce RTX 3060", "memory_total_mb": 12288, "driver_version": "596.21"}],
+    )
+
+    status = cli.cmd_doctor(argparse.Namespace(device="auto", strict=True))
+    payload = json.loads(capsys.readouterr().out)
+
+    assert status == 1
+    assert payload["ok"] is False
+    assert payload["selected_device"] == "cpu"
+    assert payload["checks"][0]["status"] == "warn"
+    assert "cannot use CUDA through PyTorch" in payload["checks"][0]["message"]
 
 
 def test_run_tag_normalization_collapses_duplicate_pass_prefix() -> None:
@@ -41,6 +83,21 @@ def test_utilization_notes_show_reported_zero_gradient_updates() -> None:
 
     assert "0.0 reported gradient updates/sec" in notes
     assert "unavailable" not in notes
+
+
+def test_utilization_notes_warn_when_nvidia_gpu_is_visible_but_cpu_selected() -> None:
+    notes = utilization_notes(
+        {
+            "device": "cpu",
+            "steps_per_second": 3.0,
+            "updates_per_second": None,
+            "visible_nvidia_device_name": "NVIDIA GeForce RTX 3060",
+        },
+        {"total_steps": 900},
+    )
+
+    assert "can see NVIDIA GeForce RTX 3060" in notes
+    assert "CPU-only Torch wheel" in notes
 
 
 def test_headless_env_override_disables_render_mode_when_supported() -> None:
@@ -184,6 +241,176 @@ def test_compact_status_writer_can_write_compact_file(tmp_path) -> None:
     )
 
 
+def test_train_curve_contract_rejects_missing_completed_episode_records() -> None:
+    with pytest.raises(ValueError, match="completed episodes"):
+        validate_train_curve_contract(
+            {
+                "episodes_completed": 12,
+                "total_steps": 345,
+                "episode_records": [],
+            }
+        )
+
+
+def test_train_curve_contract_accepts_windowed_episode_records() -> None:
+    validate_train_curve_contract(
+        {
+            "episodes_completed": 1200,
+            "total_steps": 120000,
+            "episode_records": [
+                {
+                    "episode": 1200,
+                    "return": 42.5,
+                    "length": 43.5,
+                    "success": False,
+                    "step": 120000,
+                    "sampled": True,
+                    "episodes_in_window": 1200,
+                }
+            ],
+        }
+    )
+
+
+def test_train_curve_contract_rejects_steps_without_curve_or_unsupported_status() -> None:
+    with pytest.raises(ValueError, match="training steps"):
+        validate_train_curve_contract(
+            {
+                "episodes_completed": 0,
+                "total_steps": 12,
+                "episode_records": [],
+            }
+        )
+
+    validate_train_curve_contract(
+        {
+            "episodes_completed": 0,
+            "total_steps": 12,
+            "episode_records": [],
+            "curve_status": "unsupported",
+            "curve_status_reason": "external trainer",
+        }
+    )
+
+
+def test_train_curve_contract_accepts_typed_episode_and_probe_records() -> None:
+    validate_train_curve_contract(
+        {
+            "episodes_completed": 1,
+            "total_steps": 10,
+            "episode_records": [
+                make_train_episode_record(
+                    episode=1,
+                    return_value=2.0,
+                    length=3,
+                    success=False,
+                    step=3,
+                    elapsed_seconds=0.1,
+                ),
+                make_policy_probe_record(
+                    episode=2,
+                    return_value=4.0,
+                    length=5.0,
+                    step=10,
+                    elapsed_seconds=5.0,
+                    probe_episodes=2,
+                    probe_seed_start=900_000,
+                ),
+            ],
+        }
+    )
+
+
+def test_policy_probe_callback_keeps_seed_episode_records_unmutated() -> None:
+    module = types.SimpleNamespace(
+        probe_policy=lambda *args, **kwargs: {
+            "episodes": kwargs["episodes"],
+            "avg_return": 12.0,
+            "avg_length": 13.0,
+            "success_rate": 0.5,
+        }
+    )
+    benchmark = BenchmarkSpec(
+        name="probe-test",
+        env_id="CartPole-v1",
+        env_kwargs={},
+        train_episodes=10,
+        train_seconds=None,
+        eval_episodes=1,
+        max_steps=100,
+        reward_type=None,
+        render_mode=None,
+        primary_metric="eval_avg_return",
+        primary_metric_mode="maximize",
+        train_seed=1,
+        eval_seed_start=2,
+        device="cpu",
+        eval_case_bank=None,
+        train_probe=TrainProbeSpec(enabled=True, interval_seconds=0.0, episodes=2, seed_start=123),
+    )
+    callback = make_policy_probe_callback(module, benchmark, object(), "cpu")
+    seed_records = [
+        make_train_episode_record(
+            episode=1,
+            return_value=1.0,
+            length=2,
+            step=2,
+            elapsed_seconds=0.1,
+        )
+    ]
+
+    payload = callback(
+        status="running",
+        agent=object(),
+        episode_records=seed_records,
+        total_steps=2,
+        elapsed_seconds=1.0,
+    )
+
+    assert len(seed_records) == 1
+    assert len(payload["episode_records"]) == 2
+    assert payload["episode_records"][-1]["record_type"] == "policy_probe"
+    assert callback.probe_records[-1]["return"] == 12.0
+
+
+def test_evaluate_agent_uses_candidate_owned_evaluator() -> None:
+    from autoresearch_gym.runner.experiment import evaluate_agent
+
+    class CustomAgent:
+        def evaluate(self, benchmark, candidate):
+            return {
+                "episodes": benchmark.eval_episodes,
+                "success_rate": 1.0,
+                "avg_return": -0.25,
+                "avg_length": 0.0,
+                "mpkpe": 0.25,
+                "episode_records": [],
+            }
+
+    benchmark = BenchmarkSpec(
+        name="custom",
+        env_id="NotARegisteredGymEnv-v0",
+        env_kwargs={},
+        train_episodes=1,
+        train_seconds=None,
+        eval_episodes=3,
+        max_steps=1,
+        reward_type=None,
+        render_mode=None,
+        primary_metric="eval_mpkpe",
+        primary_metric_mode="minimize",
+        train_seed=1,
+        eval_seed_start=2,
+        device="cpu",
+        eval_case_bank=None,
+    )
+
+    summary = evaluate_agent(CustomAgent(), benchmark, object())
+
+    assert summary["episodes"] == 3
+    assert summary["mpkpe"] == 0.25
+
+
 def test_run_parser_accepts_headless_and_compact_status_flags() -> None:
     args = parse_args(
         [
@@ -195,6 +422,11 @@ def test_run_parser_accepts_headless_and_compact_status_flags() -> None:
             "status.log",
             "--status-interval-seconds",
             "2.5",
+            "--probe-interval-seconds",
+            "3.5",
+            "--probe-episodes",
+            "2",
+            "--no-train-probe",
         ]
     )
 
@@ -202,6 +434,9 @@ def test_run_parser_accepts_headless_and_compact_status_flags() -> None:
     assert args.compact_status is True
     assert str(args.compact_status_file) == "status.log"
     assert args.status_interval_seconds == 2.5
+    assert args.probe_interval_seconds == 3.5
+    assert args.probe_episodes == 2
+    assert args.no_train_probe is True
 
 
 def test_live_session_pointer_records_unresolved_latest_alias(tmp_path, monkeypatch) -> None:

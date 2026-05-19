@@ -13,6 +13,8 @@ import torch.nn.functional as F
 import torch.optim as optim
 from torch.distributions import Normal
 
+from autoresearch_gym.runner.curves import elapsed_seconds_since, make_train_episode_record, scalar_info_metrics
+
 try:
     from torch.utils.tensorboard import SummaryWriter
 except ModuleNotFoundError:  # pragma: no cover - keeps the seed runnable without tensorboard.
@@ -458,6 +460,8 @@ def train_agent(
             current_episode=1,
             episode_return=render_episode_return,
             episode_length=render_episode_length,
+            agent=agent,
+            elapsed_seconds=elapsed_seconds_since(start_time),
         )
 
     while should_continue_training():
@@ -478,18 +482,16 @@ def train_agent(
 
         for env_index in np.flatnonzero(dones):
             info = info_for_env(infos, int(env_index))
-            episode_record = {
-                "episode": len(episode_records) + 1,
-                "env_index": int(env_index),
-                "return": float(active_returns[env_index]),
-                "length": int(active_lengths[env_index]),
-                "success": bool(info.get("is_success", False)),
-                "info_metrics": {
-                    key: float(value)
-                    for key, value in info.items()
-                    if isinstance(value, (int, float, np.integer, np.floating))
-                },
-            }
+            episode_record = make_train_episode_record(
+                episode=len(episode_records) + 1,
+                return_value=float(active_returns[env_index]),
+                length=int(active_lengths[env_index]),
+                success=bool(info.get("is_success", False)),
+                step=global_step,
+                elapsed_seconds=elapsed_seconds_since(start_time),
+                info_metrics=scalar_info_metrics(info),
+                env_index=int(env_index),
+            )
             episode_records.append(episode_record)
             writer.add_scalar("charts/episodic_return", episode_record["return"], global_step)
             writer.add_scalar("charts/episodic_length", episode_record["length"], global_step)
@@ -515,6 +517,8 @@ def train_agent(
                 current_episode=len(episode_records) + 1,
                 episode_return=sidecar_return,
                 episode_length=sidecar_length,
+                agent=agent,
+                elapsed_seconds=elapsed_seconds_since(start_time),
             )
 
     writer.close()

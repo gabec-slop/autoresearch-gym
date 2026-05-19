@@ -8,7 +8,7 @@ import re
 import subprocess
 import threading
 import time
-from dataclasses import asdict, dataclass, is_dataclass
+from dataclasses import asdict, dataclass, field, is_dataclass
 from pathlib import Path
 from types import ModuleType
 from typing import Any
@@ -16,6 +16,15 @@ from typing import Any
 import gymnasium as gym
 import numpy as np
 from PIL import Image
+
+from autoresearch_gym.runner.curves import (
+    aggregate_info_metrics,
+    collection_episode_records,
+    is_policy_probe_record,
+    make_policy_probe_record,
+    scalar_info_metrics,
+    validate_train_curve_contract,
+)
 
 try:
     import pybullet
@@ -45,6 +54,14 @@ def require_torch() -> Any:
 
 
 @dataclass
+class TrainProbeSpec:
+    enabled: bool = True
+    interval_seconds: float = 5.0
+    episodes: int = 3
+    seed_start: int = 900_000
+
+
+@dataclass
 class BenchmarkSpec:
     name: str
     env_id: str
@@ -61,6 +78,7 @@ class BenchmarkSpec:
     eval_seed_start: int
     device: str
     eval_case_bank: Path | None
+    train_probe: TrainProbeSpec = field(default_factory=TrainProbeSpec)
 
 
 def load_benchmark(path: Path) -> BenchmarkSpec:
@@ -71,6 +89,13 @@ def load_benchmark(path: Path) -> BenchmarkSpec:
     if "reward_type" in payload:
         env_kwargs.setdefault("reward_type", payload["reward_type"])
     max_steps = int(payload.get("max_steps", env_kwargs.get("max_steps", 0)))
+    probe_payload = payload.get("train_probe") or {}
+    train_probe = TrainProbeSpec(
+        enabled=bool(probe_payload.get("enabled", True)),
+        interval_seconds=float(probe_payload.get("interval_seconds", 5.0)),
+        episodes=int(probe_payload.get("episodes", 3)),
+        seed_start=int(probe_payload.get("seed_start", 900_000)),
+    )
     return BenchmarkSpec(
         name=payload["name"],
         env_id=str(payload["env_id"]),
@@ -93,6 +118,7 @@ def load_benchmark(path: Path) -> BenchmarkSpec:
         eval_seed_start=int(payload["eval_seed_start"]),
         device=str(payload["device"]),
         eval_case_bank=(path.parent / payload["eval_case_bank"]).resolve() if payload.get("eval_case_bank") else None,
+        train_probe=train_probe,
     )
 
 
@@ -213,39 +239,10 @@ def load_eval_cases(benchmark: BenchmarkSpec) -> list[dict[str, Any]] | None:
     return cases if cases else None
 
 
-def scalar_info_metrics(info: dict[str, Any]) -> dict[str, float | bool]:
-    metrics: dict[str, float | bool] = {}
-    for key, value in info.items():
-        if key == "is_success":
-            continue
-        if isinstance(value, (bool, np.bool_)):
-            metrics[key] = bool(value)
-        elif isinstance(value, (int, float, np.integer, np.floating)):
-            metrics[key] = float(value)
-    return metrics
-
-
-def aggregate_info_metrics(episode_records: list[dict[str, Any]]) -> dict[str, float]:
-    values: dict[str, list[float]] = {}
-    bool_keys: set[str] = set()
-    for record in episode_records:
-        for key, value in record.get("info_metrics", {}).items():
-            if isinstance(value, bool):
-                bool_keys.add(key)
-                values.setdefault(key, []).append(1.0 if value else 0.0)
-            else:
-                values.setdefault(key, []).append(float(value))
-
-    aggregates: dict[str, float] = {}
-    for key, items in values.items():
-        if not items:
-            continue
-        aggregate_key = f"{key}_rate" if key in bool_keys else f"avg_{key}"
-        aggregates[aggregate_key] = float(np.mean(items))
-    return aggregates
-
-
 def evaluate_agent(agent: Any, benchmark: BenchmarkSpec, candidate: Any) -> dict[str, Any]:
+    if hasattr(agent, "evaluate"):
+        return agent.evaluate(benchmark=benchmark, candidate=candidate)
+
     env = make_eval_env(benchmark, getattr(candidate, "control_type", None))
     episode_records: list[dict[str, Any]] = []
     eval_cases = load_eval_cases(benchmark)
@@ -301,6 +298,153 @@ def evaluate_agent(agent: Any, benchmark: BenchmarkSpec, candidate: Any) -> dict
     }
     summary.update(aggregate_info_metrics(episode_records))
     return summary
+
+
+def generic_policy_probe(
+    agent: Any,
+    benchmark: BenchmarkSpec,
+    candidate: Any,
+    *,
+    episodes: int,
+    seed_start: int,
+) -> dict[str, Any]:
+    if not hasattr(agent, "act"):
+        raise TypeError("agent does not expose act(obs, deterministic=True)")
+
+    env = make_eval_env(benchmark, getattr(candidate, "control_type", None))
+    episode_records: list[dict[str, Any]] = []
+    try:
+        for idx in range(episodes):
+            seed = int(seed_start) + idx
+            try:
+                obs, info = env.reset(seed=seed)
+            except SIM_RECOVERABLE_ERRORS:
+                obs, info = env.reset()
+            terminated = False
+            truncated = False
+            episode_return = 0.0
+            episode_length = 0
+
+            while not (terminated or truncated) and episode_length < benchmark.max_steps:
+                action = agent.act(obs, deterministic=True)
+                try:
+                    obs, reward, terminated, truncated, info = env.step(action)
+                except SIM_RECOVERABLE_ERRORS:
+                    terminated = True
+                    truncated = False
+                    reward = -3.0
+                    info = {"is_success": False}
+                episode_return += float(reward)
+                episode_length += 1
+
+            episode_records.append(
+                {
+                    "episode": idx + 1,
+                    "seed": seed,
+                    "return": float(episode_return),
+                    "length": int(episode_length),
+                    "success": bool(info.get("is_success", False)),
+                    "info_metrics": scalar_info_metrics(info),
+                }
+            )
+    finally:
+        env.close()
+
+    return {
+        "episodes": int(episodes),
+        "seed_start": int(seed_start),
+        "avg_return": float(np.mean([e["return"] for e in episode_records])) if episode_records else 0.0,
+        "avg_length": float(np.mean([e["length"] for e in episode_records])) if episode_records else 0.0,
+        "success_rate": (
+            float(np.mean([1.0 if e["success"] else 0.0 for e in episode_records]))
+            if episode_records
+            else 0.0
+        ),
+        "episode_records": episode_records,
+    }
+
+
+def make_policy_probe_callback(
+    trainable_module: ModuleType,
+    benchmark: BenchmarkSpec,
+    candidate: Any,
+    device: Any,
+) -> Any:
+    probe = benchmark.train_probe
+    status = "disabled" if not probe.enabled else "waiting"
+    last_probe_elapsed: float | None = None
+    probe_count = 0
+    probe_records: list[dict[str, Any]] = []
+    started_at = time.time()
+
+    def maybe_probe(**kwargs: Any) -> dict[str, Any]:
+        nonlocal status, last_probe_elapsed, probe_count
+        if not probe.enabled:
+            return {"train_probe_status": status}
+        if kwargs.get("status") != "running":
+            return {"train_probe_status": status}
+        agent = kwargs.get("agent")
+        if agent is None:
+            status = "unsupported"
+            return {"train_probe_status": status}
+        episode_records = kwargs.get("episode_records")
+        if not isinstance(episode_records, list):
+            return {"train_probe_status": status}
+        display_records = [*episode_records, *probe_records]
+        elapsed = float(kwargs.get("elapsed_seconds") or (time.time() - started_at))
+        if last_probe_elapsed is not None and elapsed - last_probe_elapsed < probe.interval_seconds:
+            return {"episode_records": display_records, "train_probe_status": status}
+        if last_probe_elapsed is None and elapsed < probe.interval_seconds:
+            return {"episode_records": display_records, "train_probe_status": status}
+
+        seed_start = int(probe.seed_start + probe_count * probe.episodes)
+        try:
+            if hasattr(trainable_module, "probe_policy"):
+                probe_summary = trainable_module.probe_policy(
+                    agent,
+                    benchmark,
+                    candidate,
+                    device,
+                    episodes=int(probe.episodes),
+                    seed_start=seed_start,
+                )
+            else:
+                probe_summary = generic_policy_probe(
+                    agent,
+                    benchmark,
+                    candidate,
+                    episodes=int(probe.episodes),
+                    seed_start=seed_start,
+                )
+        except Exception as exc:  # pragma: no cover - probe failures must not fail training.
+            status = f"failed: {exc}"
+            last_probe_elapsed = elapsed
+            return {"train_probe_status": status}
+
+        record = make_policy_probe_record(
+            episode=len(display_records) + 1,
+            return_value=float(probe_summary.get("avg_return", 0.0)),
+            length=float(probe_summary.get("avg_length", 0.0)),
+            step=int(kwargs.get("total_steps") or 0),
+            elapsed_seconds=elapsed,
+            probe_episodes=int(probe_summary.get("episodes") or probe.episodes),
+            probe_seed_start=seed_start,
+            success_rate=float(probe_summary.get("success_rate", 0.0)),
+        )
+        probe_records.append(record)
+        display_records.append(record)
+        probe_count += 1
+        last_probe_elapsed = elapsed
+        status = "ok"
+        return {
+            "episode_records": display_records,
+            "train_probe_status": status,
+            "train_probe_return": record["return"],
+            "train_probe_length": record["length"],
+        }
+
+    maybe_probe.probe_records = probe_records  # type: ignore[attr-defined]
+    return maybe_probe
 
 
 def append_result(path: Path, payload: dict[str, Any]) -> None:
@@ -666,13 +810,21 @@ def make_live_writer(
         if sampled_episode is not None and visual_mode != "sampled_trajectory":
             stop_sampled_episode("interrupted", "visual_mode_changed")
 
-        avg_return = float(np.mean([entry["return"] for entry in episode_records])) if episode_records else 0.0
+        collection_records = collection_episode_records(episode_records)
+        probe_records = [record for record in episode_records if is_policy_probe_record(record)]
+        avg_return = float(np.mean([entry["return"] for entry in collection_records])) if collection_records else 0.0
         success_rate = (
-            float(np.mean([1.0 if entry["success"] else 0.0 for entry in episode_records]))
-            if episode_records
+            float(np.mean([1.0 if entry["success"] else 0.0 for entry in collection_records]))
+            if collection_records
             else 0.0
         )
-        info_aggregates = aggregate_info_metrics(episode_records)
+        info_aggregates = aggregate_info_metrics(collection_records)
+        if probe_records:
+            latest_probe = probe_records[-1]
+            info_aggregates["policy_probe_return"] = float(latest_probe.get("return", 0.0))
+            info_aggregates["policy_probe_length"] = float(latest_probe.get("length", 0.0))
+            if "elapsed_seconds" in latest_probe:
+                info_aggregates["policy_probe_elapsed_seconds"] = float(latest_probe["elapsed_seconds"])
 
         def write_metrics() -> None:
             live_frame_path = repo_relative(frame_path) if visual_mode == "live_frame" and frame_path.exists() else None
@@ -729,7 +881,7 @@ def make_live_writer(
                         "avg_return": avg_return,
                         "success_rate": success_rate,
                         "info_metrics": info_aggregates,
-                        "episodes_complete": len(episode_records),
+                        "episodes_complete": len(collection_records),
                     },
                     "episodes": episode_records[-400:],
                     "latest_losses": last_metrics,
@@ -784,10 +936,11 @@ def compact_status_line(
         "evaluating": "eval",
         "finished": "done",
     }.get(status, status)
-    avg_return = float(np.mean([entry["return"] for entry in episode_records])) if episode_records else 0.0
+    collection_records = collection_episode_records(episode_records)
+    avg_return = float(np.mean([entry["return"] for entry in collection_records])) if collection_records else 0.0
     success_rate = (
-        float(np.mean([1.0 if entry["success"] else 0.0 for entry in episode_records]))
-        if episode_records
+        float(np.mean([1.0 if entry["success"] else 0.0 for entry in collection_records]))
+        if collection_records
         else 0.0
     )
     update_label = "?" if last_metrics is None else "Y"
@@ -797,11 +950,11 @@ def compact_status_line(
         budget_label = f"time={budget_elapsed_seconds}/{int(round(train_seconds))}s"
     else:
         episode_budget = max(int(train_episodes or 0), 1)
-        progress_fraction = min(max(len(episode_records) / episode_budget, 0.0), 1.0)
-        budget_label = f"eps={len(episode_records)}/{episode_budget}"
+        progress_fraction = min(max(len(collection_records) / episode_budget, 0.0), 1.0)
+        budget_label = f"eps={len(collection_records)}/{episode_budget}"
     return (
         f"t={elapsed_label} pct={100.0 * progress_fraction:.1f} {budget_label} st={status_label} step={int(total_steps)} "
-        f"ep={int(current_episode or len(episode_records) + 1)} done={len(episode_records)} "
+        f"ep={int(current_episode or len(collection_records) + 1)} done={len(collection_records)} "
         f"avg={avg_return:.3f} succ={success_rate:.3f} cur={float(episode_return):.3f} "
         f"len={int(episode_length)} upd={update_label}"
     )
@@ -872,6 +1025,7 @@ def combine_live_callbacks(*callbacks: Any):
             result = callback(**kwargs)
             if isinstance(result, dict):
                 payload.update(result)
+                kwargs.update(result)
         return payload
 
     return combined_callback
@@ -879,6 +1033,50 @@ def combine_live_callbacks(*callbacks: Any):
 
 def public_summary(summary: dict[str, Any]) -> dict[str, Any]:
     return {key: value for key, value in summary.items() if key != "episode_records"}
+
+
+def normalize_train_summary_curve(train_summary: dict[str, Any]) -> None:
+    records = train_summary.get("episode_records")
+    if not isinstance(records, list):
+        return
+    train_summary.setdefault("last_metrics", None)
+    train_summary.setdefault("total_steps", 0)
+    collection_records = collection_episode_records(records)
+    train_summary["episodes_completed"] = len(collection_records)
+    train_summary["avg_return"] = (
+        float(np.mean([record["return"] for record in collection_records])) if collection_records else 0.0
+    )
+    train_summary["success_rate"] = (
+        float(np.mean([1.0 if record.get("success") else 0.0 for record in collection_records]))
+        if collection_records
+        else 0.0
+    )
+    train_summary["avg_length"] = (
+        float(np.mean([record["length"] for record in collection_records])) if collection_records else 0.0
+    )
+    probe_records = [record for record in records if is_policy_probe_record(record)]
+    train_summary["policy_probe_records"] = len(probe_records)
+    if probe_records:
+        latest_probe = probe_records[-1]
+        train_summary["latest_policy_probe_return"] = latest_probe.get("return")
+        train_summary["latest_policy_probe_length"] = latest_probe.get("length")
+
+
+def merge_policy_probe_records(train_summary: dict[str, Any], probe_records: list[dict[str, Any]]) -> None:
+    if not probe_records:
+        return
+    records = train_summary.get("episode_records")
+    if not isinstance(records, list):
+        return
+    merged = [*records, *probe_records]
+    train_summary["episode_records"] = sorted(
+        merged,
+        key=lambda record: (
+            float(record.get("elapsed_seconds", float("inf"))),
+            int(record.get("step", 0) or 0),
+            int(record.get("episode", 0) or 0),
+        ),
+    )
 
 
 def resolve_metric(summary: dict[str, Any], metric: str) -> float:
@@ -1053,6 +1251,10 @@ class UtilizationMonitor:
                 summary["cuda_peak_memory_reserved_mb"] = torch.cuda.max_memory_reserved(self.device) / (1024 * 1024)
             except RuntimeError:
                 pass
+        elif self.device.type == "cpu":
+            nvidia_sample = nvidia_smi_sample()
+            if nvidia_sample and nvidia_sample.get("name"):
+                summary["visible_nvidia_device_name"] = nvidia_sample["name"]
 
         numeric_fields = [
             "gpu_util_percent",
@@ -1111,6 +1313,11 @@ def utilization_notes(utilization: dict[str, Any], train_summary: dict[str, Any]
             )
     else:
         cpu_util = float(utilization.get("process_cpu_util_percent", 0.0) or 0.0)
+        visible_nvidia = utilization.get("visible_nvidia_device_name")
+        if visible_nvidia and str(utilization.get("device")) == "cpu":
+            fragments.append(
+                f"`nvidia-smi` can see {visible_nvidia}, but PyTorch selected CPU; check for a CPU-only Torch wheel or request `device=cuda` explicitly."
+            )
         avg_mps_driver = utilization.get("avg_mps_driver_allocated_mb")
         max_mps_driver = utilization.get("max_mps_driver_allocated_mb")
         mps_limit = utilization.get("max_mps_recommended_max_memory_mb") or utilization.get("avg_mps_recommended_max_memory_mb")
@@ -1152,6 +1359,9 @@ def run_experiment(
     status_interval_seconds: float = 10.0,
     compact_status: bool = False,
     compact_status_file: Path | None = None,
+    train_probe_enabled: bool | None = None,
+    train_probe_interval_seconds: float | None = None,
+    train_probe_episodes: int | None = None,
 ) -> dict[str, Any]:
     benchmark = load_benchmark(benchmark_path)
     trainable_module = load_trainable_module(candidate_path)
@@ -1168,6 +1378,12 @@ def run_experiment(
         benchmark.train_seconds = float(train_seconds_override)
     if eval_episodes_override is not None:
         benchmark.eval_episodes = int(eval_episodes_override)
+    if train_probe_enabled is not None:
+        benchmark.train_probe.enabled = bool(train_probe_enabled)
+    if train_probe_interval_seconds is not None:
+        benchmark.train_probe.interval_seconds = float(train_probe_interval_seconds)
+    if train_probe_episodes is not None:
+        benchmark.train_probe.episodes = int(train_probe_episodes)
     if headless_env:
         headless_env_state = apply_headless_env_override(benchmark)
 
@@ -1189,7 +1405,8 @@ def run_experiment(
         if compact_status_enabled
         else None
     )
-    live_callback = combine_live_callbacks(live_writer, status_writer)
+    probe_callback = make_policy_probe_callback(trainable_module, benchmark, candidate, device)
+    live_callback = combine_live_callbacks(probe_callback, live_writer, status_writer)
 
     def make_training_env(control_type: str | None = None, reward_recipe: str | None = None) -> gym.Env[np.ndarray, np.ndarray]:
         env = make_env(
@@ -1210,21 +1427,24 @@ def run_experiment(
             init_checkpoint=init_checkpoint,
             live_callback=live_callback,
         )
+    merge_policy_probe_records(train_summary, getattr(probe_callback, "probe_records", []))
+    validate_train_curve_contract(train_summary)
+    normalize_train_summary_curve(train_summary)
     utilization_summary = utilization_monitor.summary(train_summary)
     if live_callback is not None:
         live_callback(
             status="evaluating",
             episode_records=train_summary["episode_records"],
-            total_steps=train_summary["total_steps"],
-            last_metrics=train_summary["last_metrics"],
+            total_steps=train_summary.get("total_steps", 0),
+            last_metrics=train_summary.get("last_metrics"),
         )
     eval_summary = evaluate_agent(agent, benchmark, candidate)
     if live_callback is not None:
         live_callback(
             status="finished",
             episode_records=train_summary["episode_records"],
-            total_steps=train_summary["total_steps"],
-            last_metrics=train_summary["last_metrics"],
+            total_steps=train_summary.get("total_steps", 0),
+            last_metrics=train_summary.get("last_metrics"),
         )
     checkpoint_path = run_dir / "agent_checkpoint.pt"
     trainable_module.save_agent_checkpoint(
@@ -1274,6 +1494,7 @@ def run_experiment(
             "primary_metric_mode": benchmark.primary_metric_mode,
             "device": str(device),
             "eval_case_bank": str(benchmark.eval_case_bank) if benchmark.eval_case_bank is not None else None,
+            "train_probe": asdict(benchmark.train_probe),
         },
         "candidate": candidate_metadata(candidate),
         "train": public_summary(train_summary),

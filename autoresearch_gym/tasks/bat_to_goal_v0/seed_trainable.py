@@ -12,6 +12,8 @@ import torch
 from torch import nn
 from torch.distributions import Normal
 
+from autoresearch_gym.runner.curves import elapsed_seconds_since, make_train_episode_record
+
 
 LOG_STD_MIN = -5.0
 LOG_STD_MAX = 2.0
@@ -582,6 +584,8 @@ def train_agent(
                 current_episode=episode,
                 episode_return=episode_return,
                 episode_length=episode_length,
+                agent=agent,
+                elapsed_seconds=elapsed_seconds_since(started_at),
             )
 
         while not (terminated or truncated) and (deadline is None or time.time() < deadline):
@@ -619,19 +623,23 @@ def train_agent(
                     current_episode=episode,
                     episode_return=episode_return,
                     episode_length=episode_length,
-                )
+                agent=agent,
+                elapsed_seconds=elapsed_seconds_since(started_at),
+            )
 
         episode_records.append(
-            {
-                "episode": episode,
-                "return": float(episode_return),
-                "length": int(episode_length),
-                "success": bool(info.get("is_success", False)),
-                "contacted_ball": bool(info.get("contacted_ball", False)),
-                "ball_goal_distance": float(info.get("ball_goal_distance", 0.0)),
-                "curriculum_stage": curriculum_stage,
-                "reset_options": reset_options,
-            }
+            make_train_episode_record(
+                episode=episode,
+                return_value=episode_return,
+                length=episode_length,
+                success=bool(info.get("is_success", False)),
+                step=total_steps,
+                elapsed_seconds=elapsed_seconds_since(started_at),
+                contacted_ball=bool(info.get("contacted_ball", False)),
+                ball_goal_distance=float(info.get("ball_goal_distance", 0.0)),
+                curriculum_stage=curriculum_stage,
+                reset_options=reset_options,
+            )
         )
         if live_callback is not None:
             live_callback(
@@ -643,6 +651,8 @@ def train_agent(
                 current_episode=episode,
                 episode_return=episode_return,
                 episode_length=episode_length,
+                agent=agent,
+                elapsed_seconds=elapsed_seconds_since(started_at),
             )
         if deadline is not None and time.time() >= deadline:
             break
