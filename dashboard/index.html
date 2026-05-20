@@ -363,6 +363,14 @@
         min-height: 18px;
       }
 
+      .chart-note {
+        min-height: 18px;
+        margin-top: 8px;
+        color: var(--muted);
+        font-size: 12px;
+        line-height: 1.35;
+      }
+
       .legend-swatch {
         display: inline-block;
         width: 22px;
@@ -875,10 +883,11 @@
           <div class="charts">
             <div class="chart-card">
               <div class="chart-head">
-                <h2>Latest Losses / Updates</h2>
-                <span>Generic payload</span>
+                <h2>Learning Diagnostics</h2>
+                <span id="diagnosticChartStatus">Waiting for update stats</span>
               </div>
               <canvas id="lossChart" width="360" height="220"></canvas>
+              <div class="chart-note" id="diagnosticChartNote"></div>
               <table class="metric-table">
                 <thead>
                   <tr>
@@ -1615,35 +1624,141 @@
         drawXAxisCaption(ctx, chart, "Iteration");
       }
 
-      function drawLossBars(losses) {
+      const NON_CHARTABLE_UPDATE_KEYS = new Set([
+        "active_episode",
+        "active_episode_batch",
+        "completed_episodes",
+        "current_episode",
+        "current_rollout_length",
+        "elapsed_seconds",
+        "env_steps",
+        "episode",
+        "episode_batch",
+        "episode_batches",
+        "episode_length",
+        "episodes_complete",
+        "episodes_completed",
+        "gradient_update",
+        "gradient_updates",
+        "global_step",
+        "num_envs",
+        "parallel_envs",
+        "step",
+        "steps",
+        "total_steps",
+        "train_seconds",
+        "vector_envs",
+      ]);
+
+      const NON_CHARTABLE_UPDATE_PATTERNS = [
+        /(^|_)count$/,
+        /(^|_)counts$/,
+        /(^|_)episode(s)?($|_)/,
+        /(^|_)length$/,
+        /(^|_)lr$/,
+        /(^|_)rate$/,
+        /(^|_)rollout(s)?($|_)/,
+        /(^|_)seed($|_)/,
+        /(^|_)step(s)?($|_)/,
+        /(^|_)time($|_)/,
+        /batch(_size)?$/,
+        /buffer/,
+        /completed/,
+        /elapsed/,
+        /gradient_updates?/,
+        /learning_rate/,
+        /num_envs/,
+        /parallel/,
+        /success/,
+        /warmup/,
+      ];
+
+      const CHARTABLE_UPDATE_PATTERNS = [
+        /loss/,
+        /error/,
+        /rmse/,
+        /mae/,
+        /mse/,
+        /td/,
+        /critic/,
+        /actor/,
+        /entropy/,
+        /kl/,
+        /log_prob/,
+        /^qf\d?_values?$/,
+        /^q[12]?_value/,
+        /value_loss/,
+      ];
+
+      function shouldChartUpdateMetric(label, value) {
+        if (!Number.isFinite(Number(value))) return false;
+        const key = String(label || "").toLowerCase();
+        if (!key || NON_CHARTABLE_UPDATE_KEYS.has(key)) return false;
+        if (NON_CHARTABLE_UPDATE_PATTERNS.some((pattern) => pattern.test(key))) return false;
+        return CHARTABLE_UPDATE_PATTERNS.some((pattern) => pattern.test(key));
+      }
+
+      function diagnosticMetricPriority(label) {
+        const key = String(label || "").toLowerCase();
+        if (key.includes("loss")) return 0;
+        if (key.includes("error") || key.includes("rmse") || key.includes("mae") || key.includes("mse")) return 1;
+        if (key.includes("critic") || key.includes("qf") || key.includes("value")) return 2;
+        if (key.includes("actor") || key.includes("entropy") || key.includes("kl")) return 3;
+        return 4;
+      }
+
+      function updateDiagnosticChartText(charted, hidden) {
+        const status = document.getElementById("diagnosticChartStatus");
+        const note = document.getElementById("diagnosticChartNote");
+        if (!charted.length) {
+          status.textContent = "No chartable learning diagnostics";
+          note.textContent = hidden.length
+            ? `Hidden from chart: ${hidden.slice(0, 8).join(", ")}${hidden.length > 8 ? ", ..." : ""}`
+            : "Update stats will appear here once the trainable reports loss or error metrics.";
+          return;
+        }
+        status.textContent = `${charted.length} charted`;
+        note.textContent = hidden.length
+          ? `Chart excludes non-diagnostic/progress/config values: ${hidden.slice(0, 8).join(", ")}${hidden.length > 8 ? ", ..." : ""}`
+          : "Charting only trainable learning diagnostics.";
+      }
+
+      function drawDiagnosticBars(metrics) {
         const { width, height } = prepareCanvas(lossCtx);
         lossCtx.clearRect(0, 0, width, height);
         lossCtx.fillStyle = "rgba(255,255,255,0.02)";
         lossCtx.fillRect(0, 0, width, height);
 
-        const numeric = Object.entries(losses || {})
-          .filter(([, value]) => Number.isFinite(Number(value)))
-          .slice(0, 4)
+        const numericEntries = Object.entries(metrics || {})
+          .filter(([, value]) => Number.isFinite(Number(value)));
+        const hidden = numericEntries
+          .filter(([label, value]) => !shouldChartUpdateMetric(label, value))
+          .map(([label]) => label);
+        const numeric = numericEntries
+          .filter(([label, value]) => shouldChartUpdateMetric(label, value))
+          .sort(([left], [right]) => diagnosticMetricPriority(left) - diagnosticMetricPriority(right) || left.localeCompare(right))
+          .slice(0, 6)
           .map(([label, value], index) => ({
             label,
             value: Number(value),
-            color: ["#54d2ff", "#8cff98", "#ffb454", "#ff6b7a"][index % 4],
+            color: ["#54d2ff", "#8cff98", "#ffb454", "#ff6b7a", "#c9a7ff", "#7ee4c6"][index % 6],
           }));
+        updateDiagnosticChartText(numeric, hidden);
 
         if (!numeric.length) {
           lossCtx.fillStyle = "rgba(255,255,255,0.35)";
           lossCtx.font = "16px sans-serif";
-          lossCtx.fillText("No update stats yet", 16, 28);
+          lossCtx.fillText("No learning diagnostics yet", 16, 28);
           return;
         }
 
         const maxValue = Math.max(...numeric.map((item) => Math.abs(item.value)), 1e-3);
-        const barWidth = Math.max(36, Math.min(72, (width - 80) / numeric.length - 14));
+        const barWidth = Math.max(34, Math.min(68, (width - 84) / numeric.length - 12));
         const baseY = height - 38;
         const maxBarHeight = height - 86;
 
         numeric.forEach((item, index) => {
-          const x = 36 + index * (barWidth + 18);
+          const x = 36 + index * (barWidth + 14);
           const scaled = (Math.abs(item.value) / maxValue) * maxBarHeight;
           const y = baseY - scaled;
           lossCtx.fillStyle = item.color;
@@ -1651,7 +1766,7 @@
           lossCtx.fillStyle = "#e8eefc";
           lossCtx.font = "12px sans-serif";
           lossCtx.fillText(item.label.slice(0, 10), x, height - 14);
-          lossCtx.fillText(item.value.toFixed(3), x, Math.max(14, y - 8));
+          lossCtx.fillText(formatNumber(item.value, 3), x, Math.max(14, y - 8));
         });
       }
 
@@ -2014,7 +2129,7 @@
               budgetMode === "episodes" ? "Completed rollouts" : "Training time",
             );
           }
-          drawLossBars(data.latest_losses);
+          drawDiagnosticBars(data.latest_losses);
           updateMetricRows(current, infoMetrics);
           document.getElementById("rawPayload").textContent = JSON.stringify(data, null, 2);
           renderResearch(latestResults, latestLogText);
@@ -2022,7 +2137,7 @@
           updateText("runStatus", "Waiting for metrics");
           latestEpisodes = [];
           drawReturnChart([]);
-          drawLossBars(null);
+          drawDiagnosticBars(null);
         }
       }
 
