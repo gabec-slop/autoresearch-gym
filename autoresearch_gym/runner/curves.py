@@ -4,6 +4,23 @@ from typing import Any
 
 import numpy as np
 
+"""Shared trainable logging contract.
+
+Terminology used by train_agent summaries, live dashboard metrics, and curve
+records:
+
+- env step: one transition from one simulator instance. For vectorized training,
+  one vector step contributes NUM_ENVS env steps. train_summary["total_steps"]
+  and train_summary["env_steps"] both mean cumulative env steps.
+- completed episode: one finished rollout from reset to terminated/truncated in
+  one simulator instance.
+- episode batch: one chart/logging record. A train_episode record represents one
+  completed episode; a train_collection_window record represents a batch/window
+  of completed episodes and must report episodes_in_window.
+- policy probe: deterministic train-time evaluation record. Probe records do not
+  count toward completed training episodes.
+"""
+
 TRAIN_EPISODE = "train_episode"
 TRAIN_COLLECTION_WINDOW = "train_collection_window"
 POLICY_PROBE = "policy_probe"
@@ -47,6 +64,18 @@ def collection_episode_records(episode_records: list[dict[str, Any]]) -> list[di
     return [record for record in episode_records if is_collection_record(record)]
 
 
+def episodes_in_record(record: dict[str, Any]) -> int:
+    if record_type(record) == TRAIN_COLLECTION_WINDOW:
+        return max(0, int(record.get("episodes_in_window") or 0))
+    if is_collection_record(record):
+        return 1
+    return 0
+
+
+def completed_episode_count(episode_records: list[dict[str, Any]]) -> int:
+    return int(sum(episodes_in_record(record) for record in episode_records))
+
+
 def make_train_episode_record(
     *,
     episode: int,
@@ -58,6 +87,11 @@ def make_train_episode_record(
     info_metrics: dict[str, Any] | None = None,
     **extra: Any,
 ) -> dict[str, Any]:
+    """Create one completed-rollout record.
+
+    `episode` is the episode-batch/chart index. `step` is cumulative env steps,
+    not vector-step calls. `length` is this rollout's length in env steps.
+    """
     record: dict[str, Any] = {
         "record_type": TRAIN_EPISODE,
         "episode": int(episode),
@@ -82,10 +116,20 @@ def make_train_collection_window_record(
     episodes_in_window: int,
     success: bool = False,
     step: int | None = None,
+    env_steps_in_window: int | None = None,
     elapsed_seconds: float | None = None,
     info_metrics: dict[str, Any] | None = None,
     **extra: Any,
 ) -> dict[str, Any]:
+    """Create one episode-batch/window record for high-throughput collectors.
+
+    `episode` is the episode-batch/chart index, not total completed episodes.
+    `episodes_in_window` is the number of completed rollouts summarized by this
+    record. `return_value` and `length` should be window averages unless the
+    record explicitly documents another aggregation in `info_metrics`. `step` is
+    cumulative env steps. `env_steps_in_window` is optional but recommended for
+    vectorized or batched collectors.
+    """
     record: dict[str, Any] = {
         "record_type": TRAIN_COLLECTION_WINDOW,
         "episode": int(episode),
@@ -97,6 +141,8 @@ def make_train_collection_window_record(
     }
     if step is not None:
         record["step"] = int(step)
+    if env_steps_in_window is not None:
+        record["env_steps_in_window"] = int(env_steps_in_window)
     if elapsed_seconds is not None:
         record["elapsed_seconds"] = float(elapsed_seconds)
     record.update(extra)
@@ -174,6 +220,9 @@ def validate_train_curve_contract(train_summary: dict[str, Any]) -> None:
             "records with return and length."
         )
     total_steps = int(train_summary.get("total_steps") or 0)
+    env_steps = train_summary.get("env_steps")
+    if env_steps is not None and int(env_steps) != total_steps:
+        raise ValueError("train_agent summary env_steps must match total_steps; both mean cumulative env steps.")
     if total_steps > 0 and not episode_records and train_summary.get("curve_status") != "unsupported":
         raise ValueError(
             "train_agent reported training steps but returned no episode_records. "
@@ -192,7 +241,10 @@ def validate_train_curve_contract(train_summary: dict[str, Any]) -> None:
         kind = record_type(record)
         if kind not in RECORD_TYPES:
             raise ValueError(f"episode_records[{index}] has unknown record_type {kind!r}.")
-        if kind == TRAIN_COLLECTION_WINDOW and "episodes_in_window" not in record:
-            raise ValueError(f"episode_records[{index}] is a collection window but is missing episodes_in_window.")
+        if kind == TRAIN_COLLECTION_WINDOW:
+            if "episodes_in_window" not in record:
+                raise ValueError(f"episode_records[{index}] is a collection window but is missing episodes_in_window.")
+            if int(record.get("episodes_in_window") or 0) <= 0:
+                raise ValueError(f"episode_records[{index}] collection window episodes_in_window must be positive.")
         if kind != TRAIN_EPISODE and not any(key in record for key in ("step", "elapsed_seconds", "episode")):
             raise ValueError(f"episode_records[{index}] must include step, elapsed_seconds, or episode for charting.")

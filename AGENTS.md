@@ -136,12 +136,29 @@ If checkpoint rendering should work, also expose `Agent` and
 `train_agent(...)` must return dashboard/autoresearch curve data in
 `episode_records`. New records should use the shared constructors in
 `autoresearch_gym.runner.curves` so every task speaks the same logging contract.
+The trainable logging terms are:
+
+- `env step`: one environment transition from one simulator instance. For
+  vectorized training, one `envs.step(...)` call contributes `num_envs` env
+  steps. `train_summary["total_steps"]` and optional
+  `train_summary["env_steps"]` both mean cumulative env steps and must match.
+- `completed episode`: one finished rollout in one simulator instance, from
+  reset until terminated or truncated.
+- `episode batch`: one dashboard/chart record. A batch may summarize one
+  completed rollout or many completed rollouts from a vectorized/windowed
+  collector. The record field named `episode` is the episode-batch/chart index,
+  not necessarily total completed episodes.
+- `epoch`: do not use this word for trainable internals. In autoresearch logs it
+  may refer to an outer-loop candidate/pass, not an RL rollout or minibatch.
+
 The standard record types are:
 
 - `train_episode`: one completed training episode.
 - `train_collection_window`: sampled/windowed collection stats for highly
   batched simulators. Use this instead of logging every world episode when doing
-  so would add too much storage or synchronization overhead.
+  so would add too much storage or synchronization overhead. It must include
+  `episodes_in_window`; `return` and `length` should be window averages, `step`
+  should be cumulative env steps, and `env_steps_in_window` is recommended.
 - `policy_probe`: deterministic train-time policy performance. The runner owns
   generic probes when the agent exposes `act(obs, deterministic=True)`; special
   external trainers may implement `probe_policy(...)`.
@@ -152,6 +169,15 @@ as `step`, `elapsed_seconds`, or `episode`. Windowed records must include
 `episodes_in_window`. Older artifacts without `record_type` remain dashboard
 compatible and are treated as `train_episode`, but new seeds should emit typed
 records.
+
+`train_agent(...)` summaries should expose:
+
+- `total_steps`: cumulative env steps.
+- `env_steps`: optional alias for `total_steps`; if present it must match.
+- `episodes_completed`: total completed training rollouts, summing
+  `episodes_in_window` for collection-window records.
+- `episode_batches`: number of dashboard/chart collection records.
+- `episode_records`: the typed episode-batch records described above.
 
 Runner-owned probes must not affect the training recipe or episode cap. Seeds
 should pass the current `agent` into `live_callback(...)`; the runner records
@@ -193,6 +219,8 @@ should be scoped to Darwin plus arm64, not every arm64 platform.
 After adding or changing a task, environment, benchmark, seed, runner behavior,
 or dashboard behavior:
 
+- before committing code, run `scripts/pre_commit_checks.py`; this is the
+  repo-level gate for unit smoke tests plus seed logging/visual artifact smoke
 - run focused unit or smoke tests for the changed surface
 - run the relevant optional-extra smoke when simulator dependencies are involved
 - run a one-episode `autoresearch-gym run` smoke for any new seed
@@ -202,6 +230,12 @@ or dashboard behavior:
   or visualization
 - verify compact status stderr/file output when the change affects runner status
   reporting
+- for trainable, runner, dashboard, benchmark, or task changes, do not use
+  `scripts/pre_commit_checks.py --skip-artifact-smoke`; the full artifact smoke
+  must pass before commit
+- on macOS, if MuJoCo/PyBullet visual smoke fails inside a restricted sandbox,
+  rerun the same pre-commit command from a normal GUI-permitted shell before
+  changing render code
 - remove generated `__pycache__`, `*.egg-info`, `autoresearch_runs/`, temporary
   checkpoints, logs, and rendered rollout artifacts before publishing
 

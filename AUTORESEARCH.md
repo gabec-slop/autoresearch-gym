@@ -98,6 +98,18 @@ the actual recipe in editable code: networks, replay, optimizer setup, losses,
 update cadence, reward transforms, logging, exploration, vectorization, and any
 other task-relevant mechanisms.
 
+Before committing any change to a seed trainable, runner logging, dashboard
+visualization, benchmark, or task environment, run:
+
+```bash
+.venv/bin/python scripts/pre_commit_checks.py
+```
+
+This gate runs unit smoke tests plus the full seed artifact smoke matrix for
+live metrics, frames, and sampled rollouts. Session-local candidate experiments
+do not need this gate for every exploratory pass, but any bug fix promoted back
+to package code does.
+
 ## Before Starting
 
 Read:

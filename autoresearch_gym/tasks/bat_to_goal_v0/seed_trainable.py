@@ -536,7 +536,7 @@ def train_agent(
     torch.manual_seed(benchmark.train_seed)
 
     env = env_factory(candidate.control_type, candidate.reward_recipe)
-    obs, _ = env.reset(seed=benchmark.train_seed)
+    env.action_space.seed(benchmark.train_seed)
     agent = build_agent(env.observation_space.shape[0], env.action_space.high, candidate, device)
     resumed_from: dict[str, Any] | None = None
     if init_checkpoint is not None:
@@ -548,6 +548,7 @@ def train_agent(
     )
 
     total_steps = 0
+    gradient_updates = 0
     last_metrics: dict[str, float] | None = None
     episode_records: list[dict[str, Any]] = []
     started_at = time.time()
@@ -612,6 +613,9 @@ def train_agent(
             if total_steps >= update_after and replay.size >= batch_size:
                 for _ in range(gradient_steps):
                     last_metrics = agent.update(replay)
+                    gradient_updates += 1
+                if last_metrics is not None:
+                    last_metrics = {**last_metrics, "gradient_updates": float(gradient_updates)}
 
             if live_callback is not None and (total_steps == 1 or total_steps % 10 == 0):
                 live_callback(
@@ -623,9 +627,9 @@ def train_agent(
                     current_episode=episode,
                     episode_return=episode_return,
                     episode_length=episode_length,
-                agent=agent,
-                elapsed_seconds=elapsed_seconds_since(started_at),
-            )
+                    agent=agent,
+                    elapsed_seconds=elapsed_seconds_since(started_at),
+                )
 
         episode_records.append(
             make_train_episode_record(
@@ -671,11 +675,15 @@ def train_agent(
         "time_budget_seconds": float(budget_seconds) if budget_seconds is not None else None,
         "stop_reason": stop_reason,
         "total_steps": total_steps,
+        "env_steps": total_steps,
+        "completed_episodes": len(episode_records),
+        "episode_batches": len(episode_records),
         "avg_return": float(np.mean([e["return"] for e in episode_records])) if episode_records else 0.0,
         "success_rate": float(np.mean([1.0 if e["success"] else 0.0 for e in episode_records])) if episode_records else 0.0,
         "contacted_ball_rate": float(np.mean([1.0 if e["contacted_ball"] else 0.0 for e in episode_records])) if episode_records else 0.0,
         "avg_length": float(np.mean([e["length"] for e in episode_records])) if episode_records else 0.0,
         "last_metrics": last_metrics,
+        "gradient_updates": gradient_updates,
         "episode_records": episode_records,
         "wall_clock_seconds": wall_clock,
         "init_checkpoint": str(init_checkpoint) if init_checkpoint is not None else None,

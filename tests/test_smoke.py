@@ -6,6 +6,7 @@ import sys
 import types
 
 import gymnasium as gym
+import numpy as np
 import pytest
 
 import autoresearch_gym  # noqa: F401
@@ -16,16 +17,20 @@ from autoresearch_gym.runner.experiment import (
     apply_headless_env_override,
     compact_status_line,
     make_compact_status_writer,
+    make_live_writer,
     make_policy_probe_callback,
+    normalize_train_summary_curve,
     normalize_run_tag,
     utilization_notes,
     validate_train_curve_contract,
 )
 from autoresearch_gym.runner.curves import (
     make_policy_probe_record,
+    make_train_collection_window_record,
     make_train_episode_record,
 )
 from autoresearch_gym.runner.session_run import parse_args, write_live_session_pointer
+from scripts.check_trainable_contract import validate_records, validate_summary
 
 
 def test_doctor_warns_when_nvidia_gpu_is_visible_but_torch_cuda_is_unavailable(
@@ -83,6 +88,63 @@ def test_utilization_notes_show_reported_zero_gradient_updates() -> None:
 
     assert "0.0 reported gradient updates/sec" in notes
     assert "unavailable" not in notes
+
+
+def test_trainable_contract_checker_requires_gradient_update_counter() -> None:
+    errors = validate_summary(
+        {
+            "train": {
+                "episodes_completed": 10,
+                "completed_episodes": 10,
+                "episode_batches": 10,
+                "total_steps": 300,
+                "env_steps": 300,
+                "last_metrics": {"actor_loss": 1.0},
+            }
+        },
+        require_gradient_updates=True,
+    )
+
+    assert "train.gradient_updates is required" in "\n".join(errors)
+    assert "train.last_metrics.gradient_updates is required" in "\n".join(errors)
+
+
+def test_trainable_contract_checker_accepts_reported_zero_gradient_updates() -> None:
+    errors = validate_summary(
+        {
+            "train": {
+                "episodes_completed": 0,
+                "completed_episodes": 0,
+                "episode_batches": 0,
+                "total_steps": 12,
+                "env_steps": 12,
+                "gradient_updates": 0,
+                "last_metrics": {"gradient_updates": 0},
+            }
+        },
+        require_gradient_updates=True,
+    )
+
+    assert errors == []
+
+
+def test_trainable_contract_checker_rejects_probe_axis_after_collection_count() -> None:
+    errors = validate_records(
+        [
+            make_train_episode_record(episode=1, return_value=1.0, length=2),
+            make_policy_probe_record(
+                episode=3,
+                return_value=2.0,
+                length=2.0,
+                step=2,
+                elapsed_seconds=1.0,
+                probe_episodes=1,
+                probe_seed_start=123,
+            ),
+        ]
+    )
+
+    assert "policy_probe episode axis 3 exceeds completed collection rollouts 1" in "\n".join(errors)
 
 
 def test_utilization_notes_warn_when_nvidia_gpu_is_visible_but_cpu_selected() -> None:
@@ -176,6 +238,263 @@ def test_compact_status_writer_uses_stderr(capsys: pytest.CaptureFixture[str]) -
     assert "upd=?" in captured.err
 
 
+def test_compact_status_writer_ignores_enriched_live_callback_fields(capsys: pytest.CaptureFixture[str]) -> None:
+    writer = make_compact_status_writer(10.0)
+
+    writer(
+        status="running",
+        episode_records=[],
+        total_steps=12,
+        last_metrics=None,
+        current_episode=1,
+        episode_return=-1.5,
+        episode_length=3,
+        agent=object(),
+        elapsed_seconds=0.1,
+    )
+
+    assert "step=12" in capsys.readouterr().err
+
+
+def test_live_writer_ignores_enriched_live_callback_fields(tmp_path) -> None:
+    benchmark = BenchmarkSpec(
+        name="test",
+        env_id="CartPole-v1",
+        env_kwargs={"render_mode": "rgb_array"},
+        train_episodes=10,
+        train_seconds=30.0,
+        eval_episodes=1,
+        max_steps=50,
+        reward_type=None,
+        render_mode="rgb_array",
+        primary_metric="eval_avg_return",
+        primary_metric_mode="maximize",
+        train_seed=1,
+        eval_seed_start=2,
+        device="cpu",
+        eval_case_bank=None,
+        train_probe=TrainProbeSpec(enabled=False),
+    )
+    writer = make_live_writer(tmp_path / "session", "run-1", "tag-1", benchmark, {"description": "candidate"})
+    assert writer is not None
+
+    writer(
+        status="running",
+        episode_records=[],
+        total_steps=12,
+        last_metrics=None,
+        current_episode=1,
+        episode_return=-1.5,
+        episode_length=3,
+        agent=object(),
+        elapsed_seconds=0.1,
+    )
+
+    payload = json.loads((tmp_path / "session" / "live" / "current_run_metrics.json").read_text(encoding="utf-8"))
+    assert payload["current"]["step"] == 12
+    assert payload["current"]["env_steps"] == 12
+    assert payload["current"]["episode_batch"] == 0
+    assert payload["current"]["active_episode_batch"] == 1
+    assert payload["current"]["completed_episodes"] == 0
+
+
+def test_live_writer_sampled_trajectory_records_full_episode(tmp_path) -> None:
+    class DummyVisualEnv(gym.Env):
+        metadata = {"render_modes": ["rgb_array"]}
+
+        def __init__(self) -> None:
+            self.observation_space = gym.spaces.Box(low=0.0, high=1.0, shape=(1,), dtype=np.float32)
+            self.action_space = gym.spaces.Box(low=-1.0, high=1.0, shape=(1,), dtype=np.float32)
+            self.steps = 0
+
+        def reset(self, *, seed=None, options=None):
+            super().reset(seed=seed)
+            self.steps = 0
+            return np.zeros(1, dtype=np.float32), {}
+
+        def step(self, action):
+            self.steps += 1
+            return np.zeros(1, dtype=np.float32), 0.0, self.steps >= 5, False, {}
+
+        def render(self, *args, **kwargs):
+            return np.full((8, 8, 3), self.steps, dtype=np.uint8)
+
+    benchmark = BenchmarkSpec(
+        name="test",
+        env_id="DummyVisual-v0",
+        env_kwargs={"render_mode": "rgb_array"},
+        train_episodes=10,
+        train_seconds=30.0,
+        eval_episodes=1,
+        max_steps=50,
+        reward_type=None,
+        render_mode="rgb_array",
+        primary_metric="eval_avg_return",
+        primary_metric_mode="maximize",
+        train_seed=1,
+        eval_seed_start=2,
+        device="cpu",
+        eval_case_bank=None,
+        train_probe=TrainProbeSpec(enabled=False),
+    )
+    writer = make_live_writer(tmp_path / "session", "run-1", "tag-1", benchmark, {"description": "candidate"})
+    assert writer is not None
+    env = writer.wrap_env(DummyVisualEnv())  # type: ignore[attr-defined]
+
+    env.reset()
+    terminated = False
+    while not terminated:
+        _, _, terminated, _, _ = env.step(np.zeros(1, dtype=np.float32))
+
+    manifest = json.loads(
+        (tmp_path / "session" / "live" / "trajectories" / "run-1" / "episode_000001" / "manifest.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert manifest["status"] == "completed"
+    assert manifest["frame_count"] >= 3
+
+
+def test_bat_to_goal_seed_trainable_samples_first_real_episode_rollout(tmp_path) -> None:
+    torch = pytest.importorskip("torch")
+    from autoresearch_gym.tasks.bat_to_goal_v0 import seed_trainable
+
+    class TinyVisualEnv(gym.Env):
+        metadata = {"render_modes": ["rgb_array"]}
+
+        def __init__(self) -> None:
+            self.observation_space = gym.spaces.Box(low=-1.0, high=1.0, shape=(2,), dtype=np.float32)
+            self.action_space = gym.spaces.Box(low=-1.0, high=1.0, shape=(1,), dtype=np.float32)
+            self.steps = 0
+            self.reset_count = 0
+
+        def reset(self, *, seed=None, options=None):
+            super().reset(seed=seed)
+            self.steps = 0
+            self.reset_count += 1
+            return np.zeros(2, dtype=np.float32), {}
+
+        def step(self, action):
+            self.steps += 1
+            terminated = self.steps >= 5
+            info = {"is_success": False, "contacted_ball": False, "ball_goal_distance": 0.5}
+            return np.zeros(2, dtype=np.float32), -0.1, terminated, False, info
+
+        def render(self, *args, **kwargs):
+            return np.full((8, 8, 3), self.steps, dtype=np.uint8)
+
+    benchmark = types.SimpleNamespace(
+        train_seed=1,
+        train_episodes=1,
+        train_seconds=None,
+    )
+    live_benchmark = BenchmarkSpec(
+        name="test",
+        env_id="TinyVisual-v0",
+        env_kwargs={"render_mode": "rgb_array"},
+        train_episodes=1,
+        train_seconds=None,
+        eval_episodes=1,
+        max_steps=5,
+        reward_type=None,
+        render_mode="rgb_array",
+        primary_metric="eval_avg_return",
+        primary_metric_mode="maximize",
+        train_seed=1,
+        eval_seed_start=2,
+        device="cpu",
+        eval_case_bank=None,
+        train_probe=TrainProbeSpec(enabled=False),
+    )
+    candidate = seed_trainable.get_candidate()
+    writer = make_live_writer(tmp_path / "session", "run-1", "tag-1", live_benchmark, candidate)
+    assert writer is not None
+    base_env = TinyVisualEnv()
+
+    def env_factory(control_type=None, reward_recipe=None):
+        return writer.wrap_env(base_env)  # type: ignore[attr-defined]
+
+    _, summary = seed_trainable.train_agent(
+        benchmark,
+        env_factory,
+        candidate,
+        torch.device("cpu"),
+        live_callback=writer,
+    )
+
+    manifest = json.loads(
+        (tmp_path / "session" / "live" / "trajectories" / "run-1" / "episode_000001" / "manifest.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert summary["episodes_completed"] == 1
+    assert base_env.reset_count == 1
+    assert manifest["status"] == "completed"
+    assert manifest["frame_count"] >= 3
+
+
+def test_live_writer_finalizes_active_sampled_trajectory_on_finish(tmp_path) -> None:
+    class DummyVisualEnv(gym.Env):
+        metadata = {"render_modes": ["rgb_array"]}
+
+        def __init__(self) -> None:
+            self.observation_space = gym.spaces.Box(low=0.0, high=1.0, shape=(1,), dtype=np.float32)
+            self.action_space = gym.spaces.Box(low=-1.0, high=1.0, shape=(1,), dtype=np.float32)
+
+        def reset(self, *, seed=None, options=None):
+            super().reset(seed=seed)
+            return np.zeros(1, dtype=np.float32), {}
+
+        def step(self, action):
+            return np.zeros(1, dtype=np.float32), 0.0, False, False, {}
+
+        def render(self, *args, **kwargs):
+            return np.zeros((8, 8, 3), dtype=np.uint8)
+
+    benchmark = BenchmarkSpec(
+        name="test",
+        env_id="DummyVisual-v0",
+        env_kwargs={"render_mode": "rgb_array"},
+        train_episodes=10,
+        train_seconds=30.0,
+        eval_episodes=1,
+        max_steps=50,
+        reward_type=None,
+        render_mode="rgb_array",
+        primary_metric="eval_avg_return",
+        primary_metric_mode="maximize",
+        train_seed=1,
+        eval_seed_start=2,
+        device="cpu",
+        eval_case_bank=None,
+        train_probe=TrainProbeSpec(enabled=False),
+    )
+    writer = make_live_writer(tmp_path / "session", "run-1", "tag-1", benchmark, {"description": "candidate"})
+    assert writer is not None
+    env = writer.wrap_env(DummyVisualEnv())  # type: ignore[attr-defined]
+
+    env.reset()
+    env.step(np.zeros(1, dtype=np.float32))
+    writer(
+        status="finished",
+        episode_records=[],
+        total_steps=1,
+        last_metrics=None,
+        env=env,
+        current_episode=1,
+        episode_return=0.0,
+        episode_length=1,
+    )
+
+    metrics = json.loads((tmp_path / "session" / "live" / "current_run_metrics.json").read_text(encoding="utf-8"))
+    manifest_path = metrics["visual"]["trajectory_manifest_path"]
+    manifest = json.loads((tmp_path / "session" / "live" / "trajectories" / "run-1" / "episode_000001" / "manifest.json").read_text(encoding="utf-8"))
+    assert manifest_path.endswith("manifest.json")
+    assert manifest["status"] == "interrupted"
+    assert manifest["reason"] == "training_finished"
+    assert metrics["visual"]["active_sampled_episode"] is None
+
+
 def test_compact_status_line_is_token_efficient() -> None:
     line = compact_status_line(
         elapsed_seconds=65.2,
@@ -257,19 +576,77 @@ def test_train_curve_contract_accepts_windowed_episode_records() -> None:
         {
             "episodes_completed": 1200,
             "total_steps": 120000,
+            "env_steps": 120000,
             "episode_records": [
-                {
-                    "episode": 1200,
-                    "return": 42.5,
-                    "length": 43.5,
-                    "success": False,
-                    "step": 120000,
-                    "sampled": True,
-                    "episodes_in_window": 1200,
-                }
+                make_train_collection_window_record(
+                    episode=1,
+                    return_value=42.5,
+                    length=43.5,
+                    episodes_in_window=1200,
+                    success=False,
+                    step=120000,
+                    env_steps_in_window=120000,
+                    sampled=True,
+                )
             ],
         }
     )
+
+
+def test_train_curve_contract_rejects_env_step_alias_mismatch() -> None:
+    with pytest.raises(ValueError, match="env_steps must match total_steps"):
+        validate_train_curve_contract(
+            {
+                "episodes_completed": 1,
+                "total_steps": 12,
+                "env_steps": 11,
+                "episode_records": [
+                    make_train_episode_record(
+                        episode=1,
+                        return_value=0.0,
+                        length=12,
+                        step=12,
+                    )
+                ],
+            }
+        )
+
+
+def test_train_summary_normalization_counts_collection_window_episodes() -> None:
+    summary = {
+        "episodes_completed": 0,
+        "total_steps": 120,
+        "episode_records": [
+            make_train_collection_window_record(
+                episode=1,
+                return_value=10.0,
+                length=12.0,
+                episodes_in_window=5,
+                success=False,
+                step=60,
+                env_steps_in_window=60,
+            ),
+            make_train_collection_window_record(
+                episode=2,
+                return_value=20.0,
+                length=18.0,
+                episodes_in_window=15,
+                success=True,
+                step=120,
+                env_steps_in_window=60,
+            ),
+        ],
+    }
+
+    normalize_train_summary_curve(summary)
+
+    assert summary["env_steps"] == 120
+    assert summary["episodes_completed"] == 20
+    assert summary["completed_episodes"] == 20
+    assert summary["episode_batches"] == 2
+    assert summary["avg_return"] == pytest.approx(17.5)
+    assert summary["avg_length"] == pytest.approx(16.5)
+    assert summary["success_rate"] == pytest.approx(0.75)
 
 
 def test_train_curve_contract_rejects_steps_without_curve_or_unsupported_status() -> None:
@@ -370,6 +747,7 @@ def test_policy_probe_callback_keeps_seed_episode_records_unmutated() -> None:
     assert len(seed_records) == 1
     assert len(payload["episode_records"]) == 2
     assert payload["episode_records"][-1]["record_type"] == "policy_probe"
+    assert payload["episode_records"][-1]["episode"] == 1
     assert callback.probe_records[-1]["return"] == 12.0
 
 
@@ -528,6 +906,8 @@ def test_hopper_seed_task_resets_and_steps_when_mujoco_is_installed() -> None:
     assert isinstance(bool(terminated), bool)
     assert isinstance(bool(truncated), bool)
     env.close()
+
+
 
 
 def test_inverted_pendulum_seed_task_resets_and_steps_when_mujoco_is_installed() -> None:
