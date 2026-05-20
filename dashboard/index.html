@@ -268,6 +268,15 @@
         white-space: nowrap;
       }
 
+      .card-detail {
+        margin-top: 4px;
+        color: var(--muted);
+        font-size: 12px;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+
       .charts {
         display: grid;
         grid-template-columns: minmax(0, 1.45fr) minmax(320px, 0.9fr);
@@ -553,6 +562,10 @@
         max-height: 220px;
       }
 
+      .candidate-progress {
+        margin: 0 0 14px;
+      }
+
       .active-cycle {
         display: grid;
         grid-template-columns: minmax(180px, 0.8fr) minmax(0, 2fr);
@@ -652,6 +665,7 @@
 
         .grid,
         .active-cycle,
+        .candidate-progress,
         .research-canvases,
         .meta-grid,
         .meta {
@@ -744,7 +758,7 @@
                   <div class="visual-controls">
                     <button class="visual-mode" data-visual-mode="off" type="button">Off</button>
                     <button class="visual-mode" data-visual-mode="live_frame" type="button">Live Frame</button>
-                    <button class="visual-mode" data-visual-mode="sampled_trajectory" type="button">Sampled Trajectory</button>
+                    <button class="visual-mode" data-visual-mode="sampled_trajectory" type="button">Sampled Rollout</button>
                   </div>
                   <span id="frameStatus">Waiting for frame</span>
                 </div>
@@ -753,15 +767,15 @@
                 <img id="simFrame" class="sim-frame" alt="Live simulation frame" />
                 <div id="simPlaceholder" class="sim-placeholder">
                   Live frames are disabled for this benchmark. Metrics, losses, and
-                  episode history are still streaming.
+                  rollout history is still streaming.
                 </div>
               </div>
             </div>
 
             <div class="chart-card">
               <div class="chart-head">
-                <h2>Current Run</h2>
-                <span id="episodesSeen">0 episodes</span>
+                <h2>Current Candidate</h2>
+                <span id="episodesSeen">0 rollout batches</span>
               </div>
               <div class="chart-legend" aria-label="Current run return legend">
                 <span class="legend-item"><span class="legend-swatch" style="--swatch-color: #54d2ff"></span>Collection</span>
@@ -777,14 +791,28 @@
             </div>
           </div>
 
+          <div class="candidate-progress">
+            <div class="mini-card">
+              <div class="label">Budget</div>
+              <strong id="activeCandidate">-</strong>
+              <div class="progress-shell"><div class="progress-fill" id="activeProgress"></div></div>
+              <div class="progress-meta">Progress: <strong id="activeProgressText">-</strong></div>
+            </div>
+          </div>
+
           <div class="grid">
             <div class="card">
-              <div class="label">Step</div>
+              <div class="label">Env Steps</div>
               <div class="value" id="stepValue">-</div>
+              <div class="card-detail"><span id="parallelEnvsValue">-</span> parallel envs</div>
             </div>
             <div class="card">
-              <div class="label">Episode</div>
-              <div class="value" id="episodeValue">-</div>
+              <div class="label">Completed Rollouts</div>
+              <div class="value" id="completedEpisodesValue">-</div>
+            </div>
+            <div class="card">
+              <div class="label">Gradient Updates</div>
+              <div class="value" id="gradientUpdatesValue">-</div>
             </div>
             <div class="card">
               <div class="label">Average Return</div>
@@ -817,18 +845,6 @@
               <div class="mini-card">
                 <div class="label">Current Cycle</div>
                 <strong id="currentCycle">-</strong>
-              </div>
-            </div>
-            <div class="active-cycle">
-              <div class="mini-card">
-                <div class="label">Active Candidate</div>
-                <strong id="activeCandidate">-</strong>
-                <div class="progress-shell"><div class="progress-fill" id="activeProgress"></div></div>
-                <div class="progress-meta">Progress: <strong id="activeProgressText">-</strong></div>
-              </div>
-              <div class="mini-card">
-                <div class="label">Current Hypothesis</div>
-                <strong id="activeHypothesis">-</strong>
               </div>
             </div>
             <div class="research-canvases">
@@ -982,7 +998,7 @@
 
       function sessionSummaryLine(item) {
         const parts = [item.status];
-        if (Number.isFinite(Number(item.episodes))) parts.push(`${item.episodes} eps`);
+        if (Number.isFinite(Number(item.episodes))) parts.push(`${item.episodes} completed rollouts`);
         if (Number.isFinite(Number(item.avg_return))) parts.push(`avg ${formatNumber(item.avg_return, 1)}`);
         return parts.filter(Boolean).join(" · ");
       }
@@ -1110,9 +1126,9 @@
         visualModeOverride = mode;
         updateVisualControls(mode);
         if (mode === "off") {
-          showFramePlaceholder("Visual rendering is off. Metrics, losses, and episode history are still streaming.");
+          showFramePlaceholder("Visual rendering is off. Metrics, losses, and rollout history is still streaming.");
         } else if (mode === "sampled_trajectory") {
-          showFramePlaceholder("Sampled trajectory mode will begin at the next sampled episode boundary.");
+          showFramePlaceholder("Sampled rollout mode will begin at the next sampled rollout boundary.");
         }
         try {
           const control = { visual_mode: mode };
@@ -1269,9 +1285,21 @@
         return values.map((value) => Number(value)).filter(Number.isFinite);
       }
 
+      function xPositionFor(chart, rawX, xMin, xMax) {
+        const x = Number(rawX);
+        const min = Number(xMin);
+        const max = Number(xMax);
+        if (!Number.isFinite(x) || !Number.isFinite(min) || !Number.isFinite(max)) return null;
+        if (Math.abs(max - min) < 1e-9) return chart.left + chart.plotW / 2;
+        return chart.left + ((x - min) / (max - min)) * chart.plotW;
+      }
+
       function drawSeries(ctx, chart, values, min, max, options = {}) {
         const finite = finiteValues(values);
         if (!finite.length) return;
+        const xValues = Array.isArray(options.xValues) ? options.xValues : null;
+        const xMin = Number.isFinite(Number(options.xMin)) ? Number(options.xMin) : 0;
+        const xMax = Number.isFinite(Number(options.xMax)) ? Number(options.xMax) : Math.max(values.length - 1, 1);
         ctx.save();
         ctx.strokeStyle = options.color || "#54d2ff";
         ctx.lineWidth = options.lineWidth || 2;
@@ -1286,7 +1314,12 @@
             if (!options.connectGaps) started = false;
             return;
           }
-          const x = chart.left + (chart.plotW * index) / Math.max(values.length - 1, 1);
+          const rawX = xValues ? xValues[index] : index;
+          const x = xPositionFor(chart, rawX, xMin, xMax);
+          if (x === null) {
+            if (!options.connectGaps) started = false;
+            return;
+          }
           const y = chart.height - chart.bottom - ((value - min) / (max - min)) * chart.plotH;
           points.push({ x, y });
           if (!started) {
@@ -1350,7 +1383,37 @@
         return { probeCount, collectionCount: episodes.length - probeCount };
       }
 
-      function drawGhostEndpoint(ctx, chart, episodes, ghostValues, min, max) {
+      function returnChartXValues(episodes) {
+        if (budgetModeFor(latestRun) === "time") {
+          return episodes.map((entry, index) => {
+            const elapsed = Number(entry?.elapsed_seconds);
+            return Number.isFinite(elapsed) ? elapsed : index;
+          });
+        }
+        let completedRollouts = 0;
+        return episodes.map((entry) => {
+          if (isPolicyProbe(entry)) {
+            const probeEpisode = Number(entry?.episode);
+            return Number.isFinite(probeEpisode) && probeEpisode > 0 ? probeEpisode : completedRollouts;
+          }
+          completedRollouts += episodesInRecord(entry);
+          return completedRollouts;
+        });
+      }
+
+      function finiteChartXValues(valueSeries, xValues) {
+        const xs = [];
+        valueSeries.forEach((values) => {
+          values.forEach((rawValue, index) => {
+            if (!Number.isFinite(Number(rawValue))) return;
+            const rawX = Number(xValues[index]);
+            if (Number.isFinite(rawX)) xs.push(rawX);
+          });
+        });
+        return xs;
+      }
+
+      function drawGhostEndpoint(ctx, chart, episodes, ghostValues, min, max, xValues, xMin, xMax) {
         if (!bestGhostEpisodes.length || !episodes.length) return;
         let endpointIndex = Math.min(bestGhostEpisodes.length, episodes.length) - 1;
         while (endpointIndex >= 0 && !Number.isFinite(Number(ghostValues[endpointIndex]))) {
@@ -1359,7 +1422,8 @@
         const endpointValue = Number(ghostValues[endpointIndex]);
         if (endpointIndex < 0 || !Number.isFinite(endpointValue)) return;
 
-        const x = chart.left + (chart.plotW * endpointIndex) / Math.max(episodes.length - 1, 1);
+        const x = xPositionFor(chart, xValues[endpointIndex], xMin, xMax);
+        if (x === null) return;
         const y = chart.height - chart.bottom - ((endpointValue - min) / (max - min)) * chart.plotH;
         ctx.save();
         ctx.fillStyle = "#ffb454";
@@ -1375,17 +1439,19 @@
       function drawReturnChart(episodes) {
         const { collectionValues, probeValues } = splitReturnSeries(episodes);
         const ghostValues = ghostReturnsFor(episodes);
+        const xValues = returnChartXValues(episodes);
         const allValues = [
           ...finiteValues(collectionValues),
           ...finiteValues(probeValues),
           ...finiteValues(ghostValues),
         ];
-        const chart = drawChartBase(returnCtx, { emptyText: "No episodes yet", bottomPad: 56, yLabel: "Return" });
+        const allXValues = finiteChartXValues([collectionValues, probeValues, ghostValues], xValues);
+        const chart = drawChartBase(returnCtx, { emptyText: "No rollouts yet", bottomPad: 56, yLabel: "Return" });
 
         if (!allValues.length) {
           returnCtx.fillStyle = "rgba(255,255,255,0.35)";
           returnCtx.font = "16px sans-serif";
-          returnCtx.fillText("No episodes yet", chart.left + 8, chart.top + 8);
+          returnCtx.fillText("No rollouts yet", chart.left + 8, chart.top + 8);
           return chart;
         }
 
@@ -1395,6 +1461,12 @@
           min -= 1;
           max += 1;
         }
+        let xMin = allXValues.length ? Math.min(...allXValues) : 0;
+        let xMax = allXValues.length ? Math.max(...allXValues) : Math.max(episodes.length - 1, 1);
+        if (Math.abs(xMax - xMin) < 1e-9) {
+          xMin -= 1;
+          xMax += 1;
+        }
 
         drawSeries(returnCtx, chart, ghostValues, min, max, {
           color: "#ffb454",
@@ -1402,11 +1474,17 @@
           alpha: 0.72,
           dash: [6, 5],
           pointRadius: 2.5,
+          xValues,
+          xMin,
+          xMax,
         });
         drawSeries(returnCtx, chart, collectionValues, min, max, {
           color: "#54d2ff",
           lineWidth: 3,
           pointRadius: 3,
+          xValues,
+          xMin,
+          xMax,
         });
         drawSeries(returnCtx, chart, probeValues, min, max, {
           color: "#8cff98",
@@ -1414,9 +1492,12 @@
           pointRadius: 4,
           connectGaps: true,
           showPoints: true,
+          xValues,
+          xMin,
+          xMax,
         });
         if (latestEpisodes.length > bestGhostEpisodes.length) {
-          drawGhostEndpoint(returnCtx, chart, episodes, ghostValues, min, max);
+          drawGhostEndpoint(returnCtx, chart, episodes, ghostValues, min, max, xValues, xMin, xMax);
         }
 
         returnCtx.fillStyle = "rgba(255,255,255,0.7)";
@@ -1424,7 +1505,7 @@
         returnCtx.textAlign = "left";
         returnCtx.fillText(max.toFixed(2), chart.left + 6, chart.top + 14);
         returnCtx.fillText(min.toFixed(2), chart.left + 6, chart.height - chart.bottom - 6);
-        return { ...chart, min, max };
+        return { ...chart, min, max, xValues, xMin, xMax };
       }
 
       function niceTickStep(rawStep) {
@@ -1459,6 +1540,36 @@
         ctx.textBaseline = "top";
         for (const index of indexes) {
           const x = chart.left + (chart.plotW * index) / Math.max(count - 1, 1);
+          ctx.strokeStyle = "rgba(255,255,255,0.22)";
+          ctx.lineWidth = 1;
+          ctx.beginPath();
+          ctx.moveTo(x, axisY);
+          ctx.lineTo(x, axisY + 6);
+          ctx.stroke();
+          if (options.gridLines) {
+            ctx.strokeStyle = "rgba(255,255,255,0.06)";
+            ctx.beginPath();
+            ctx.moveTo(x, chart.top);
+            ctx.lineTo(x, axisY);
+            ctx.stroke();
+          }
+          ctx.fillStyle = "rgba(255,255,255,0.64)";
+          ctx.fillText(labelForIndex(index), x, axisY + 10);
+        }
+        ctx.restore();
+      }
+
+      function drawXValueTicks(ctx, chart, xValues, labelForIndex, options = {}) {
+        const count = Array.isArray(xValues) ? xValues.length : 0;
+        const indexes = tickIndexesForCount(count, chart.plotW, options.minLabelPx ?? 44, options.showAllUpTo ?? 0);
+        const axisY = chart.height - chart.bottom;
+        ctx.save();
+        ctx.font = options.font || "11px sans-serif";
+        ctx.textAlign = "center";
+        ctx.textBaseline = "top";
+        for (const index of indexes) {
+          const x = xPositionFor(chart, xValues[index], chart.xMin, chart.xMax);
+          if (x === null) continue;
           ctx.strokeStyle = "rgba(255,255,255,0.22)";
           ctx.lineWidth = 1;
           ctx.beginPath();
@@ -1616,22 +1727,29 @@
         return Math.max(0, Math.min(trainSeconds, endpoint - startedAt));
       }
 
+      function budgetModeFor(run) {
+        const explicit = String(run?.budget_mode || "").toLowerCase();
+        if (explicit === "episodes" || explicit === "time") return explicit;
+        const totalEpisodes = Number(run?.train_episodes || 0);
+        const trainSeconds = Number(run?.train_seconds || 0);
+        if (totalEpisodes > 0 && (trainSeconds <= 0 || totalEpisodes < 100000)) return "episodes";
+        return trainSeconds > 0 ? "time" : "episodes";
+      }
+
       function renderActiveCycle() {
         const trainSeconds = Number(latestRun.train_seconds || 0);
         const total = Number(latestRun.train_episodes || 0);
-        const complete = Number(latestRun.episodes_complete || latestRun.current?.episodes_complete || 0);
-        const currentEpisode = Number(document.getElementById("episodeValue").textContent || 0);
-        const effectiveComplete = Number.isFinite(currentEpisode) && currentEpisode > 0 ? currentEpisode : complete;
+        const complete = Number(latestRun.episodes_complete || latestRun.current?.completed_episodes || latestRun.current?.episodes_complete || 0);
+        const effectiveComplete = Number.isFinite(complete) && complete > 0 ? complete : 0;
         let pct = total > 0 ? Math.max(0, Math.min(100, Math.round((effectiveComplete / total) * 100))) : 0;
-        let progressText = total > 0 ? `${pct}% · ${effectiveComplete}/${total} eps` : "-";
-        if (trainSeconds > 0) {
+        let progressText = total > 0 ? `${pct}% · ${effectiveComplete}/${total} completed rollouts cap` : "-";
+        if (budgetModeFor(latestRun) === "time" && trainSeconds > 0) {
           const elapsedSeconds = activeTimeProgress(trainSeconds);
           pct = Math.max(0, Math.min(100, Math.round((elapsedSeconds / trainSeconds) * 100)));
           progressText = `${pct}% · ${formatDuration(elapsedSeconds)}/${formatDuration(trainSeconds)}`;
         }
         updateText("activeCandidate", latestRun.tag || "-");
         updateText("activeProgressText", progressText);
-        updateText("activeHypothesis", candidateLabel(latestRun.candidate));
         document.getElementById("activeProgress").style.width = `${pct}%`;
       }
 
@@ -1785,14 +1903,53 @@
       }
 
       function updateMetricRows(current, infoMetrics) {
+        const losses = latestRun.latest_losses || {};
         const entries = [
-          ["episode_return", current.episode_return],
-          ["episode_length", current.episode_length],
+          ["env_steps", current.env_steps ?? current.step],
+          ["parallel_envs", parallelEnvCount(latestRun, losses)],
+          ["completed_rollouts", current.completed_episodes ?? current.episodes_complete],
+          ["gradient_updates", gradientUpdateCount(latestRun, losses)],
+          ["current_rollout_return", current.episode_return],
+          ["current_rollout_length", current.episode_length],
           ...Object.entries(infoMetrics || {}),
         ];
         document.getElementById("metricRows").innerHTML = entries
           .map(([key, value]) => `<tr><td>${key}</td><td>${formatNumber(value)}</td></tr>`)
           .join("");
+      }
+
+      function gradientUpdateCount(run, losses = {}) {
+        const direct = Number(losses.gradient_updates);
+        if (Number.isFinite(direct)) return direct;
+        const metrics = run?.train?.last_metrics || run?.last_metrics || {};
+        const metricValue = Number(metrics.gradient_updates);
+        if (Number.isFinite(metricValue)) return metricValue;
+        const trainValue = Number(run?.train?.gradient_updates);
+        return Number.isFinite(trainValue) ? trainValue : null;
+      }
+
+      function parallelEnvCount(run, losses = {}) {
+        const direct = Number(losses.num_envs);
+        if (Number.isFinite(direct) && direct > 0) return direct;
+        const candidateValue = Number(run?.candidate?.hyperparameters?.num_envs);
+        if (Number.isFinite(candidateValue) && candidateValue > 0) return candidateValue;
+        const trainValue = Number(run?.train?.vector_envs || run?.vector_envs);
+        if (Number.isFinite(trainValue) && trainValue > 0) return trainValue;
+        return 1;
+      }
+
+      function episodesInRecord(entry) {
+        if (isPolicyProbe(entry)) return 0;
+        const count = Number(entry?.episodes_in_window);
+        return Number.isFinite(count) && count > 0 ? count : 1;
+      }
+
+      function cumulativeCompletedEpisodes(records, index) {
+        let total = 0;
+        for (let idx = 0; idx <= index && idx < records.length; idx += 1) {
+          total += episodesInRecord(records[idx]);
+        }
+        return total;
       }
 
       async function refresh() {
@@ -1807,6 +1964,7 @@
           const run = data.run ?? {};
           latestRun = run;
           latestRun.current = current;
+          latestRun.latest_losses = data.latest_losses || {};
           if (data.visual) latestRun.visual = data.visual;
           if (data.visual_control) latestRun.visual_control = data.visual_control;
           updateVisualControls(activeVisualMode());
@@ -1816,15 +1974,17 @@
           updateText("title", run.run_id || "Autoresearch Live");
           updateText("subtitle", sessionDisplayLabel());
           updateText("runStatus", current.status ?? run.status ?? "running");
-          updateText("stepValue", current.step ?? "-");
-          updateText("episodeValue", current.episode ?? "-");
+          updateText("stepValue", current.env_steps ?? current.step ?? "-");
+          updateText("parallelEnvsValue", parallelEnvCount(latestRun, data.latest_losses || {}));
+          updateText("completedEpisodesValue", current.completed_episodes ?? current.episodes_complete ?? "-");
+          updateText("gradientUpdatesValue", gradientUpdateCount(latestRun, data.latest_losses || {}) ?? "-");
           updateText("avgReturnValue", formatNumber(current.avg_return, 2));
           updateText("successRateValue", formatPct(current.success_rate));
           const ghostLabel = bestGhostEpisodes.length ? ` · ghost ${shortText(bestGhostLabel, 28)}` : "";
           const counts = episodeRecordCounts(latestEpisodes);
           const recordLabel = counts.probeCount
             ? `${counts.collectionCount} collection / ${counts.probeCount} probe`
-            : `${counts.collectionCount} episodes`;
+            : `${counts.collectionCount} rollout batches`;
           updateText("episodesSeen", `${recordLabel}${ghostLabel}`);
           updateText("tag", run.tag ?? "-");
           updateText("previousBestTag", bestGhostLabel || "-");
@@ -1832,11 +1992,15 @@
 
           const returnChart = drawReturnChart(latestEpisodes);
           if (latestEpisodes.length) {
-            drawXTicks(
+            const budgetMode = budgetModeFor(latestRun);
+            drawXValueTicks(
               returnCtx,
               returnChart,
-              latestEpisodes.length,
+              returnChart.xValues || [],
               (index) => {
+                if (budgetMode === "episodes") {
+                  return String(cumulativeCompletedEpisodes(latestEpisodes, index));
+                }
                 const elapsed = Number(latestEpisodes[index]?.elapsed_seconds);
                 if (Number.isFinite(elapsed)) return `${Math.round(elapsed)}s`;
                 const episode = Number(latestEpisodes[index]?.episode);
@@ -1844,7 +2008,11 @@
               },
               { minLabelPx: 42 },
             );
-            drawXAxisCaption(returnCtx, returnChart, "Training time / record");
+            drawXAxisCaption(
+              returnCtx,
+              returnChart,
+              budgetMode === "episodes" ? "Completed rollouts" : "Training time",
+            );
           }
           drawLossBars(data.latest_losses);
           updateMetricRows(current, infoMetrics);
@@ -1875,8 +2043,8 @@
         if (!manifestPath) {
           const sampledStatus = visual.sampled_status || "waiting";
           const activeSample = visual.active_sample_index ? ` #${visual.active_sample_index}` : "";
-          updateText("frameStatus", `Sampled trajectory${activeSample}: ${sampledStatus.replaceAll("_", " ")}`);
-          showFramePlaceholder("Waiting for the next sampled trajectory. Switching into this mode during an episode starts at the next episode boundary.");
+          updateText("frameStatus", `Sampled rollout${activeSample}: ${sampledStatus.replaceAll("_", " ")}`);
+          showFramePlaceholder("Waiting for the next sampled rollout. Switching into this mode during a rollout starts at the next rollout boundary.");
           scheduleFrameRefresh(1000);
           return;
         }
@@ -1886,11 +2054,11 @@
           const manifest = await response.json();
           const frames = Array.isArray(manifest.frames) ? manifest.frames.filter(Boolean) : [];
           const sampleLabel = manifest.sample_index ? ` #${manifest.sample_index}` : "";
-          const episodeLabel = manifest.episode ? ` episode ${manifest.episode}` : "";
+          const episodeLabel = manifest.episode ? ` rollout ${manifest.episode}` : "";
           trajectorySampleLabel = `${sampleLabel}${episodeLabel}`.trim();
           if (!frames.length) {
-            updateText("frameStatus", `Sampled trajectory${sampleLabel}${episodeLabel}: ${manifest.status || "recording"}`);
-            showFramePlaceholder("Sampling trajectory frames. No frame has been written yet.");
+            updateText("frameStatus", `Sampled rollout${sampleLabel}${episodeLabel}: ${manifest.status || "recording"}`);
+            showFramePlaceholder("Sampling rollout frames. No frame has been written yet.");
             scheduleFrameRefresh(1000);
             return;
           }
@@ -1909,8 +2077,8 @@
           frameRefreshActive = true;
           simFrame.src = `/${framePath}?t=${Date.now()}`;
         } catch (error) {
-          updateText("frameStatus", "Sampled trajectory unavailable");
-          showFramePlaceholder("Waiting for a readable sampled trajectory manifest.");
+          updateText("frameStatus", "Sampled rollout unavailable");
+          showFramePlaceholder("Waiting for a readable sampled rollout manifest.");
           scheduleFrameRefresh(1000);
         }
       }
@@ -1923,7 +2091,7 @@
           frameRefreshActive = false;
           displayedFrameKind = "off";
           updateText("frameStatus", "Visuals off");
-          showFramePlaceholder("Visual rendering is off. Metrics, losses, and episode history are still streaming.");
+          showFramePlaceholder("Visual rendering is off. Metrics, losses, and rollout history is still streaming.");
           scheduleFrameRefresh(1000);
           return;
         }
@@ -1935,7 +2103,7 @@
         const expectsFrames = Boolean(explicitFrame || latestRun.frame_path || latestRun.render_mode === "rgb_array");
         if (!expectsFrames) {
           updateText("frameStatus", "Frames disabled");
-          showFramePlaceholder("Live frames are disabled for this benchmark. Metrics, losses, and episode history are still streaming.");
+          showFramePlaceholder("Live frames are disabled for this benchmark. Metrics, losses, and rollout history is still streaming.");
           scheduleFrameRefresh(1000);
           return;
         }
@@ -1954,7 +2122,7 @@
           scheduleFrameRefresh(1000);
         } else if (displayedFrameKind === "sampled_trajectory") {
           const sampleLabel = trajectorySampleLabel ? ` ${trajectorySampleLabel}` : "";
-          updateText("frameStatus", `Sampled trajectory${sampleLabel} - ${trajectoryFrames.length} frames`);
+          updateText("frameStatus", `Sampled rollout${sampleLabel} - ${trajectoryFrames.length} frames`);
           window.requestAnimationFrame(() => scheduleFrameRefresh(trajectoryFrameDelayMs));
         } else {
           updateText("frameStatus", "Live frame");
@@ -1966,7 +2134,7 @@
         frameRefreshActive = false;
         if (displayedFrameKind === "sampled_trajectory") {
           updateText("frameStatus", "No sampled frame yet");
-          showFramePlaceholder("Waiting for sampled trajectory frames. Metrics are still streaming.");
+          showFramePlaceholder("Waiting for sampled rollout frames. Metrics are still streaming.");
           scheduleFrameRefresh(1000);
         } else {
           updateText("frameStatus", "No frame yet");

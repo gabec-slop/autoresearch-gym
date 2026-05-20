@@ -350,6 +350,7 @@ def train_agent(
     writer = SummaryWriter(f"runs/{EXP_NAME}__{benchmark.train_seed}__{int(time.time())}")
 
     global_step = 0
+    gradient_updates = 0
     start_time = time.time()
     budget_seconds = getattr(benchmark, "train_seconds", None)
     deadline = start_time + float(budget_seconds) if budget_seconds is not None else None
@@ -409,6 +410,7 @@ def train_agent(
                 agent.q_optimizer.zero_grad()
                 qf_loss.backward()
                 agent.q_optimizer.step()
+                gradient_updates += 1
 
                 actor_loss_value = 0.0
                 alpha_loss_value = 0.0
@@ -448,6 +450,7 @@ def train_agent(
                     "actor_loss": actor_loss_value,
                     "alpha": float(agent.alpha),
                     "alpha_loss": alpha_loss_value,
+                    "gradient_updates": float(gradient_updates),
                 }
                 if global_step % 100 == 0:
                     writer.add_scalar("losses/qf1_values", qf1_a_values.mean().item(), global_step)
@@ -517,10 +520,14 @@ def train_agent(
         "time_budget_seconds": float(budget_seconds) if budget_seconds is not None else None,
         "stop_reason": stop_reason,
         "total_steps": global_step,
+        "env_steps": global_step,
+        "completed_episodes": len(episode_records),
+        "episode_batches": len(episode_records),
         "avg_return": float(np.mean([e["return"] for e in episode_records])) if episode_records else 0.0,
         "success_rate": float(np.mean([1.0 if e["success"] else 0.0 for e in episode_records])) if episode_records else 0.0,
         "avg_length": float(np.mean([e["length"] for e in episode_records])) if episode_records else 0.0,
         "last_metrics": last_metrics,
+        "gradient_updates": gradient_updates,
         "episode_records": episode_records,
         "wall_clock_seconds": wall_clock,
         "init_checkpoint": str(init_checkpoint) if init_checkpoint is not None else None,

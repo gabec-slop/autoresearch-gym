@@ -1,0 +1,13 @@
+#!/bin/sh
+set -eu
+
+repo_root="$(git rev-parse --show-toplevel)"
+cd "$repo_root"
+
+if [ -x ".venv/bin/python" ]; then
+  py=".venv/bin/python"
+else
+  py="python3"
+fi
+
+exec "$py" scripts/pre_commit_checks.py

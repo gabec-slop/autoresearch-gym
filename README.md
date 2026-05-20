@@ -62,6 +62,7 @@ Bundled tasks:
 | FetchPushDense | `autoresearch_gym/tasks/fetch_push_dense_v0/benchmark.json` | `autoresearch_gym/tasks/fetch_push_dense_v0/seed_trainable.py` or `seed_trainable_her.py` |
 | Panda pick-and-place | `autoresearch_gym/tasks/panda_pick_and_place_v0/benchmark.json` | `autoresearch_gym/tasks/panda_pick_and_place_v0/seed_trainable.py` or `seed_trainable_her.py` |
 | Panda bat-to-goal | `autoresearch_gym/tasks/bat_to_goal_v0/benchmark.json` | `autoresearch_gym/tasks/bat_to_goal_v0/seed_trainable.py` |
+| Panda bat-to-goal vectorized wall-clock | `autoresearch_gym/tasks/bat_to_goal_v0/benchmark_vectorized_wall_clock.json` | `autoresearch_gym/tasks/bat_to_goal_v0/seed_trainable_vectorized.py` |
 | MJLab Unitree G1 side kick | `autoresearch_gym/tasks/mjlab_g1_side_kick_v0/benchmark.json` | `autoresearch_gym/tasks/mjlab_g1_side_kick_v0/seed_trainable.py` |
 
 ## Testing Seed Performance Of A Task (With Dashboard)
@@ -205,6 +206,11 @@ flowchart LR
   typed `episode_records`: `train_episode`, `train_collection_window`, and, via
   runner-owned deterministic checks, `policy_probe`. Old run artifacts without
   `record_type` still render as collection episodes for dashboard compatibility.
+  In live metrics and train summaries, `total_steps`/`env_steps` are cumulative
+  environment transitions across all vector envs; `episodes_completed` is total
+  completed rollouts; `episode_batches` is the number of chart/logging records.
+  For `train_collection_window`, the record's `episode` field is the episode
+  batch index and `episodes_in_window` is the number of rollouts summarized.
 - Deterministic train-time probes are enabled by default when the agent exposes
   `act(obs, deterministic=True)`. Use `--no-train-probe` for throughput-only
   timing, or override cadence with `--probe-interval-seconds` and

@@ -20,6 +20,7 @@ from PIL import Image
 from autoresearch_gym.runner.curves import (
     aggregate_info_metrics,
     collection_episode_records,
+    completed_episode_count,
     is_policy_probe_record,
     make_policy_probe_record,
     scalar_info_metrics,
@@ -421,8 +422,9 @@ def make_policy_probe_callback(
             last_probe_elapsed = elapsed
             return {"train_probe_status": status}
 
+        collection_records = collection_episode_records(episode_records)
         record = make_policy_probe_record(
-            episode=len(display_records) + 1,
+            episode=completed_episode_count(collection_records),
             return_value=float(probe_summary.get("avg_return", 0.0)),
             length=float(probe_summary.get("avg_length", 0.0)),
             step=int(kwargs.get("total_steps") or 0),
@@ -583,6 +585,7 @@ def make_live_writer(
     candidate: Any,
     *,
     headless_env: bool = False,
+    budget_mode: str | None = None,
 ):
     if session_dir is None:
         return None
@@ -613,6 +616,7 @@ def make_live_writer(
     visual_episode = 0
     visual_sampling_eligible = False
     mujoco_renderers: dict[int, Any] = {}
+    effective_budget_mode = budget_mode or ("time" if benchmark.train_seconds is not None else "episodes")
 
     if visual_disabled_reason is not None or not control_path.exists():
         write_json_atomic(control_path, visual_control)
@@ -634,7 +638,7 @@ def make_live_writer(
                 renderer.update_scene(data)
                 return renderer.render()
             except Exception:
-                return None
+                pass
 
         try:
             return render_env.render(width=720, height=480)
@@ -801,16 +805,21 @@ def make_live_writer(
         current_episode: int | None = None,
         episode_return: float = 0.0,
         episode_length: int = 0,
+        **_: Any,
     ) -> dict[str, Any]:
         nonlocal last_frame_at, sampled_status
         control = read_visual_control()
         visual_mode = str(control.get("visual_mode", DEFAULT_VISUAL_CONTROL["visual_mode"]))
-        episode_number = int(current_episode or len(episode_records) + 1)
+        active_episode_number = int(current_episode or len(episode_records) + 1)
 
         if sampled_episode is not None and visual_mode != "sampled_trajectory":
             stop_sampled_episode("interrupted", "visual_mode_changed")
+        if sampled_episode is not None and status in {"evaluating", "finished"}:
+            stop_sampled_episode("interrupted", "training_finished")
 
         collection_records = collection_episode_records(episode_records)
+        completed_episodes = completed_episode_count(collection_records)
+        completed_episode_batches = len(collection_records)
         probe_records = [record for record in episode_records if is_policy_probe_record(record)]
         avg_return = float(np.mean([entry["return"] for entry in collection_records])) if collection_records else 0.0
         success_rate = (
@@ -862,6 +871,7 @@ def make_live_writer(
                         "updated_at": time.time(),
                         "train_episodes": benchmark.train_episodes,
                         "train_seconds": benchmark.train_seconds,
+                        "budget_mode": effective_budget_mode,
                         "eval_episodes": benchmark.eval_episodes,
                         "max_steps": benchmark.max_steps,
                         "render_mode": benchmark.render_mode,
@@ -875,13 +885,19 @@ def make_live_writer(
                     "current": {
                         "status": status,
                         "step": int(total_steps),
-                        "episode": episode_number,
+                        "env_steps": int(total_steps),
+                        "episode": completed_episode_batches,
+                        "episode_batch": completed_episode_batches,
+                        "active_episode": active_episode_number,
+                        "active_episode_batch": active_episode_number,
                         "episode_return": float(episode_return),
                         "episode_length": int(episode_length),
                         "avg_return": avg_return,
                         "success_rate": success_rate,
                         "info_metrics": info_aggregates,
-                        "episodes_complete": len(collection_records),
+                        "episodes_complete": completed_episodes,
+                        "completed_episodes": completed_episodes,
+                        "episode_batches": completed_episode_batches,
                     },
                     "episodes": episode_records[-400:],
                     "latest_losses": last_metrics,
@@ -926,6 +942,7 @@ def compact_status_line(
     current_episode: int | None = None,
     episode_return: float = 0.0,
     episode_length: int = 0,
+    prefer_episode_budget: bool = False,
 ) -> str:
     total_seconds = max(int(round(elapsed_seconds)), 0)
     hours, remainder = divmod(total_seconds, 3600)
@@ -937,6 +954,7 @@ def compact_status_line(
         "finished": "done",
     }.get(status, status)
     collection_records = collection_episode_records(episode_records)
+    completed_episodes = completed_episode_count(collection_records)
     avg_return = float(np.mean([entry["return"] for entry in collection_records])) if collection_records else 0.0
     success_rate = (
         float(np.mean([1.0 if entry["success"] else 0.0 for entry in collection_records]))
@@ -944,17 +962,17 @@ def compact_status_line(
         else 0.0
     )
     update_label = "?" if last_metrics is None else "Y"
-    if train_seconds is not None and train_seconds > 0:
+    if not prefer_episode_budget and train_seconds is not None and train_seconds > 0:
         progress_fraction = min(max(elapsed_seconds / train_seconds, 0.0), 1.0)
         budget_elapsed_seconds = min(total_seconds, max(int(round(train_seconds)), 1))
         budget_label = f"time={budget_elapsed_seconds}/{int(round(train_seconds))}s"
     else:
         episode_budget = max(int(train_episodes or 0), 1)
-        progress_fraction = min(max(len(collection_records) / episode_budget, 0.0), 1.0)
-        budget_label = f"eps={len(collection_records)}/{episode_budget}"
+        progress_fraction = min(max(completed_episodes / episode_budget, 0.0), 1.0)
+        budget_label = f"eps={completed_episodes}/{episode_budget}"
     return (
         f"t={elapsed_label} pct={100.0 * progress_fraction:.1f} {budget_label} st={status_label} step={int(total_steps)} "
-        f"ep={int(current_episode or len(collection_records) + 1)} done={len(collection_records)} "
+        f"ep={int(current_episode or len(collection_records) + 1)} done={completed_episodes} "
         f"avg={avg_return:.3f} succ={success_rate:.3f} cur={float(episode_return):.3f} "
         f"len={int(episode_length)} upd={update_label}"
     )
@@ -967,6 +985,7 @@ def make_compact_status_writer(
     train_episodes: int | None = None,
     emit_stderr: bool = True,
     compact_status_file: Path | None = None,
+    prefer_episode_budget: bool = False,
 ):
     started_at = time.perf_counter()
     last_emit_at = 0.0
@@ -985,6 +1004,7 @@ def make_compact_status_writer(
         current_episode: int | None = None,
         episode_return: float = 0.0,
         episode_length: int = 0,
+        **_: Any,
     ) -> None:
         del env
         nonlocal last_emit_at
@@ -1004,6 +1024,7 @@ def make_compact_status_writer(
             current_episode=current_episode,
             episode_return=episode_return,
             episode_length=episode_length,
+            prefer_episode_budget=prefer_episode_budget,
         )
         if emit_stderr:
             print(line, file=sys.stderr, flush=True)
@@ -1041,18 +1062,33 @@ def normalize_train_summary_curve(train_summary: dict[str, Any]) -> None:
         return
     train_summary.setdefault("last_metrics", None)
     train_summary.setdefault("total_steps", 0)
+    train_summary.setdefault("env_steps", int(train_summary.get("total_steps", 0) or 0))
     collection_records = collection_episode_records(records)
-    train_summary["episodes_completed"] = len(collection_records)
+    completed_episodes = completed_episode_count(collection_records)
+    train_summary["episodes_completed"] = completed_episodes
+    train_summary["completed_episodes"] = completed_episodes
+    train_summary["episode_batches"] = len(collection_records)
+    weights = np.array(
+        [
+            max(1, int(record.get("episodes_in_window") or 1))
+            for record in collection_records
+        ],
+        dtype=np.float64,
+    )
     train_summary["avg_return"] = (
-        float(np.mean([record["return"] for record in collection_records])) if collection_records else 0.0
+        float(np.average([record["return"] for record in collection_records], weights=weights))
+        if collection_records
+        else 0.0
     )
     train_summary["success_rate"] = (
-        float(np.mean([1.0 if record.get("success") else 0.0 for record in collection_records]))
+        float(np.average([1.0 if record.get("success") else 0.0 for record in collection_records], weights=weights))
         if collection_records
         else 0.0
     )
     train_summary["avg_length"] = (
-        float(np.mean([record["length"] for record in collection_records])) if collection_records else 0.0
+        float(np.average([record["length"] for record in collection_records], weights=weights))
+        if collection_records
+        else 0.0
     )
     probe_records = [record for record in records if is_policy_probe_record(record)]
     train_summary["policy_probe_records"] = len(probe_records)
@@ -1392,7 +1428,22 @@ def run_experiment(
     run_id = time.strftime("%Y%m%d-%H%M%S") + f"-{tag}"
     run_dir = out_dir / run_id
     run_dir.mkdir(parents=True, exist_ok=True)
-    live_writer = make_live_writer(session_dir, run_id, tag, benchmark, candidate, headless_env=headless_env)
+    budget_mode = (
+        "episodes"
+        if train_episodes_override is not None and train_seconds_override is None
+        else "time"
+        if benchmark.train_seconds is not None
+        else "episodes"
+    )
+    live_writer = make_live_writer(
+        session_dir,
+        run_id,
+        tag,
+        benchmark,
+        candidate,
+        headless_env=headless_env,
+        budget_mode=budget_mode,
+    )
     compact_status_enabled = bool(compact_status or compact_status_file is not None)
     status_writer = (
         make_compact_status_writer(
@@ -1401,6 +1452,7 @@ def run_experiment(
             train_episodes=benchmark.train_episodes,
             emit_stderr=bool(compact_status),
             compact_status_file=compact_status_file,
+            prefer_episode_budget=(budget_mode == "episodes"),
         )
         if compact_status_enabled
         else None
@@ -1488,6 +1540,7 @@ def run_experiment(
             "env_kwargs": benchmark.env_kwargs,
             "train_episodes": benchmark.train_episodes,
             "train_seconds": benchmark.train_seconds,
+            "budget_mode": budget_mode,
             "eval_episodes": benchmark.eval_episodes,
             "max_steps": benchmark.max_steps,
             "primary_metric": benchmark.primary_metric,
