@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Optional
 
+import gymnasium as gym
 import numpy as np
 
 
@@ -45,7 +46,7 @@ class AutoresearchPandaPickAndPlaceEnv:
             render_roll=render_roll,
         )
         _recolor_goal_marker(env)
-        return env
+        return _RejectInitialSuccessWrapper(env)
 
 
 def _recolor_goal_marker(env) -> None:
@@ -58,3 +59,40 @@ def _recolor_goal_marker(env) -> None:
         rgbaColor=np.array([0.05, 0.25, 1.0, 0.65]),
         specularColor=np.zeros(3),
     )
+
+
+class _RejectInitialSuccessWrapper(gym.Wrapper):
+    """Reject reset samples that are already solved before any action."""
+
+    def __init__(self, env: gym.Env, max_attempts: int = 64) -> None:
+        super().__init__(env)
+        self.max_attempts = int(max_attempts)
+
+    def reset(self, *, seed: int | None = None, options: dict | None = None):
+        last_obs = None
+        last_info = None
+        for attempt in range(self.max_attempts):
+            attempt_seed = None if seed is None else int(seed) + attempt * 1009
+            obs, info = self.env.reset(seed=attempt_seed, options=options)
+            last_obs = obs
+            last_info = dict(info)
+            initial_distance = _goal_distance(obs)
+            if initial_distance >= _success_threshold(self.env):
+                last_info["initial_goal_distance"] = initial_distance
+                last_info["initial_resample_attempts"] = attempt
+                return obs, last_info
+
+        assert last_obs is not None and last_info is not None
+        last_info["initial_goal_distance"] = _goal_distance(last_obs)
+        last_info["initial_resample_attempts"] = self.max_attempts
+        return last_obs, last_info
+
+
+def _goal_distance(obs) -> float:
+    achieved = np.asarray(obs["achieved_goal"], dtype=np.float32)
+    desired = np.asarray(obs["desired_goal"], dtype=np.float32)
+    return float(np.linalg.norm(achieved - desired))
+
+
+def _success_threshold(env) -> float:
+    return float(getattr(env.unwrapped.task, "distance_threshold", 0.05))

@@ -20,6 +20,6 @@
     "Use this benchmark when comparing Panda pick-and-place training recipes under equal wall-clock time.",
     "train_episodes is a high safety cap; train_seconds is the intended budget.",
     "The HER seed is a natural alternative for this goal-conditioned manipulation task.",
-    "AutoresearchPandaPickAndPlaceDense-v0 delegates physics to PandaGym and only recolors the non-collidable goal marker for visual clarity."
+    "AutoresearchPandaPickAndPlaceDense-v0 delegates physics to PandaGym, recolors the non-collidable goal marker for visual clarity, and rejects reset samples that are already inside the success threshold."
   ]
 }

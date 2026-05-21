@@ -16,7 +16,7 @@
   "device": "auto",
   "primary_metric_mode": "maximize",
   "notes": [
-    "AutoresearchPandaPickAndPlaceDense-v0 delegates physics to PandaGym and only recolors the non-collidable goal marker for visual clarity.",
+    "AutoresearchPandaPickAndPlaceDense-v0 delegates physics to PandaGym, recolors the non-collidable goal marker for visual clarity, and rejects reset samples that are already inside the success threshold.",
     "The dense reward gives the outer loop a smoother learning signal than sparse pick-and-place success.",
     "The bundled seed flattens PandaGym goal-conditioned observations for a simple SAC baseline."
   ]

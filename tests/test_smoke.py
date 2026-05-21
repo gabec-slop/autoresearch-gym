@@ -892,6 +892,25 @@ def test_panda_pick_and_place_goal_marker_is_visually_distinct_when_panda_gym_is
         env.close()
 
 
+def test_panda_pick_and_place_rejects_initial_goal_overlap_when_panda_gym_is_installed() -> None:
+    pytest.importorskip("panda_gym")
+    pytest.importorskip("pybullet")
+
+    env = gym.make("AutoresearchPandaPickAndPlaceDense-v0", render_mode="rgb_array", renderer="Tiny")
+    try:
+        threshold = env.unwrapped.task.distance_threshold
+        for seed in (665, 4520):
+            obs, info = env.reset(seed=seed)
+            distance = float(np.linalg.norm(obs["achieved_goal"] - obs["desired_goal"]))
+
+            assert distance >= threshold
+            assert not bool(info["is_success"])
+            assert info["initial_goal_distance"] == pytest.approx(distance)
+            assert info["initial_resample_attempts"] > 0
+    finally:
+        env.close()
+
+
 def test_hopper_seed_task_resets_and_steps_when_mujoco_is_installed() -> None:
     pytest.importorskip("mujoco")
     from autoresearch_gym.tasks.hopper_v0.seed_trainable import RewardRecipeWrapper
