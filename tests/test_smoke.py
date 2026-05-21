@@ -911,6 +911,21 @@ def test_panda_pick_and_place_rejects_initial_goal_overlap_when_panda_gym_is_ins
         env.close()
 
 
+def test_panda_pick_and_place_suppresses_pybullet_background_argv_echo(capfd: pytest.CaptureFixture[str]) -> None:
+    pytest.importorskip("panda_gym")
+    pytest.importorskip("pybullet")
+    capfd.readouterr()
+
+    env = gym.make("AutoresearchPandaPickAndPlaceDense-v0", render_mode="rgb_array", renderer="Tiny")
+    env.close()
+    captured = capfd.readouterr()
+
+    assert "argv[" not in captured.out
+    assert "argv[" not in captured.err
+    assert "background_color" not in captured.out
+    assert "background_color" not in captured.err
+
+
 def test_hopper_seed_task_resets_and_steps_when_mujoco_is_installed() -> None:
     pytest.importorskip("mujoco")
     from autoresearch_gym.tasks.hopper_v0.seed_trainable import RewardRecipeWrapper

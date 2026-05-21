@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+import ctypes
+import os
+import sys
+from contextlib import contextmanager
 from typing import Optional
 
 import gymnasium as gym
@@ -28,23 +32,24 @@ class AutoresearchPandaPickAndPlaceEnv:
         render_roll: float = 0,
     ):
         try:
-            from panda_gym.envs.panda_tasks import PandaPickAndPlaceEnv
+            with _suppress_native_output():
+                from panda_gym.envs.panda_tasks import PandaPickAndPlaceEnv
+
+                env = PandaPickAndPlaceEnv(
+                    render_mode=render_mode,
+                    reward_type=reward_type,
+                    control_type=control_type,
+                    renderer=renderer,
+                    render_width=render_width,
+                    render_height=render_height,
+                    render_target_position=render_target_position,
+                    render_distance=render_distance,
+                    render_yaw=render_yaw,
+                    render_pitch=render_pitch,
+                    render_roll=render_roll,
+                )
         except ModuleNotFoundError as exc:
             raise ModuleNotFoundError("AutoresearchPandaPickAndPlaceEnv requires the `panda` extra.") from exc
-
-        env = PandaPickAndPlaceEnv(
-            render_mode=render_mode,
-            reward_type=reward_type,
-            control_type=control_type,
-            renderer=renderer,
-            render_width=render_width,
-            render_height=render_height,
-            render_target_position=render_target_position,
-            render_distance=render_distance,
-            render_yaw=render_yaw,
-            render_pitch=render_pitch,
-            render_roll=render_roll,
-        )
         _recolor_goal_marker(env)
         return _RejectInitialSuccessWrapper(env)
 
@@ -96,3 +101,35 @@ def _goal_distance(obs) -> float:
 
 def _success_threshold(env) -> float:
     return float(getattr(env.unwrapped.task, "distance_threshold", 0.05))
+
+
+@contextmanager
+def _suppress_native_output():
+    """Silence PyBullet's native argv echo during client construction."""
+
+    sys.stdout.flush()
+    sys.stderr.flush()
+    _flush_native_stdio()
+    devnull_fd = os.open(os.devnull, os.O_WRONLY)
+    saved_stdout_fd = os.dup(1)
+    saved_stderr_fd = os.dup(2)
+    try:
+        os.dup2(devnull_fd, 1)
+        os.dup2(devnull_fd, 2)
+        yield
+    finally:
+        sys.stdout.flush()
+        sys.stderr.flush()
+        _flush_native_stdio()
+        os.dup2(saved_stdout_fd, 1)
+        os.dup2(saved_stderr_fd, 2)
+        os.close(saved_stdout_fd)
+        os.close(saved_stderr_fd)
+        os.close(devnull_fd)
+
+
+def _flush_native_stdio() -> None:
+    try:
+        ctypes.CDLL(None).fflush(None)
+    except Exception:
+        pass
