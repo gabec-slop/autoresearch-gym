@@ -1328,73 +1328,23 @@ class UtilizationMonitor:
                 summary[f"max_{field}"] = float(np.max(values))
         if self.samples and self.samples[0].get("name"):
             summary["nvidia_smi_device_name"] = self.samples[0]["name"]
-        summary["notes"] = utilization_notes(summary, train_summary)
+        summary["flags"] = utilization_flags(summary, train_summary)
         return summary
 
 
-def utilization_notes(utilization: dict[str, Any], train_summary: dict[str, Any]) -> str:
-    device = utilization.get("cuda_device_name") or utilization.get("nvidia_smi_device_name") or utilization.get("device", "unknown device")
-    steps_per_second = float(utilization.get("steps_per_second", 0.0) or 0.0)
-    updates_per_second_raw = utilization.get("updates_per_second")
-    fragments = [
-        f"Training ran on {device}.",
-        f"Throughput was {steps_per_second:.1f} environment steps/sec",
-    ]
-    if updates_per_second_raw is not None:
-        updates_per_second = float(updates_per_second_raw or 0.0)
-        fragments.append(f"and {updates_per_second:.1f} reported gradient updates/sec")
-    fragments[-1] += "."
-    if updates_per_second_raw is None:
-        fragments.append(
-            "The trainable did not report gradient_updates, so updates_per_second is unavailable rather than a measured zero."
-        )
-
+def utilization_flags(utilization: dict[str, Any], train_summary: dict[str, Any]) -> dict[str, bool]:
     avg_gpu = utilization.get("avg_gpu_util_percent")
     max_gpu = utilization.get("max_gpu_util_percent")
-    if avg_gpu is not None and max_gpu is not None:
-        fragments.append(f"NVIDIA GPU utilization averaged {float(avg_gpu):.1f}% and peaked at {float(max_gpu):.1f}%.")
-        if float(avg_gpu) < 50.0:
-            fragments.append(
-                "The run appears GPU-underutilized; candidates may try larger batches, more update work per collection step, or more vector environments."
-            )
-        elif float(avg_gpu) < 85.0:
-            fragments.append(
-                "The run used the GPU moderately; candidates can still explore batch size, UTD ratio, and vector environment count."
-            )
-        else:
-            fragments.append(
-                "The run appears close to GPU-saturated; candidates should prefer better learning efficiency over simply adding compute."
-            )
-    else:
-        cpu_util = float(utilization.get("process_cpu_util_percent", 0.0) or 0.0)
-        visible_nvidia = utilization.get("visible_nvidia_device_name")
-        if visible_nvidia and str(utilization.get("device")) == "cpu":
-            fragments.append(
-                f"`nvidia-smi` can see {visible_nvidia}, but PyTorch selected CPU; check for a CPU-only Torch wheel or request `device=cuda` explicitly."
-            )
-        avg_mps_driver = utilization.get("avg_mps_driver_allocated_mb")
-        max_mps_driver = utilization.get("max_mps_driver_allocated_mb")
-        mps_limit = utilization.get("max_mps_recommended_max_memory_mb") or utilization.get("avg_mps_recommended_max_memory_mb")
-        if avg_mps_driver is not None and max_mps_driver is not None:
-            fragments.append(
-                f"Apple MPS driver memory averaged {float(avg_mps_driver):.1f} MB and peaked at {float(max_mps_driver):.1f} MB."
-            )
-            if mps_limit:
-                memory_fraction = 100.0 * float(max_mps_driver) / max(float(mps_limit), 1e-9)
-                fragments.append(f"Peak MPS memory was about {memory_fraction:.1f}% of the recommended working-set limit.")
-            fragments.append(
-                f"Process CPU time was {cpu_util:.1f}% of wall time. macOS/MPS does not expose NVIDIA-style GPU utilization through nvidia-smi."
-            )
-        else:
-            fragments.append(
-                f"No GPU utilization samples were available; process CPU time was {cpu_util:.1f}% of wall time."
-            )
-
-    if train_summary.get("vector_envs") is not None:
-        fragments.append(
-            f"The trainable reported {train_summary.get('vector_envs')} vector environments and {train_summary.get('gradient_updates', 0)} gradient updates."
-        )
-    return " ".join(fragments)
+    visible_nvidia = utilization.get("visible_nvidia_device_name")
+    avg_mps_driver = utilization.get("avg_mps_driver_allocated_mb")
+    max_mps_driver = utilization.get("max_mps_driver_allocated_mb")
+    return {
+        "gradient_updates_reported": train_summary.get("gradient_updates") is not None,
+        "gpu_metrics_available": avg_gpu is not None and max_gpu is not None,
+        "mps_memory_metrics_available": avg_mps_driver is not None and max_mps_driver is not None,
+        "torch_selected_cpu_with_visible_nvidia": bool(visible_nvidia and str(utilization.get("device")) == "cpu"),
+        "vector_envs_reported": train_summary.get("vector_envs") is not None,
+    }
 
 
 def run_experiment(
@@ -1571,7 +1521,6 @@ def run_experiment(
         "train": public_summary(train_summary),
         "eval": public_summary(eval_summary),
         "system_utilization": utilization_summary,
-        "system_utilization_notes": utilization_summary["notes"],
         "artifacts": {
             "checkpoint_path": str(checkpoint_path),
         },

@@ -21,7 +21,7 @@ from autoresearch_gym.runner.experiment import (
     make_policy_probe_callback,
     normalize_train_summary_curve,
     normalize_run_tag,
-    utilization_notes,
+    utilization_flags,
     validate_train_curve_contract,
 )
 from autoresearch_gym.runner.curves import (
@@ -71,23 +71,22 @@ def test_run_tag_normalization_collapses_duplicate_pass_prefix() -> None:
     assert normalize_run_tag("pass03-amplify-winner") == "pass03-amplify-winner"
 
 
-def test_utilization_notes_distinguish_unreported_gradient_updates() -> None:
-    notes = utilization_notes(
+def test_utilization_flags_distinguish_unreported_gradient_updates() -> None:
+    flags = utilization_flags(
         {"device": "cpu", "steps_per_second": 3.0, "updates_per_second": None},
         {"total_steps": 900},
     )
 
-    assert "updates_per_second is unavailable rather than a measured zero" in notes
+    assert flags["gradient_updates_reported"] is False
 
 
-def test_utilization_notes_show_reported_zero_gradient_updates() -> None:
-    notes = utilization_notes(
+def test_utilization_flags_show_reported_zero_gradient_updates() -> None:
+    flags = utilization_flags(
         {"device": "cpu", "steps_per_second": 3.0, "updates_per_second": 0.0},
         {"total_steps": 900, "gradient_updates": 0},
     )
 
-    assert "0.0 reported gradient updates/sec" in notes
-    assert "unavailable" not in notes
+    assert flags["gradient_updates_reported"] is True
 
 
 def test_trainable_contract_checker_requires_gradient_update_counter() -> None:
@@ -147,8 +146,8 @@ def test_trainable_contract_checker_rejects_probe_axis_after_collection_count() 
     assert "policy_probe episode axis 3 exceeds completed collection rollouts 1" in "\n".join(errors)
 
 
-def test_utilization_notes_warn_when_nvidia_gpu_is_visible_but_cpu_selected() -> None:
-    notes = utilization_notes(
+def test_utilization_flags_detect_when_nvidia_gpu_is_visible_but_cpu_selected() -> None:
+    flags = utilization_flags(
         {
             "device": "cpu",
             "steps_per_second": 3.0,
@@ -158,8 +157,7 @@ def test_utilization_notes_warn_when_nvidia_gpu_is_visible_but_cpu_selected() ->
         {"total_steps": 900},
     )
 
-    assert "can see NVIDIA GeForce RTX 3060" in notes
-    assert "CPU-only Torch wheel" in notes
+    assert flags["torch_selected_cpu_with_visible_nvidia"] is True
 
 
 def test_headless_env_override_disables_render_mode_when_supported() -> None:
