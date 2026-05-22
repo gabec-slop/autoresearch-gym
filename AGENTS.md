@@ -219,7 +219,7 @@ should be scoped to Darwin plus arm64, not every arm64 platform.
 After adding or changing a task, environment, benchmark, seed, runner behavior,
 or dashboard behavior:
 
-- before committing code, run `scripts/pre_commit_checks.py`; this is the
+- before committing code, run `.venv/bin/python scripts/pre_commit_checks.py`; this is the
   repo-level gate for unit smoke tests plus seed logging/visual artifact smoke
 - run focused unit or smoke tests for the changed surface
 - run the relevant optional-extra smoke when simulator dependencies are involved

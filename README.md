@@ -63,7 +63,7 @@ Bundled tasks:
 | Panda pick-and-place | `autoresearch_gym/tasks/panda_pick_and_place_v0/benchmark.json` | `autoresearch_gym/tasks/panda_pick_and_place_v0/seed_trainable.py` or `seed_trainable_her.py` |
 | Panda bat-to-goal | `autoresearch_gym/tasks/bat_to_goal_v0/benchmark.json` | `autoresearch_gym/tasks/bat_to_goal_v0/seed_trainable.py` |
 | Panda bat-to-goal vectorized wall-clock | `autoresearch_gym/tasks/bat_to_goal_v0/benchmark_vectorized_wall_clock.json` | `autoresearch_gym/tasks/bat_to_goal_v0/seed_trainable_vectorized.py` |
-| MJLab Unitree G1 side kick | `autoresearch_gym/tasks/mjlab_g1_side_kick_v0/benchmark.json` | `autoresearch_gym/tasks/mjlab_g1_side_kick_v0/seed_trainable.py` |
+| G1 velocity command | `autoresearch_gym/tasks/g1_velocity_command_v0/benchmark.json` | `autoresearch_gym/tasks/g1_velocity_command_v0/seed_trainable.py` |
 
 ## Testing Seed Performance Of A Task (With Dashboard)
 
@@ -128,7 +128,7 @@ uv run autoresearch-gym run \
   --no-record
 ```
 
-## Launching A Multi-Epoch Autoresearch Session
+## Launching A Multi-Pass Autoresearch Session
 
 Ask the coding agent to read [AUTORESEARCH.md](AUTORESEARCH.md) before it starts
 mutating candidates. The short version is:
@@ -137,8 +137,9 @@ mutating candidates. The short version is:
 2. Copy the selected seed verbatim to `candidates/pass01_baseline.py`.
 3. Run pass 1.
 4. For each later pass, inspect the latest evidence, write one new
-   `candidates/passNN_<slug>.py`, run that already-authored candidate, then keep
-   or reject it based on fixed eval.
+   `candidates/passNN_<slug>.py`, run that already-authored candidate, then
+   classify it as `screening_leader`, `frontier`, or `reject` based on fixed
+   eval and logged secondary evidence.
 5. Do not prewrite a queue of candidates. The next pass can come from an idea
    backlog or from a new observation in the previous run.
 
