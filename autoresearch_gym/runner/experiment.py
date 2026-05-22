@@ -608,6 +608,7 @@ def make_live_writer(
     sampled_frames: list[str] = []
     sampled_status = "idle"
     sampled_last_step = -1
+    sampled_env_id: int | None = None
     sampled_trajectory_count = 0
     sampled_trajectory_index: int | None = None
     latest_trajectory_index: int | None = None
@@ -615,6 +616,7 @@ def make_live_writer(
     latest_trajectory_frame_path: Path | None = None
     visual_episode = 0
     visual_sampling_eligible = False
+    visual_env_ids: set[int] = set()
     mujoco_renderers: dict[int, Any] = {}
     effective_budget_mode = budget_mode or ("time" if benchmark.train_seconds is not None else "episodes")
 
@@ -675,6 +677,7 @@ def make_live_writer(
             "tag": tag,
             "sample_index": sampled_trajectory_index,
             "episode": int(episode),
+            "env_id": sampled_env_id,
             "status": status,
             "reason": reason,
             "updated_at": time.time(),
@@ -688,7 +691,8 @@ def make_live_writer(
         write_json_atomic(sampled_manifest_path, payload)
 
     def stop_sampled_episode(status: str, reason: str | None = None) -> None:
-        nonlocal sampled_episode, sampled_manifest_path, sampled_frames, sampled_status, sampled_last_step, sampled_trajectory_index
+        nonlocal sampled_episode, sampled_manifest_path, sampled_frames, sampled_status, sampled_last_step
+        nonlocal sampled_env_id, sampled_trajectory_index
         if sampled_episode is not None:
             write_sampled_manifest(status, sampled_episode, reason)
         sampled_episode = None
@@ -696,15 +700,17 @@ def make_live_writer(
         sampled_frames = []
         sampled_status = "idle" if status == "completed" else status
         sampled_last_step = -1
+        sampled_env_id = None
         sampled_trajectory_index = None
 
-    def start_sampled_episode(episode: int) -> None:
+    def start_sampled_episode(env: gym.Env[np.ndarray, np.ndarray], episode: int) -> None:
         nonlocal sampled_episode, sampled_manifest_path, sampled_frames, sampled_status, sampled_last_step
-        nonlocal sampled_trajectory_count, sampled_trajectory_index, latest_trajectory_index
+        nonlocal sampled_env_id, sampled_trajectory_count, sampled_trajectory_index, latest_trajectory_index
         sampled_trajectory_count += 1
         sampled_trajectory_index = sampled_trajectory_count
         latest_trajectory_index = sampled_trajectory_index
         sampled_episode = int(episode)
+        sampled_env_id = id(env)
         sampled_status = "recording"
         sampled_last_step = -1
         sampled_frames = []
@@ -715,6 +721,8 @@ def make_live_writer(
     def sample_trajectory_frame(env: gym.Env[np.ndarray, np.ndarray], episode_length: int, reason: str) -> None:
         nonlocal sampled_last_step, latest_trajectory_manifest_path, latest_trajectory_frame_path
         if sampled_episode is None or sampled_manifest_path is None:
+            return
+        if sampled_env_id is not None and id(env) != sampled_env_id:
             return
         if episode_length == sampled_last_step and reason != "episode_end":
             return
@@ -739,9 +747,12 @@ def make_live_writer(
             and should_sample_visual_episode(visual_episode, control)
         )
         if sampled_episode is not None:
-            stop_sampled_episode("interrupted", "env_reset")
+            if sampled_env_id == id(env):
+                stop_sampled_episode("interrupted", "env_reset")
+            else:
+                return
         if visual_sampling_eligible:
-            start_sampled_episode(visual_episode)
+            start_sampled_episode(env, visual_episode)
             sample_trajectory_frame(env, 0, "episode_start")
         elif str(control.get("visual_mode")) == "sampled_trajectory":
             sampled_status = "skipped"
@@ -760,6 +771,8 @@ def make_live_writer(
             return
         if visual_mode != "sampled_trajectory":
             return
+        if sampled_episode is not None and sampled_env_id is not None and id(env) != sampled_env_id:
+            return
         if sampled_episode is None:
             sampled_status = "waiting_for_episode_boundary" if not visual_sampling_eligible else sampled_status
             return
@@ -774,6 +787,7 @@ def make_live_writer(
         def __init__(self, env: gym.Env[np.ndarray, np.ndarray]) -> None:
             super().__init__(env)
             self._live_episode_length = 0
+            visual_env_ids.add(id(self))
 
         def __getattr__(self, name: str) -> Any:
             if name.startswith("_"):
@@ -856,8 +870,10 @@ def make_live_writer(
                 "trajectory_latest_frame_path": trajectory_latest_frame,
                 "sampled_status": sampled_status,
                 "active_sampled_episode": sampled_episode,
+                "active_sampled_env_id": sampled_env_id,
                 "active_sample_index": sampled_trajectory_index,
                 "latest_sample_index": latest_trajectory_index,
+                "observed_env_count": len(visual_env_ids),
                 "disabled_reason": visual_disabled_reason,
             }
             write_json_atomic(
@@ -881,6 +897,7 @@ def make_live_writer(
                         "trajectory_latest_frame_path": trajectory_latest_frame,
                         "visual_control": control,
                         "visual": visual_payload,
+                        "observed_env_count": len(visual_env_ids),
                     },
                     "current": {
                         "status": status,
@@ -903,6 +920,7 @@ def make_live_writer(
                     "latest_losses": last_metrics,
                     "visual_control": control,
                     "visual": visual_payload,
+                    "observed_env_count": len(visual_env_ids),
                 },
             )
 

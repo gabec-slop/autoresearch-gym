@@ -2140,6 +2140,16 @@
       function parallelEnvCount(run, losses = {}) {
         const direct = Number(losses.num_envs);
         if (Number.isFinite(direct) && direct > 0) return direct;
+        const liveObserved = Number(run?.observed_env_count || run?.visual?.observed_env_count);
+        if (Number.isFinite(liveObserved) && liveObserved > 0) return liveObserved;
+        const episodeEnvIndices = (Array.isArray(run?.episodes) ? run.episodes : [])
+          .map((episode) => Number(episode?.env_index))
+          .filter((envIndex) => Number.isInteger(envIndex) && envIndex >= 0);
+        if (episodeEnvIndices.length) return Math.max(...episodeEnvIndices) + 1;
+        const trainNumEnv = Number(run?.train?.num_envs);
+        if (Number.isFinite(trainNumEnv) && trainNumEnv > 0) return trainNumEnv;
+        const curriculumNumEnv = Number(run?.train?.curriculum?.num_envs || run?.curriculum?.num_envs);
+        if (Number.isFinite(curriculumNumEnv) && curriculumNumEnv > 0) return curriculumNumEnv;
         const candidateValue = Number(run?.candidate?.hyperparameters?.num_envs);
         if (Number.isFinite(candidateValue) && candidateValue > 0) return candidateValue;
         const trainValue = Number(run?.train?.vector_envs || run?.vector_envs);
@@ -2173,6 +2183,7 @@
           const run = data.run ?? {};
           latestRun = run;
           latestRun.current = current;
+          latestRun.episodes = latestEpisodes;
           latestRun.latest_losses = data.latest_losses || {};
           if (data.visual) latestRun.visual = data.visual;
           if (data.visual_control) latestRun.visual_control = data.visual_control;

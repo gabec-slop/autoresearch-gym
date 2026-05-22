@@ -403,6 +403,126 @@ def test_live_writer_sampled_trajectory_records_full_episode(tmp_path) -> None:
     assert manifest["frame_count"] >= 3
 
 
+def test_live_writer_sampled_trajectory_is_pinned_to_one_env(tmp_path) -> None:
+    class DummyVisualEnv(gym.Env):
+        metadata = {"render_modes": ["rgb_array"]}
+
+        def __init__(self, value: int) -> None:
+            self.observation_space = gym.spaces.Box(low=0.0, high=1.0, shape=(1,), dtype=np.float32)
+            self.action_space = gym.spaces.Box(low=-1.0, high=1.0, shape=(1,), dtype=np.float32)
+            self.value = value
+            self.steps = 0
+
+        def reset(self, *, seed=None, options=None):
+            super().reset(seed=seed)
+            self.steps = 0
+            return np.zeros(1, dtype=np.float32), {}
+
+        def step(self, action):
+            self.steps += 1
+            return np.zeros(1, dtype=np.float32), 0.0, self.steps >= 4, False, {}
+
+        def render(self, *args, **kwargs):
+            return np.full((8, 8, 3), self.value + self.steps, dtype=np.uint8)
+
+    benchmark = BenchmarkSpec(
+        name="test",
+        env_id="DummyVisual-v0",
+        env_kwargs={"render_mode": "rgb_array"},
+        train_episodes=10,
+        train_seconds=30.0,
+        eval_episodes=1,
+        max_steps=50,
+        reward_type=None,
+        render_mode="rgb_array",
+        primary_metric="eval_avg_return",
+        primary_metric_mode="maximize",
+        train_seed=1,
+        eval_seed_start=2,
+        device="cpu",
+        eval_case_bank=None,
+        train_probe=TrainProbeSpec(enabled=False),
+    )
+    writer = make_live_writer(tmp_path / "session", "run-1", "tag-1", benchmark, {"description": "candidate"})
+    assert writer is not None
+    env_a = writer.wrap_env(DummyVisualEnv(10))  # type: ignore[attr-defined]
+    env_b = writer.wrap_env(DummyVisualEnv(100))  # type: ignore[attr-defined]
+
+    env_a.reset()
+    manifest_path = tmp_path / "session" / "live" / "trajectories" / "run-1" / "episode_000001" / "manifest.json"
+    initial_manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    active_env_id = initial_manifest["env_id"]
+
+    env_b.reset()
+    env_b.step(np.zeros(1, dtype=np.float32))
+    after_other_env_manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    assert after_other_env_manifest["status"] == "recording"
+    assert after_other_env_manifest["env_id"] == active_env_id
+    assert after_other_env_manifest["frame_count"] == initial_manifest["frame_count"]
+
+    env_a.step(np.zeros(1, dtype=np.float32))
+    env_a.step(np.zeros(1, dtype=np.float32))
+    after_owner_step_manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    assert after_owner_step_manifest["env_id"] == active_env_id
+    assert after_owner_step_manifest["frame_count"] == initial_manifest["frame_count"] + 1
+
+
+def test_live_writer_reports_observed_env_count(tmp_path) -> None:
+    class DummyVisualEnv(gym.Env):
+        metadata = {"render_modes": ["rgb_array"]}
+
+        def __init__(self) -> None:
+            self.observation_space = gym.spaces.Box(low=0.0, high=1.0, shape=(1,), dtype=np.float32)
+            self.action_space = gym.spaces.Box(low=-1.0, high=1.0, shape=(1,), dtype=np.float32)
+
+        def reset(self, *, seed=None, options=None):
+            super().reset(seed=seed)
+            return np.zeros(1, dtype=np.float32), {}
+
+        def step(self, action):
+            return np.zeros(1, dtype=np.float32), 0.0, False, False, {}
+
+        def render(self, *args, **kwargs):
+            return np.zeros((8, 8, 3), dtype=np.uint8)
+
+    benchmark = BenchmarkSpec(
+        name="test",
+        env_id="DummyVisual-v0",
+        env_kwargs={"render_mode": "rgb_array"},
+        train_episodes=10,
+        train_seconds=30.0,
+        eval_episodes=1,
+        max_steps=50,
+        reward_type=None,
+        render_mode="rgb_array",
+        primary_metric="eval_avg_return",
+        primary_metric_mode="maximize",
+        train_seed=1,
+        eval_seed_start=2,
+        device="cpu",
+        eval_case_bank=None,
+        train_probe=TrainProbeSpec(enabled=False),
+    )
+    writer = make_live_writer(tmp_path / "session", "run-1", "tag-1", benchmark, {"description": "candidate"})
+    assert writer is not None
+    writer.wrap_env(DummyVisualEnv())  # type: ignore[attr-defined]
+    writer.wrap_env(DummyVisualEnv())  # type: ignore[attr-defined]
+    writer(
+        status="running",
+        episode_records=[],
+        total_steps=0,
+        last_metrics=None,
+        current_episode=1,
+        episode_return=0.0,
+        episode_length=0,
+    )
+
+    metrics = json.loads((tmp_path / "session" / "live" / "current_run_metrics.json").read_text(encoding="utf-8"))
+    assert metrics["observed_env_count"] == 2
+    assert metrics["run"]["observed_env_count"] == 2
+    assert metrics["visual"]["observed_env_count"] == 2
+
+
 def test_bat_to_goal_seed_trainable_samples_first_real_episode_rollout(tmp_path) -> None:
     torch = pytest.importorskip("torch")
     from autoresearch_gym.tasks.bat_to_goal_v0 import seed_trainable
