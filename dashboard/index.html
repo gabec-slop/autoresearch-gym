@@ -1306,9 +1306,9 @@
       function drawSeries(ctx, chart, values, min, max, options = {}) {
         const finite = finiteValues(values);
         if (!finite.length) return;
-        const xValues = Array.isArray(options.xValues) ? options.xValues : null;
-        const xMin = Number.isFinite(Number(options.xMin)) ? Number(options.xMin) : 0;
-        const xMax = Number.isFinite(Number(options.xMax)) ? Number(options.xMax) : Math.max(values.length - 1, 1);
+        const rawPoints = seriesPointsForChart(chart, values, min, max, options);
+        const points = bucketDensePoints(rawPoints, chart, options);
+        if (!points.length) return;
         ctx.save();
         ctx.strokeStyle = options.color || "#54d2ff";
         ctx.lineWidth = options.lineWidth || 2;
@@ -1316,27 +1316,18 @@
         if (options.dash) ctx.setLineDash(options.dash);
         ctx.beginPath();
         let started = false;
-        const points = [];
-        values.forEach((rawValue, index) => {
-          const value = Number(rawValue);
-          if (!Number.isFinite(value)) {
-            if (!options.connectGaps) started = false;
-            return;
+        let previousSegment = null;
+        points.forEach(({ x, y, segment }) => {
+          if (!options.connectGaps && previousSegment !== null && segment !== previousSegment) {
+            started = false;
           }
-          const rawX = xValues ? xValues[index] : index;
-          const x = xPositionFor(chart, rawX, xMin, xMax);
-          if (x === null) {
-            if (!options.connectGaps) started = false;
-            return;
-          }
-          const y = chart.height - chart.bottom - ((value - min) / (max - min)) * chart.plotH;
-          points.push({ x, y });
           if (!started) {
             ctx.moveTo(x, y);
             started = true;
           } else {
             ctx.lineTo(x, y);
           }
+          previousSegment = segment;
         });
         ctx.stroke();
         if (options.showPoints || finite.length === 1) {
@@ -1422,6 +1413,62 @@
         return xs;
       }
 
+      function seriesPointsForChart(chart, values, min, max, options = {}) {
+        const xValues = Array.isArray(options.xValues) ? options.xValues : null;
+        const xMin = Number.isFinite(Number(options.xMin)) ? Number(options.xMin) : 0;
+        const xMax = Number.isFinite(Number(options.xMax)) ? Number(options.xMax) : Math.max(values.length - 1, 1);
+        const points = [];
+        let segment = 0;
+        values.forEach((rawValue, index) => {
+          const value = Number(rawValue);
+          if (!Number.isFinite(value)) {
+            if (!options.connectGaps) segment += 1;
+            return;
+          }
+          const rawX = xValues ? xValues[index] : index;
+          const x = xPositionFor(chart, rawX, xMin, xMax);
+          if (x === null) {
+            if (!options.connectGaps) segment += 1;
+            return;
+          }
+          const y = chart.height - chart.bottom - ((value - min) / (max - min)) * chart.plotH;
+          points.push({ x, y, value, segment });
+        });
+        return points;
+      }
+
+      function bucketDensePoints(points, chart, options = {}) {
+        const maxRawPoints = Number(options.maxRawPoints || Math.max(120, chart.plotW / 3));
+        if (!options.bucketDense || points.length <= maxRawPoints) return points;
+        const bucketWidthPx = Math.max(1, Number(options.bucketWidthPx || 2));
+        const buckets = [];
+        let currentKey = null;
+        let current = null;
+        const flush = () => {
+          if (!current || current.count <= 0) return;
+          buckets.push({
+            x: current.x / current.count,
+            y: current.y / current.count,
+            value: current.value / current.count,
+            segment: current.segment,
+          });
+        };
+        points.forEach((point) => {
+          const key = `${point.segment}:${Math.floor((point.x - chart.left) / bucketWidthPx)}`;
+          if (key !== currentKey) {
+            flush();
+            currentKey = key;
+            current = { x: 0, y: 0, value: 0, count: 0, segment: point.segment };
+          }
+          current.x += point.x;
+          current.y += point.y;
+          current.value += point.value;
+          current.count += 1;
+        });
+        flush();
+        return buckets;
+      }
+
       function drawGhostEndpoint(ctx, chart, episodes, ghostValues, min, max, xValues, xMin, xMax) {
         if (!bestGhostEpisodes.length || !episodes.length) return;
         let endpointIndex = Math.min(bestGhostEpisodes.length, episodes.length) - 1;
@@ -1489,8 +1536,11 @@
         });
         drawSeries(returnCtx, chart, collectionValues, min, max, {
           color: "#54d2ff",
-          lineWidth: 3,
+          lineWidth: 2.5,
           pointRadius: 3,
+          bucketDense: true,
+          bucketWidthPx: 4,
+          maxRawPoints: 180,
           xValues,
           xMin,
           xMax,
@@ -1594,6 +1644,50 @@
           }
           ctx.fillStyle = "rgba(255,255,255,0.64)";
           ctx.fillText(labelForIndex(index), x, axisY + 10);
+        }
+        ctx.restore();
+      }
+
+      function drawNumericXValueTicks(ctx, chart, labelForValue, options = {}) {
+        const xMin = Number(chart.xMin);
+        const xMax = Number(chart.xMax);
+        if (!Number.isFinite(xMin) || !Number.isFinite(xMax)) return;
+        const axisY = chart.height - chart.bottom;
+        const minLabelPx = options.minLabelPx ?? 54;
+        const maxTicks = Math.max(2, Math.floor(chart.plotW / minLabelPx));
+        const span = Math.max(1e-9, xMax - xMin);
+        const step = niceTickStep(span / Math.max(maxTicks - 1, 1));
+        const ticks = new Set([xMin, xMax]);
+        const start = Math.ceil(xMin / step) * step;
+        for (let value = start; value <= xMax + step * 0.5; value += step) {
+          if (value >= xMin - 1e-9 && value <= xMax + 1e-9) ticks.add(Number(value.toFixed(9)));
+        }
+        const values = [...ticks].sort((a, b) => a - b);
+        let lastLabelX = -Infinity;
+        ctx.save();
+        ctx.font = options.font || "11px sans-serif";
+        ctx.textAlign = "center";
+        ctx.textBaseline = "top";
+        for (const value of values) {
+          const x = xPositionFor(chart, value, xMin, xMax);
+          if (x === null) continue;
+          ctx.strokeStyle = "rgba(255,255,255,0.22)";
+          ctx.lineWidth = 1;
+          ctx.beginPath();
+          ctx.moveTo(x, axisY);
+          ctx.lineTo(x, axisY + 6);
+          ctx.stroke();
+          if (options.gridLines) {
+            ctx.strokeStyle = "rgba(255,255,255,0.06)";
+            ctx.beginPath();
+            ctx.moveTo(x, chart.top);
+            ctx.lineTo(x, axisY);
+            ctx.stroke();
+          }
+          if (x - lastLabelX < minLabelPx * 0.78) continue;
+          ctx.fillStyle = "rgba(255,255,255,0.64)";
+          ctx.fillText(labelForValue(value), x, axisY + 10);
+          lastLabelX = x;
         }
         ctx.restore();
       }
@@ -2108,20 +2202,16 @@
           const returnChart = drawReturnChart(latestEpisodes);
           if (latestEpisodes.length) {
             const budgetMode = budgetModeFor(latestRun);
-            drawXValueTicks(
+            drawNumericXValueTicks(
               returnCtx,
               returnChart,
-              returnChart.xValues || [],
-              (index) => {
+              (value) => {
                 if (budgetMode === "episodes") {
-                  return String(cumulativeCompletedEpisodes(latestEpisodes, index));
+                  return String(Math.round(value));
                 }
-                const elapsed = Number(latestEpisodes[index]?.elapsed_seconds);
-                if (Number.isFinite(elapsed)) return `${Math.round(elapsed)}s`;
-                const episode = Number(latestEpisodes[index]?.episode);
-                return Number.isFinite(episode) ? String(episode) : String(index + 1);
+                return `${Math.round(value)}s`;
               },
-              { minLabelPx: 42 },
+              { minLabelPx: 52 },
             );
             drawXAxisCaption(
               returnCtx,

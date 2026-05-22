@@ -298,6 +298,54 @@ def test_live_writer_ignores_enriched_live_callback_fields(tmp_path) -> None:
     assert payload["current"]["completed_episodes"] == 0
 
 
+def test_live_writer_keeps_full_episode_history(tmp_path) -> None:
+    benchmark = BenchmarkSpec(
+        name="test",
+        env_id="CartPole-v1",
+        env_kwargs={"render_mode": "rgb_array"},
+        train_episodes=1000,
+        train_seconds=30.0,
+        eval_episodes=1,
+        max_steps=50,
+        reward_type=None,
+        render_mode="rgb_array",
+        primary_metric="eval_avg_return",
+        primary_metric_mode="maximize",
+        train_seed=1,
+        eval_seed_start=2,
+        device="cpu",
+        eval_case_bank=None,
+        train_probe=TrainProbeSpec(enabled=False),
+    )
+    writer = make_live_writer(tmp_path / "session", "run-1", "tag-1", benchmark, {"description": "candidate"})
+    assert writer is not None
+    episode_records = [
+        make_train_episode_record(
+            episode=index + 1,
+            return_value=float(index),
+            length=1,
+            step=index + 1,
+            elapsed_seconds=float(index) * 0.1,
+        )
+        for index in range(405)
+    ]
+
+    writer(
+        status="running",
+        episode_records=episode_records,
+        total_steps=405,
+        last_metrics=None,
+        current_episode=406,
+        episode_return=0.0,
+        episode_length=0,
+    )
+
+    payload = json.loads((tmp_path / "session" / "live" / "current_run_metrics.json").read_text(encoding="utf-8"))
+    assert len(payload["episodes"]) == 405
+    assert payload["episodes"][0]["episode"] == 1
+    assert payload["episodes"][-1]["episode"] == 405
+
+
 def test_live_writer_sampled_trajectory_records_full_episode(tmp_path) -> None:
     class DummyVisualEnv(gym.Env):
         metadata = {"render_modes": ["rgb_array"]}

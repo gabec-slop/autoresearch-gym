@@ -899,7 +899,7 @@ def make_live_writer(
                         "completed_episodes": completed_episodes,
                         "episode_batches": completed_episode_batches,
                     },
-                    "episodes": episode_records[-400:],
+                    "episodes": episode_records,
                     "latest_losses": last_metrics,
                     "visual_control": control,
                     "visual": visual_payload,
