@@ -237,59 +237,66 @@ def load_eval_cases(benchmark: BenchmarkSpec) -> list[dict[str, Any]] | None:
         return None
     payload = json.loads(benchmark.eval_case_bank.read_text(encoding="utf-8"))
     cases = list(payload.get("cases", []))
-    return cases if cases else None
+    if not cases:
+        raise ValueError(f"eval_case_bank {benchmark.eval_case_bank} contains no cases")
+    if len(cases) < benchmark.eval_episodes:
+        raise ValueError(
+            f"eval_case_bank {benchmark.eval_case_bank} has {len(cases)} cases "
+            f"but benchmark requests {benchmark.eval_episodes} eval episodes"
+        )
+    return cases
 
 
 def evaluate_agent(agent: Any, benchmark: BenchmarkSpec, candidate: Any) -> dict[str, Any]:
-    if hasattr(agent, "evaluate"):
-        return agent.evaluate(benchmark=benchmark, candidate=candidate)
-
     env = make_eval_env(benchmark, getattr(candidate, "control_type", None))
     episode_records: list[dict[str, Any]] = []
     eval_cases = load_eval_cases(benchmark)
 
-    for idx in range(benchmark.eval_episodes):
-        seed = benchmark.eval_seed_start + idx
-        reset_options = None
-        case_label = None
-        if eval_cases is not None and idx < len(eval_cases):
-            reset_options = {"fixed_case": eval_cases[idx]}
-            case_label = str(eval_cases[idx].get("name", f"case-{idx + 1:02d}"))
-        try:
-            obs, info = env.reset(seed=seed, options=reset_options)
-        except SIM_RECOVERABLE_ERRORS:
-            obs, info = env.reset()
-
-        terminated = False
-        truncated = False
-        episode_return = 0.0
-        episode_length = 0
-
-        while not (terminated or truncated):
-            action = agent.act(obs, deterministic=True)
+    try:
+        for idx in range(benchmark.eval_episodes):
+            seed = benchmark.eval_seed_start + idx
+            reset_options = None
+            case_label = None
+            if eval_cases is not None:
+                reset_options = {"fixed_case": eval_cases[idx]}
+                case_label = str(eval_cases[idx].get("name", f"case-{idx + 1:02d}"))
             try:
-                obs, reward, terminated, truncated, info = env.step(action)
-            except SIM_RECOVERABLE_ERRORS:
-                terminated = True
-                truncated = False
-                reward = -3.0
-                info = {"is_success": False}
-            episode_return += float(reward)
-            episode_length += 1
+                obs, info = env.reset(seed=seed, options=reset_options)
+            except SIM_RECOVERABLE_ERRORS as exc:
+                if reset_options is not None:
+                    raise RuntimeError(f"fixed eval reset failed for {case_label}") from exc
+                obs, info = env.reset()
 
-        episode_records.append(
-            {
-                "episode": idx + 1,
-                "seed": seed,
-                "return": float(episode_return),
-                "length": int(episode_length),
-                "success": bool(info.get("is_success", False)),
-                "info_metrics": scalar_info_metrics(info),
-                "case_label": case_label,
-            }
-        )
+            terminated = False
+            truncated = False
+            episode_return = 0.0
+            episode_length = 0
 
-    env.close()
+            while not (terminated or truncated):
+                action = agent.act(obs, deterministic=True)
+                try:
+                    obs, reward, terminated, truncated, info = env.step(action)
+                except SIM_RECOVERABLE_ERRORS:
+                    terminated = True
+                    truncated = False
+                    reward = -3.0
+                    info = {"is_success": False}
+                episode_return += float(reward)
+                episode_length += 1
+
+            episode_records.append(
+                {
+                    "episode": idx + 1,
+                    "seed": seed,
+                    "return": float(episode_return),
+                    "length": int(episode_length),
+                    "success": bool(info.get("is_success", False)),
+                    "info_metrics": scalar_info_metrics(info),
+                    "case_label": case_label,
+                }
+            )
+    finally:
+        env.close()
     summary = {
         "episodes": benchmark.eval_episodes,
         "success_rate": float(np.mean([1.0 if e["success"] else 0.0 for e in episode_records])) if episode_records else 0.0,

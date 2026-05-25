@@ -917,23 +917,40 @@ def test_policy_probe_callback_keeps_seed_episode_records_unmutated() -> None:
     assert callback.probe_records[-1]["return"] == 12.0
 
 
-def test_evaluate_agent_uses_candidate_owned_evaluator() -> None:
-    from autoresearch_gym.runner.experiment import evaluate_agent
+def test_evaluate_agent_ignores_candidate_owned_evaluator(monkeypatch: pytest.MonkeyPatch) -> None:
+    from autoresearch_gym.runner import experiment
 
     class CustomAgent:
         def evaluate(self, benchmark, candidate):
-            return {
-                "episodes": benchmark.eval_episodes,
-                "success_rate": 1.0,
-                "avg_return": -0.25,
-                "avg_length": 0.0,
-                "mpkpe": 0.25,
-                "episode_records": [],
-            }
+            raise AssertionError("candidate-owned final evaluation must not be used")
+
+        def act(self, obs, deterministic: bool = False):
+            return np.array([0.0], dtype=np.float32)
+
+    class FixedEvalEnv:
+        def __init__(self) -> None:
+            self.step_count = 0
+
+        def reset(self, *, seed=None, options=None):
+            self.step_count = 0
+            return np.array([0.0], dtype=np.float32), {}
+
+        def step(self, action):
+            self.step_count += 1
+            return (
+                np.array([0.0], dtype=np.float32),
+                2.0,
+                True,
+                False,
+                {"is_success": True, "fixed_eval_path": 1.0},
+            )
+
+        def close(self) -> None:
+            pass
 
     benchmark = BenchmarkSpec(
         name="custom",
-        env_id="NotARegisteredGymEnv-v0",
+        env_id="RunnerOwnedEval-v0",
         env_kwargs={},
         train_episodes=1,
         train_seconds=None,
@@ -941,18 +958,92 @@ def test_evaluate_agent_uses_candidate_owned_evaluator() -> None:
         max_steps=1,
         reward_type=None,
         render_mode=None,
-        primary_metric="eval_mpkpe",
-        primary_metric_mode="minimize",
+        primary_metric="eval_avg_return",
+        primary_metric_mode="maximize",
         train_seed=1,
         eval_seed_start=2,
         device="cpu",
         eval_case_bank=None,
     )
+    monkeypatch.setattr(experiment, "make_eval_env", lambda benchmark, control_type: FixedEvalEnv())
 
-    summary = evaluate_agent(CustomAgent(), benchmark, object())
+    summary = experiment.evaluate_agent(CustomAgent(), benchmark, object())
 
     assert summary["episodes"] == 3
-    assert summary["mpkpe"] == 0.25
+    assert summary["success_rate"] == 1.0
+    assert summary["avg_return"] == 2.0
+    assert summary["avg_fixed_eval_path"] == 1.0
+
+
+def test_eval_case_bank_must_cover_requested_eval_episodes(tmp_path) -> None:
+    from autoresearch_gym.runner.experiment import load_eval_cases
+
+    case_bank = tmp_path / "eval_cases.json"
+    case_bank.write_text(json.dumps({"cases": [{"name": "case-one"}]}), encoding="utf-8")
+    benchmark = BenchmarkSpec(
+        name="custom",
+        env_id="RunnerOwnedEval-v0",
+        env_kwargs={},
+        train_episodes=1,
+        train_seconds=None,
+        eval_episodes=2,
+        max_steps=1,
+        reward_type=None,
+        render_mode=None,
+        primary_metric="eval_avg_return",
+        primary_metric_mode="maximize",
+        train_seed=1,
+        eval_seed_start=2,
+        device="cpu",
+        eval_case_bank=case_bank,
+    )
+
+    with pytest.raises(ValueError, match="has 1 cases but benchmark requests 2 eval episodes"):
+        load_eval_cases(benchmark)
+
+
+def test_fixed_eval_reset_failure_invalidates_run(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
+    from autoresearch_gym.runner import experiment
+
+    class Agent:
+        def act(self, obs, deterministic: bool = False):
+            return np.array([0.0], dtype=np.float32)
+
+    class BrokenFixedCaseEnv:
+        def reset(self, *, seed=None, options=None):
+            if options is not None:
+                raise ValueError("fixed case unsupported")
+            return np.array([0.0], dtype=np.float32), {}
+
+        def step(self, action):
+            return np.array([0.0], dtype=np.float32), 0.0, True, False, {"is_success": False}
+
+        def close(self) -> None:
+            pass
+
+    case_bank = tmp_path / "eval_cases.json"
+    case_bank.write_text(json.dumps({"cases": [{"name": "fixed-case"}]}), encoding="utf-8")
+    benchmark = BenchmarkSpec(
+        name="custom",
+        env_id="RunnerOwnedEval-v0",
+        env_kwargs={},
+        train_episodes=1,
+        train_seconds=None,
+        eval_episodes=1,
+        max_steps=1,
+        reward_type=None,
+        render_mode=None,
+        primary_metric="eval_avg_return",
+        primary_metric_mode="maximize",
+        train_seed=1,
+        eval_seed_start=2,
+        device="cpu",
+        eval_case_bank=case_bank,
+    )
+    monkeypatch.setattr(experiment, "make_eval_env", lambda benchmark, control_type: BrokenFixedCaseEnv())
+
+    with pytest.raises(RuntimeError, match="fixed eval reset failed for fixed-case"):
+        experiment.evaluate_agent(Agent(), benchmark, object())
 
 
 def test_run_parser_accepts_headless_and_compact_status_flags() -> None:
