@@ -1138,7 +1138,6 @@ def _run_mjlab_rollout(
                 "seed": _seed(bundle, 9000),
                 "return": float(payload.get("return", 0.0)),
                 "length": int(payload.get("steps", steps)),
-                "success": float(payload.get("done_fraction", 1.0)) < 0.5,
                 "case_label": "mjlab-vector-rollout",
                 "info_metrics": info_metrics,
             }
@@ -1147,10 +1146,10 @@ def _run_mjlab_rollout(
             "episodes": 1,
             "avg_return": float(payload.get("return", 0.0)),
             "avg_length": float(payload.get("steps", steps)),
-            "success_rate": 1.0 if records[0]["success"] else 0.0,
             "avg_step_reward": float(payload.get("avg_step_reward", 0.0)),
             "done_fraction": float(payload.get("done_fraction", 0.0)),
             "mjlab_num_envs": float(payload.get("num_envs", num_envs)),
+            "metric_source": "mjlab_rollout_reward",
             "episode_records": records,
         }
         if "avg_mpkpe" in payload:

@@ -880,7 +880,6 @@ def evaluate_agent(agent: Agent, benchmark: Any, eval_cases: list[dict[str, Any]
                 "seed": int(benchmark.eval_seed_start) + idx,
                 "return": float(total_return),
                 "length": step + 1,
-                "success": bool(info.get("is_success", False)),
                 "case_label": str(case.get("name", f"case-{idx + 1:02d}")),
                 "info_metrics": {
                     "command_tracking_error": float(info.get("command_tracking_error", 0.0)),
@@ -893,9 +892,9 @@ def evaluate_agent(agent: Agent, benchmark: Any, eval_cases: list[dict[str, Any]
         "episodes": len(records),
         "avg_return": float(np.mean([record["return"] for record in records])) if records else 0.0,
         "avg_length": float(np.mean([record["length"] for record in records])) if records else 0.0,
-        "success_rate": float(np.mean([1.0 if record["success"] else 0.0 for record in records])) if records else 0.0,
         "avg_command_tracking_error": float(np.mean([record["info_metrics"]["command_tracking_error"] for record in records])) if records else 0.0,
         "physics_backend": str(info.get("physics_backend", "unknown")) if records else "unknown",
+        "metric_source": "lower_level_rollout_reward",
         "episode_records": records,
     }
 

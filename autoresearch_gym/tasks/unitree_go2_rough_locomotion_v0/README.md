@@ -2,8 +2,8 @@
 
 Unitree Go2 rough-terrain locomotion benchmark for external simulator
 execution. The benchmark fixes rough-terrain eval cases, command targets,
-success metric, budget, and artifact contract; the trainable owns the learning
-recipe.
+primary reward metric, budget, and artifact contract; the trainable owns the
+learning recipe.
 
 The bundled task has two supported paths:
 
@@ -90,7 +90,9 @@ external backend.
 
 ## Metrics And Artifacts
 
-The primary metric is `eval_success_rate`, maximized over fixed rough-terrain
-command eval cases. Runs should produce normalized train/eval summaries,
-checkpoint metadata, compact status, and sampled rollout media when the
-simulator render path is available.
+The primary metric is `eval_avg_return`, maximized from the MJLab rollout
+reward signal. The MJLab-backed path does not currently report a binary success
+rate because MJLab provides reward, termination, and rollout diagnostics rather
+than a canonical Gym-style `is_success` flag for this task. Runs should produce
+normalized train/eval summaries, checkpoint metadata, compact status, and
+sampled rollout media when the simulator render path is available.

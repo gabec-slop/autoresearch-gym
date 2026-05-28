@@ -255,6 +255,59 @@ def test_unitree_backend_reads_nested_recipe_budget_fields() -> None:
     assert _seed(bundle, 42) == 1234
 
 
+def test_unitree_go2_mjlab_uses_return_primary_without_fabricated_success(tmp_path, monkeypatch) -> None:
+    from autoresearch_gym.external import unitree_backend
+
+    for benchmark_name in ("benchmark.json", "benchmark_wall_clock.json", "benchmark_lower_level.json"):
+        payload = json.loads(
+            Path("autoresearch_gym/tasks/unitree_go2_rough_locomotion_v0", benchmark_name).read_text(encoding="utf-8")
+        )
+        assert payload["primary_metric"] == "eval_avg_return"
+        assert payload["primary_metric_mode"] == "maximize"
+
+    checkpoint = tmp_path / "agent_checkpoint.pt"
+    checkpoint.write_text("checkpoint", encoding="utf-8")
+
+    def fake_run_subprocess(argv, **kwargs):
+        out_json = Path(argv[argv.index("--out-json") + 1])
+        out_json.write_text(
+            json.dumps(
+                {
+                    "task_id": "Unitree-Go2-Rough",
+                    "steps": 200,
+                    "num_envs": 64,
+                    "avg_step_reward": -0.5,
+                    "return": -100.0,
+                    "done_fraction": 0.1,
+                }
+            ),
+            encoding="utf-8",
+        )
+
+    monkeypatch.setattr(unitree_backend, "_run_subprocess", fake_run_subprocess)
+    monkeypatch.setattr(unitree_backend, "_unitree_root", lambda bundle: tmp_path)
+    monkeypatch.setattr(unitree_backend, "_mjlab_python", lambda bundle: "python")
+
+    bundle = {
+        "run_id": "pytest-go2",
+        "task_family": "go2_rough_locomotion",
+        "benchmark": {
+            "env_kwargs": {"task_id": "Unitree-Go2-Rough", "eval_num_envs": 64},
+            "max_steps": 200,
+            "eval_episodes": 2,
+            "primary_metric": "eval_avg_return",
+        },
+        "candidate": {"recipe": {"runner": {"eval_num_envs": 64, "seed": 52}}},
+    }
+    unitree_backend._run_mjlab_rollout(bundle, tmp_path, checkpoint, mode="eval")
+    summary = json.loads((tmp_path / "eval_result.json").read_text(encoding="utf-8"))
+
+    assert summary["avg_return"] == -100.0
+    assert summary["metric_source"] == "mjlab_rollout_reward"
+    assert "success_rate" not in summary
+    assert "success" not in summary["episode_records"][0]
+
+
 def test_unitree_mjlab_train_bridge_compiles_with_recipe_overrides() -> None:
     from autoresearch_gym.external.unitree_backend import MJLAB_TRAIN_SCRIPT
 
@@ -307,7 +360,25 @@ def test_unitree_lower_level_cleanrl_seed_trains_evals_and_renders(tmp_path) -> 
     assert go2_env.render().ndim == 3
     assert terminated in {True, False}
     assert truncated in {True, False}
+    go2_agent = go2_seed.Agent(int(go2_env.observation_space.shape[0]), int(go2_env.action_space.shape[0]))
     go2_env.close()
+    go2_eval_benchmark = types.SimpleNamespace(
+        env_kwargs={"render_mode": "rgb_array"},
+        eval_seed_start=9200,
+        eval_episodes=2,
+        max_steps=4,
+        primary_metric="eval_avg_return",
+        primary_metric_mode="maximize",
+    )
+    go2_eval_cases = json.loads(
+        Path("autoresearch_gym/tasks/unitree_go2_rough_locomotion_v0/eval_cases.json").read_text(encoding="utf-8")
+    )["cases"]
+    go2_eval = go2_seed.evaluate_agent(go2_agent, go2_eval_benchmark, eval_cases=go2_eval_cases)
+    assert go2_eval["episodes"] == 2
+    assert go2_eval["metric_source"] == "lower_level_rollout_reward"
+    assert "success_rate" not in go2_eval
+    assert [record["case_label"] for record in go2_eval["episode_records"]] == ["forward-rough", "turning-rough"]
+    assert "success" not in go2_eval["episode_records"][0]
 
 
 def test_run_tag_normalization_collapses_duplicate_pass_prefix() -> None:

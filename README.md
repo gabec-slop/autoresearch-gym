@@ -89,6 +89,9 @@ The MJLab-backed variants use:
 - `unitree_g1_motion_mirror_v0/benchmark.json` with `seed_trainable.py`
 - `unitree_go2_rough_locomotion_v0/benchmark.json` with `seed_trainable.py`
 
+G1 motion mirroring minimizes tracking error. Go2 rough locomotion maximizes
+MJLab rollout return; it does not use a fabricated binary success metric.
+
 These paths expect the upstream simulator repositories under `.external/` in
 the checkout where the harness runs. G1 motion mirroring also expects its source
 motion file under `autoresearch_runs/source_motions/`.

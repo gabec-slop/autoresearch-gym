@@ -16,7 +16,7 @@
   "eval_episodes": 2,
   "max_steps": 500,
   "render_mode": "rgb_array",
-  "primary_metric": "eval_success_rate",
+  "primary_metric": "eval_avg_return",
   "primary_metric_mode": "maximize",
   "train_seed": 52,
   "eval_seed_start": 9200,
