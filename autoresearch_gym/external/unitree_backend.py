@@ -174,6 +174,11 @@ import argparse
 import inspect
 import json
 import os
+import re
+import subprocess
+import sys
+import threading
+import time
 from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
@@ -444,6 +449,468 @@ def _load_recipe(path):
     return payload if isinstance(payload, dict) else {}
 
 
+def _json_write(path, payload):
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    tmp.replace(path)
+
+
+def _safe_float(value, default=0.0):
+    try:
+        return float(value)
+    except Exception:
+        return float(default)
+
+
+def _safe_int(value, default=0):
+    try:
+        return int(value)
+    except Exception:
+        return int(default)
+
+
+def _checkpoint_index(path):
+    match = re.search(r"model_(\d+)\.pt$", Path(path).name)
+    return int(match.group(1)) if match else -1
+
+
+def _load_scalar_events(log_dir):
+    try:
+        from tensorboard.backend.event_processing.event_accumulator import EventAccumulator
+    except Exception:
+        return {}, "tensorboard_unavailable"
+    scalars = {}
+    event_dirs = sorted({path.parent for path in Path(log_dir).rglob("events.out.tfevents*")})
+    for event_dir in event_dirs:
+        try:
+            accumulator = EventAccumulator(str(event_dir), size_guidance={"scalars": 0})
+            accumulator.Reload()
+            tags = accumulator.Tags().get("scalars", [])
+            for tag in tags:
+                scalars.setdefault(tag, [])
+                scalars[tag].extend(accumulator.Scalars(tag))
+        except Exception:
+            continue
+    for tag, events in list(scalars.items()):
+        deduped = {}
+        for event in events:
+            deduped[int(event.step)] = event
+        scalars[tag] = [deduped[key] for key in sorted(deduped)]
+    return scalars, "ok" if scalars else "waiting_for_tensorboard"
+
+
+def _select_tag(scalars, candidates):
+    tags = list(scalars)
+    lower = {tag: tag.lower() for tag in tags}
+    for candidate in candidates:
+        candidate_lower = candidate.lower()
+        for tag in tags:
+            if lower[tag] == candidate_lower:
+                return tag
+    for candidate in candidates:
+        candidate_lower = candidate.lower()
+        for tag in tags:
+            if candidate_lower in lower[tag]:
+                return tag
+    return None
+
+
+def _scalar_latest_metrics(scalars):
+    metrics = {}
+    for tag, events in scalars.items():
+        if not events:
+            continue
+        key = re.sub(r"[^a-zA-Z0-9_]+", "_", tag.strip().lower()).strip("_")
+        if not key:
+            continue
+        metrics[key[-80:]] = _safe_float(events[-1].value)
+    return metrics
+
+
+def _event_step_to_env_step(event_step, *, num_envs, steps_per_env):
+    step = max(0, _safe_int(event_step))
+    if step <= 0:
+        return int(num_envs * steps_per_env)
+    if step < 1_000_000:
+        return int(step * num_envs * steps_per_env)
+    return int(step)
+
+
+def _records_from_scalars(scalars, *, num_envs, steps_per_env, started_at):
+    reward_tag = _select_tag(
+        scalars,
+        (
+            "train/mean_reward",
+            "charts/episodic_return",
+            "episode/return",
+            "episodic_return",
+            "mean_reward",
+            "reward",
+        ),
+    )
+    length_tag = _select_tag(scalars, ("train/mean_episode_length", "charts/episodic_length", "episode/length", "length"))
+    if reward_tag is None:
+        return []
+    length_by_step = {}
+    if length_tag is not None:
+        length_by_step = {int(event.step): _safe_float(event.value, steps_per_env) for event in scalars.get(length_tag, [])}
+    records = []
+    for index, event in enumerate(scalars.get(reward_tag, [])):
+        env_step = _event_step_to_env_step(event.step, num_envs=num_envs, steps_per_env=steps_per_env)
+        elapsed = max(0.0, _safe_float(getattr(event, "wall_time", 0.0)) - float(started_at))
+        if elapsed <= 0.0:
+            elapsed = max(0.0, time.time() - float(started_at))
+        info_metrics = {
+            "mjlab_num_envs": float(num_envs),
+            "mjlab_iteration": float(index + 1),
+            "samples_per_iteration": float(num_envs * steps_per_env),
+        }
+        records.append(
+            {
+                "record_type": "train_collection_window",
+                "episode": index + 1,
+                "return": _safe_float(event.value),
+                "length": float(length_by_step.get(int(event.step), steps_per_env)),
+                "success": False,
+                "episodes_in_window": int(num_envs),
+                "step": env_step,
+                "env_steps_in_window": int(num_envs * steps_per_env),
+                "elapsed_seconds": elapsed,
+                "info_metrics": info_metrics,
+            }
+        )
+    return records
+
+
+def _read_probe_records(path):
+    probe_path = Path(path)
+    if not probe_path.exists():
+        return []
+    records = []
+    for line in probe_path.read_text(encoding="utf-8").splitlines():
+        if not line.strip():
+            continue
+        try:
+            record = json.loads(line)
+        except Exception:
+            continue
+        if isinstance(record, dict):
+            records.append(record)
+    return records
+
+
+def _latest_live_visual(out_dir):
+    sample_root = Path(out_dir) / "trajectories"
+    manifests = sorted(sample_root.glob("sample_*/manifest.json"), key=lambda path: path.stat().st_mtime)
+    if not manifests:
+        return {}
+    try:
+        manifest = json.loads(manifests[-1].read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    latest_frame = manifest.get("latest_frame_path")
+    return {
+        "mode": "sampled_trajectory",
+        "live_frame_path": str(Path(out_dir) / "current_run_frame.jpg"),
+        "trajectory_manifest_path": str(manifests[-1]),
+        "trajectory_latest_frame_path": str(latest_frame) if latest_frame else None,
+        "sampled_status": manifest.get("status", "completed"),
+        "latest_sample_index": manifest.get("sample_index", 1),
+        "source": "mjlab_live_probe",
+    }
+
+
+def _write_live_sample_manifest(out_dir, *, run_id, tag, sample_index, checkpoint_index, step, frame_paths):
+    out_dir = Path(out_dir)
+    frames = [str(Path(path)) for path in frame_paths]
+    if not frames:
+        return None
+    manifest = {
+        "run_id": run_id,
+        "tag": tag,
+        "sample_index": int(sample_index),
+        "checkpoint_index": int(checkpoint_index),
+        "episode": int(sample_index),
+        "step": int(step),
+        "status": "completed",
+        "updated_at": time.time(),
+        "frame_count": len(frames),
+        "frames": frames,
+        "latest_frame_path": frames[-1],
+        "playback_fps": 12.0,
+        "frame_stride": 1,
+        "sample_rate": 1.0,
+        "source": "mjlab_live_probe",
+    }
+    manifest_path = out_dir / "trajectories" / f"sample_{int(sample_index):06d}" / "manifest.json"
+    _json_write(manifest_path, manifest)
+    try:
+        import shutil
+
+        shutil.copy2(frames[-1], out_dir / "current_run_frame.jpg")
+    except Exception:
+        pass
+    return manifest_path
+
+
+def _write_partial_train_payload(
+    *,
+    out_dir,
+    log_dir,
+    run_id,
+    tag,
+    task_id,
+    status,
+    budget_mode,
+    train_seconds,
+    num_envs,
+    steps_per_env,
+    iterations,
+    started_at,
+    stop_reason=None,
+    event_status="unknown",
+):
+    out_dir = Path(out_dir)
+    scalars, scalar_status = _load_scalar_events(log_dir)
+    records = _records_from_scalars(scalars, num_envs=num_envs, steps_per_env=steps_per_env, started_at=started_at)
+    probe_records = _read_probe_records(out_dir / "policy_probe_records.jsonl")
+    all_records = sorted([*records, *probe_records], key=lambda item: (_safe_float(item.get("step")), item.get("record_type") == "policy_probe"))
+    last_record = records[-1] if records else None
+    total_steps = int(last_record.get("step", 0)) if last_record else 0
+    if total_steps <= 0:
+        total_steps = int(max(0, min(iterations, len(records))) * num_envs * steps_per_env)
+    latest_metrics = _scalar_latest_metrics(scalars)
+    latest_metrics.update(
+        {
+            "gradient_updates": float(len(records)),
+            "mjlab_num_envs": float(num_envs),
+            "samples_per_iteration": float(num_envs * steps_per_env),
+            "mjlab_scalar_status": scalar_status,
+        }
+    )
+    if event_status:
+        latest_metrics["mjlab_live_status"] = str(event_status)
+    avg_return = float(sum(record["return"] for record in records) / len(records)) if records else 0.0
+    payload = {
+        "episode_records": all_records,
+        "total_steps": total_steps,
+        "env_steps": total_steps,
+        "episodes_completed": int(len(records) * num_envs),
+        "episode_batches": len(records),
+        "gradient_updates": len(records),
+        "avg_return": avg_return,
+        "avg_length": float(sum(record["length"] for record in records) / len(records)) if records else 0.0,
+        "last_metrics": latest_metrics,
+        "stop_reason": stop_reason or ("mjlab_train_running" if status == "running" else "mjlab_train_complete"),
+        "external_backend_scaffold": False,
+        "mjlab_live": {
+            "task_id": task_id,
+            "scalar_status": scalar_status,
+            "record_count": len(records),
+            "probe_count": len(probe_records),
+            "status": status,
+        },
+    }
+    _json_write(out_dir / "train_result_partial.json", payload)
+    if status != "running":
+        _json_write(out_dir / "train_result.json", payload)
+    live_visual = _latest_live_visual(out_dir)
+    live_payload = {
+        "run": {
+            "run_id": run_id,
+            "tag": tag,
+            "status": status,
+            "started_at": started_at,
+            "updated_at": time.time(),
+            "budget_mode": budget_mode,
+            "train_seconds": train_seconds,
+            "candidate": {},
+            "frame_path": live_visual.get("live_frame_path"),
+            "trajectory_manifest_path": live_visual.get("trajectory_manifest_path"),
+            "trajectory_latest_frame_path": live_visual.get("trajectory_latest_frame_path"),
+            "visual": live_visual,
+        },
+        "current": {
+            "status": status,
+            "step": total_steps,
+            "env_steps": total_steps,
+            "episodes_complete": int(len(records) * num_envs),
+            "completed_episodes": int(len(records) * num_envs),
+            "episode_batches": len(records),
+            "avg_return": avg_return,
+            "success_rate": 0.0,
+            "info_metrics": latest_metrics,
+        },
+        "episodes": all_records,
+        "latest_losses": latest_metrics,
+        "visual": live_visual,
+    }
+    _json_write(out_dir / "live" / "current_run_metrics.json", live_payload)
+    with (out_dir / "progress.jsonl").open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps({"time": time.time(), "status": status, "records": len(records), "probes": len(probe_records), "step": total_steps}) + "\n")
+    with (out_dir / "live" / "status.log").open("a", encoding="utf-8") as handle:
+        handle.write(f"st={status} step={total_steps} task={task_id} records={len(records)} probes={len(probe_records)}\n")
+    return payload
+
+
+def _run_checkpoint_probe(
+    *,
+    rollout_script,
+    task_id,
+    checkpoint,
+    out_dir,
+    num_envs,
+    steps,
+    seed,
+    motion_file,
+    python_executable,
+    timeout,
+    frame_dir=None,
+    frame_count=0,
+):
+    out_json = Path(out_dir) / "policy_probes" / f"{Path(checkpoint).stem}.json"
+    out_json.parent.mkdir(parents=True, exist_ok=True)
+    argv = [
+        python_executable,
+        str(rollout_script),
+        "--task-id",
+        str(task_id),
+        "--checkpoint",
+        str(checkpoint),
+        "--out-json",
+        str(out_json),
+        "--num-envs",
+        str(num_envs),
+        "--steps",
+        str(steps),
+        "--seed",
+        str(seed),
+    ]
+    if motion_file:
+        argv.extend(["--motion-file", str(motion_file)])
+    if frame_dir is not None and int(frame_count) > 0:
+        argv.extend(["--frame-dir", str(frame_dir), "--frame-count", str(int(frame_count)), "--no-terminations"])
+    completed = subprocess.run(argv, capture_output=True, text=True, timeout=timeout, check=False)
+    if completed.returncode != 0:
+        return None
+    payload = json.loads(out_json.read_text(encoding="utf-8"))
+    return payload
+
+
+def _monitor_live_training(stop_event, *, out_dir, log_dir, run_id, tag, task_id, budget_mode, train_seconds, num_envs, steps_per_env, iterations, started_at, rollout_script, motion_file, probe_interval_iterations, probe_num_envs, probe_steps, sample_rollout_frame_count):
+    probed = set()
+    out_dir = Path(out_dir)
+    while not stop_event.is_set():
+        payload = _write_partial_train_payload(
+            out_dir=out_dir,
+            log_dir=log_dir,
+            run_id=run_id,
+            tag=tag,
+            task_id=task_id,
+            status="running",
+            budget_mode=budget_mode,
+            train_seconds=train_seconds,
+            num_envs=num_envs,
+            steps_per_env=steps_per_env,
+            iterations=iterations,
+            started_at=started_at,
+            event_status="monitoring",
+        )
+        if rollout_script and probe_interval_iterations > 0:
+            checkpoints = sorted(Path(log_dir).rglob("model_*.pt"), key=lambda path: (_checkpoint_index(path), path.stat().st_mtime))
+            for checkpoint in checkpoints:
+                index = _checkpoint_index(checkpoint)
+                if index <= 0 or index in probed or index % int(probe_interval_iterations) != 0:
+                    continue
+                try:
+                    sample_index = len(probed) + 1
+                    frame_dir = None
+                    if int(sample_rollout_frame_count) > 0:
+                        frame_dir = out_dir / "trajectories" / f"sample_{sample_index:06d}"
+                        frame_dir.mkdir(parents=True, exist_ok=True)
+                    rollout = _run_checkpoint_probe(
+                        rollout_script=rollout_script,
+                        task_id=task_id,
+                        checkpoint=checkpoint,
+                        out_dir=out_dir,
+                        num_envs=probe_num_envs,
+                        steps=probe_steps,
+                        seed=900000 + index,
+                        motion_file=motion_file,
+                        python_executable=sys.executable,
+                        timeout=180,
+                        frame_dir=frame_dir,
+                        frame_count=sample_rollout_frame_count,
+                    )
+                except Exception as exc:
+                    with (out_dir / "live" / "status.log").open("a", encoding="utf-8") as handle:
+                        handle.write(f"st=probe_failed step={index} task={task_id} error={type(exc).__name__}\n")
+                    probed.add(index)
+                    continue
+                if rollout is None:
+                    probed.add(index)
+                    continue
+                step = int(index * num_envs * steps_per_env)
+                manifest_path = None
+                if int(sample_rollout_frame_count) > 0:
+                    manifest_path = _write_live_sample_manifest(
+                        out_dir,
+                        run_id=run_id,
+                        tag=tag,
+                        sample_index=len(probed) + 1,
+                        checkpoint_index=index,
+                        step=step,
+                        frame_paths=rollout.get("frames", []),
+                    )
+                record = {
+                    "record_type": "policy_probe",
+                    "episode": int(index * num_envs),
+                    "return": _safe_float(rollout.get("return", 0.0)),
+                    "length": _safe_float(rollout.get("steps", probe_steps)),
+                    "success": False,
+                    "step": step,
+                    "elapsed_seconds": max(0.0, time.time() - started_at),
+                    "probe_episodes": int(rollout.get("num_envs", probe_num_envs)),
+                    "probe_seed_start": 900000 + index,
+                    "deterministic": True,
+                    "info_metrics": {
+                        "policy_probe_return": _safe_float(rollout.get("return", 0.0)),
+                        "policy_probe_length": _safe_float(rollout.get("steps", probe_steps)),
+                        "policy_probe_episodes": float(rollout.get("num_envs", probe_num_envs)),
+                        "avg_step_reward": _safe_float(rollout.get("avg_step_reward", 0.0)),
+                        "done_fraction": _safe_float(rollout.get("done_fraction", 0.0)),
+                    },
+                }
+                if manifest_path is not None:
+                    record["trajectory_manifest_path"] = str(manifest_path)
+                    record["trajectory_latest_frame_path"] = str(Path(out_dir) / "current_run_frame.jpg")
+                if "avg_mpkpe" in rollout:
+                    record["info_metrics"]["mpkpe"] = _safe_float(rollout.get("avg_mpkpe", 0.0))
+                    record["info_metrics"]["r_mpkpe"] = _safe_float(rollout.get("avg_r_mpkpe", 0.0))
+                with (out_dir / "policy_probe_records.jsonl").open("a", encoding="utf-8") as handle:
+                    handle.write(json.dumps(record) + "\n")
+                probed.add(index)
+        stop_event.wait(5.0)
+    _write_partial_train_payload(
+        out_dir=out_dir,
+        log_dir=log_dir,
+        run_id=run_id,
+        tag=tag,
+        task_id=task_id,
+        status="finished",
+        budget_mode=budget_mode,
+        train_seconds=train_seconds,
+        num_envs=num_envs,
+        steps_per_env=steps_per_env,
+        iterations=iterations,
+        started_at=started_at,
+        stop_reason="mjlab_train_complete",
+        event_status="finished",
+    )
+
+
 def _apply_mjlab_recipe(cfg, recipe, run_id):
     applied = []
     skipped = []
@@ -478,6 +945,15 @@ def main() -> None:
     parser.add_argument("--gpu-id", type=int, default=0)
     parser.add_argument("--recipe-json", default=None)
     parser.add_argument("--resolved-json", default=None)
+    parser.add_argument("--out-dir", default=None)
+    parser.add_argument("--steps-per-env", type=int, default=24)
+    parser.add_argument("--budget-mode", default="episodes")
+    parser.add_argument("--train-seconds", type=float, default=None)
+    parser.add_argument("--rollout-script", default=None)
+    parser.add_argument("--probe-interval-iterations", type=int, default=100)
+    parser.add_argument("--probe-num-envs", type=int, default=16)
+    parser.add_argument("--probe-steps", type=int, default=120)
+    parser.add_argument("--sample-rollout-frame-count", type=int, default=24)
     args = parser.parse_args()
 
     os.environ["CUDA_VISIBLE_DEVICES"] = str(args.gpu_id)
@@ -499,7 +975,41 @@ def main() -> None:
 
     log_root_path = Path("logs") / "rsl_rl" / cfg.agent.experiment_name
     log_dir = log_root_path / (datetime.now().strftime("%Y-%m-%d_%H-%M-%S") + f"_{args.run_id}")
-    run_train(args.task_id, cfg, log_dir)
+    started_at = time.time()
+    stop_event = threading.Event()
+    monitor = None
+    if args.out_dir:
+        monitor = threading.Thread(
+            target=_monitor_live_training,
+            kwargs={
+                "stop_event": stop_event,
+                "out_dir": Path(args.out_dir),
+                "log_dir": log_dir,
+                "run_id": args.run_id,
+                "tag": args.run_id,
+                "task_id": args.task_id,
+                "budget_mode": args.budget_mode,
+                "train_seconds": args.train_seconds,
+                "num_envs": int(args.num_envs),
+                "steps_per_env": int(args.steps_per_env),
+                "iterations": int(args.iterations),
+                "started_at": started_at,
+                "rollout_script": Path(args.rollout_script) if args.rollout_script else None,
+                "motion_file": args.motion_file,
+                "probe_interval_iterations": int(args.probe_interval_iterations),
+                "probe_num_envs": int(args.probe_num_envs),
+                "probe_steps": int(args.probe_steps),
+                "sample_rollout_frame_count": int(args.sample_rollout_frame_count),
+            },
+            daemon=True,
+        )
+        monitor.start()
+    try:
+        run_train(args.task_id, cfg, log_dir)
+    finally:
+        if monitor is not None:
+            stop_event.set()
+            monitor.join(timeout=30.0)
     print(f"[AUTORESEARCH] log_dir={log_dir}")
 
 
@@ -974,9 +1484,13 @@ def _run_mjlab_train(bundle: dict[str, Any], out_dir: Path) -> None:
     log_dir = out_dir / "command_logs"
     started_at = time.time()
     script = _write_train_script(out_dir).resolve()
+    rollout_script = _write_rollout_script(out_dir).resolve()
     recipe_path = (out_dir / "mjlab_recipe.json").resolve()
     resolved_path = (out_dir / "mjlab_resolved_config.json").resolve()
     _write_json(recipe_path, recipe)
+    probe_interval = int(_recipe_section(recipe, "runner").get("probe_interval_iterations") or _recipe_section(recipe, "runner").get("save_interval") or 100)
+    probe_num_envs = min(_parallel_env_count(bundle, for_eval=True), int(os.environ.get("UNITREE_MJLAB_PROBE_NUM_ENVS_MAX", "16")))
+    probe_steps = min(int(bundle["benchmark"].get("max_steps") or 200), int(os.environ.get("UNITREE_MJLAB_PROBE_STEPS_MAX", "120")))
     argv: list[str | Path] = [
         _mjlab_python(bundle),
         script,
@@ -996,7 +1510,25 @@ def _run_mjlab_train(bundle: dict[str, Any], out_dir: Path) -> None:
         recipe_path,
         "--resolved-json",
         resolved_path,
+        "--out-dir",
+        out_dir.resolve(),
+        "--steps-per-env",
+        str(steps_per_env),
+        "--budget-mode",
+        "time" if bundle["benchmark"].get("train_seconds") is not None else "episodes",
+        "--rollout-script",
+        rollout_script,
+        "--probe-interval-iterations",
+        str(probe_interval),
+        "--probe-num-envs",
+        str(probe_num_envs),
+        "--probe-steps",
+        str(probe_steps),
+        "--sample-rollout-frame-count",
+        str(int(_recipe_section(recipe, "runner").get("sample_rollout_frame_count") or 24)),
     ]
+    if bundle["benchmark"].get("train_seconds") is not None:
+        argv.extend(["--train-seconds", str(bundle["benchmark"].get("train_seconds"))])
     motion_file = _motion_file(bundle)
     if motion_file:
         argv.extend(["--motion-file", motion_file])
@@ -1012,38 +1544,55 @@ def _run_mjlab_train(bundle: dict[str, Any], out_dir: Path) -> None:
     checkpoint = _checkpoint_from_run_dir(run_dir)
     shutil.copy2(checkpoint, out_dir / "agent_checkpoint.pt")
     total_steps = int(iterations * num_envs * steps_per_env)
-    records = []
-    for idx in range(iterations):
-        records.append(
-            make_train_episode_record(
-                episode=idx + 1,
-                return_value=0.0,
-                length=steps_per_env,
-                success=False,
-                step=(idx + 1) * num_envs * steps_per_env,
-                elapsed_seconds=max(0.0, time.time() - started_at),
-                info_metrics={
-                    "mjlab_num_envs": float(num_envs),
-                    "mjlab_iteration": float(idx + 1),
-                    "samples_per_iteration": float(num_envs * steps_per_env),
-                },
+    partial_path = out_dir / "train_result_partial.json"
+    if partial_path.exists():
+        payload = json.loads(partial_path.read_text(encoding="utf-8"))
+    else:
+        payload = {}
+    records = payload.get("episode_records") if isinstance(payload.get("episode_records"), list) else []
+    collection_records = [record for record in records if str(record.get("record_type") or "train_episode") != "policy_probe"]
+    if not collection_records:
+        records = []
+        for idx in range(iterations):
+            records.append(
+                make_train_episode_record(
+                    episode=idx + 1,
+                    return_value=0.0,
+                    length=steps_per_env,
+                    success=False,
+                    step=(idx + 1) * num_envs * steps_per_env,
+                    elapsed_seconds=max(0.0, time.time() - started_at),
+                    info_metrics={
+                        "mjlab_num_envs": float(num_envs),
+                        "mjlab_iteration": float(idx + 1),
+                        "samples_per_iteration": float(num_envs * steps_per_env),
+                        "mjlab_scalar_status": "unavailable",
+                    },
+                )
             )
-        )
-        records[-1]["record_type"] = "train_collection_window"
-        records[-1]["episodes_in_window"] = num_envs
-        records[-1]["env_steps_in_window"] = num_envs * steps_per_env
+            records[-1]["record_type"] = "train_collection_window"
+            records[-1]["episodes_in_window"] = num_envs
+            records[-1]["env_steps_in_window"] = num_envs * steps_per_env
+        collection_records = records
+    last_metrics = payload.get("last_metrics") if isinstance(payload.get("last_metrics"), dict) else {}
+    last_metrics.update(
+        {
+            "gradient_updates": float(len(collection_records) or iterations),
+            "mjlab_num_envs": float(num_envs),
+            "samples_per_iteration": float(num_envs * steps_per_env),
+            "policy_probe_count": float(len([record for record in records if str(record.get("record_type")) == "policy_probe"])),
+        }
+    )
     payload = {
         "episode_records": records,
         "total_steps": total_steps,
         "env_steps": total_steps,
         "episodes_completed": int(iterations * num_envs),
-        "episode_batches": iterations,
-        "gradient_updates": iterations,
-        "last_metrics": {
-            "gradient_updates": float(iterations),
-            "mjlab_num_envs": float(num_envs),
-            "samples_per_iteration": float(num_envs * steps_per_env),
-        },
+        "episode_batches": len(collection_records) or iterations,
+        "gradient_updates": len(collection_records) or iterations,
+        "avg_return": float(np.mean([float(record.get("return", 0.0)) for record in collection_records])) if collection_records else 0.0,
+        "avg_length": float(np.mean([float(record.get("length", steps_per_env)) for record in collection_records])) if collection_records else float(steps_per_env),
+        "last_metrics": last_metrics,
         "stop_reason": "mjlab_train_complete",
         "external_backend_scaffold": False,
         "mjlab": {

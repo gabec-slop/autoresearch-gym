@@ -382,6 +382,13 @@
         border-top-style: dashed;
       }
 
+      .legend-swatch.point {
+        width: 12px;
+        height: 12px;
+        border: 3px solid var(--swatch-color);
+        border-radius: 999px;
+      }
+
       .visual-controls {
         display: flex;
         flex-wrap: wrap;
@@ -787,7 +794,7 @@
               </div>
               <div class="chart-legend" aria-label="Current run return legend">
                 <span class="legend-item"><span class="legend-swatch" style="--swatch-color: #54d2ff"></span>Collection</span>
-                <span class="legend-item"><span class="legend-swatch" style="--swatch-color: #8cff98"></span>Policy probe</span>
+                <span class="legend-item"><span class="legend-swatch point" style="--swatch-color: #8cff98"></span>Policy probe</span>
                 <span class="legend-item"><span class="legend-swatch dashed" style="--swatch-color: #ffb454"></span>Previous best</span>
               </div>
               <canvas id="returnChart" width="520" height="300"></canvas>
@@ -956,6 +963,36 @@
       function sessionDisplayLabel() {
         const suffix = sessionSource === "live_session.json" ? " (latest live)" : "";
         return `${session}${suffix}`;
+      }
+
+      function normalizeArtifactPath(rawPath) {
+        if (!rawPath) return "";
+        let path = String(rawPath).replaceAll("\\", "/");
+        if (/^https?:\/\//i.test(path) || path.startsWith("data:")) return path;
+
+        const sessionMarker = "autoresearch_runs/sessions/";
+        const sessionIndex = path.indexOf(sessionMarker);
+        if (sessionIndex >= 0) return path.slice(sessionIndex).replace(/^\/+/, "");
+
+        const remoteMarker = "autoresearch_runs/external_remote/";
+        const remoteIndex = path.indexOf(remoteMarker);
+        if (remoteIndex >= 0 && session) {
+          const rest = path.slice(remoteIndex + remoteMarker.length);
+          const parts = rest.split("/").filter(Boolean);
+          const runId = parts.shift();
+          if (runId && parts[0] === "external") {
+            return `${session}/runs/${runId}/${parts.join("/")}`;
+          }
+        }
+
+        return path.replace(/^\/+/, "");
+      }
+
+      function artifactUrl(rawPath) {
+        const path = normalizeArtifactPath(rawPath);
+        if (!path) return "";
+        if (/^https?:\/\//i.test(path) || path.startsWith("data:")) return path;
+        return `/${path}`;
       }
 
       async function fetchLiveSessionPath() {
@@ -1311,7 +1348,7 @@
         if (!points.length) return;
         ctx.save();
         ctx.strokeStyle = options.color || "#54d2ff";
-        ctx.lineWidth = options.lineWidth || 2;
+        ctx.lineWidth = options.lineWidth ?? 2;
         ctx.globalAlpha = options.alpha ?? 1;
         if (options.dash) ctx.setLineDash(options.dash);
         ctx.beginPath();
@@ -1329,7 +1366,7 @@
           }
           previousSegment = segment;
         });
-        ctx.stroke();
+        if (ctx.lineWidth > 0) ctx.stroke();
         if (options.showPoints || finite.length === 1) {
           ctx.fillStyle = options.color || "#54d2ff";
           points.forEach(({ x, y }) => {
@@ -1496,11 +1533,11 @@
         const { collectionValues, probeValues } = splitReturnSeries(episodes);
         const ghostValues = ghostReturnsFor(episodes);
         const xValues = returnChartXValues(episodes);
-        const allValues = [
+        const primaryValues = [
           ...finiteValues(collectionValues),
-          ...finiteValues(probeValues),
           ...finiteValues(ghostValues),
         ];
+        const allValues = primaryValues.length ? primaryValues : finiteValues(probeValues);
         const allXValues = finiteChartXValues([collectionValues, probeValues, ghostValues], xValues);
         const chart = drawChartBase(returnCtx, { emptyText: "No rollouts yet", bottomPad: 56, yLabel: "Return" });
 
@@ -1547,9 +1584,8 @@
         });
         drawSeries(returnCtx, chart, probeValues, min, max, {
           color: "#8cff98",
-          lineWidth: 3,
-          pointRadius: 4,
-          connectGaps: true,
+          lineWidth: 0,
+          pointRadius: 4.5,
           showPoints: true,
           xValues,
           xMin,
@@ -2258,7 +2294,7 @@
 
       async function refreshSampledTrajectoryFrame() {
         const visual = latestRun.visual || {};
-        const manifestPath = latestRun.trajectory_manifest_path || visual.trajectory_manifest_path;
+        const manifestPath = normalizeArtifactPath(latestRun.trajectory_manifest_path || visual.trajectory_manifest_path);
         if (!manifestPath) {
           const sampledStatus = visual.sampled_status || "waiting";
           const activeSample = visual.active_sample_index ? ` #${visual.active_sample_index}` : "";
@@ -2268,10 +2304,10 @@
           return;
         }
         try {
-          const response = await fetch(`/${manifestPath}?t=${Date.now()}`, { cache: "no-store" });
+          const response = await fetch(`${artifactUrl(manifestPath)}?t=${Date.now()}`, { cache: "no-store" });
           if (!response.ok) throw new Error(`HTTP ${response.status}`);
           const manifest = await response.json();
-          const frames = Array.isArray(manifest.frames) ? manifest.frames.filter(Boolean) : [];
+          const frames = Array.isArray(manifest.frames) ? manifest.frames.map(normalizeArtifactPath).filter(Boolean) : [];
           const sampleLabel = manifest.sample_index ? ` #${manifest.sample_index}` : "";
           const episodeLabel = manifest.episode ? ` rollout ${manifest.episode}` : "";
           trajectorySampleLabel = `${sampleLabel}${episodeLabel}`.trim();
@@ -2294,7 +2330,7 @@
           const framePath = trajectoryFrames[trajectoryFrameIndex % trajectoryFrames.length];
           trajectoryFrameIndex = (trajectoryFrameIndex + 1) % trajectoryFrames.length;
           frameRefreshActive = true;
-          simFrame.src = `/${framePath}?t=${Date.now()}`;
+          simFrame.src = `${artifactUrl(framePath)}?t=${Date.now()}`;
         } catch (error) {
           updateText("frameStatus", "Sampled rollout unavailable");
           showFramePlaceholder("Waiting for a readable sampled rollout manifest.");
@@ -2318,7 +2354,7 @@
           refreshSampledTrajectoryFrame();
           return;
         }
-        const activeFrameUrl = explicitFrame || (latestRun.frame_path ? `/${latestRun.frame_path}` : frameUrl);
+        const activeFrameUrl = explicitFrame || (latestRun.frame_path ? artifactUrl(latestRun.frame_path) : frameUrl);
         const expectsFrames = Boolean(explicitFrame || latestRun.frame_path || latestRun.render_mode === "rgb_array");
         if (!expectsFrames) {
           updateText("frameStatus", "Frames disabled");

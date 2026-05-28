@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import shutil
 import sys
 import types
 from pathlib import Path
@@ -315,6 +316,130 @@ def test_unitree_mjlab_train_bridge_compiles_with_recipe_overrides() -> None:
     assert "--recipe-json" in MJLAB_TRAIN_SCRIPT
     assert "reward_weights" in MJLAB_TRAIN_SCRIPT
     assert "curriculum_overrides" in MJLAB_TRAIN_SCRIPT
+    assert "train_result_partial.json" in MJLAB_TRAIN_SCRIPT
+    assert "policy_probe_records.jsonl" in MJLAB_TRAIN_SCRIPT
+    assert "current_run_metrics.json" in MJLAB_TRAIN_SCRIPT
+    assert "--sample-rollout-frame-count" in MJLAB_TRAIN_SCRIPT
+    assert "mjlab_live_probe" in MJLAB_TRAIN_SCRIPT
+
+
+def test_ssh_target_sync_live_mirrors_remote_dashboard_metrics(tmp_path, monkeypatch) -> None:
+    from autoresearch_gym.external.targets import SshTarget, TargetConfig
+
+    remote_external = tmp_path / "remote" / "autoresearch_runs" / "external_remote" / "run-1" / "external"
+    remote_live = remote_external / "live"
+    remote_live.mkdir(parents=True)
+    (remote_live / "current_run_metrics.json").write_text(json.dumps({"episodes": [{"return": 1.0}]}), encoding="utf-8")
+    (remote_live / "status.log").write_text("st=running step=1\n", encoding="utf-8")
+
+    def fake_run(argv, **kwargs):
+        assert argv[0] == "scp"
+        destination = Path(argv[-1])
+        destination.mkdir(parents=True, exist_ok=True)
+        shutil.copytree(remote_external, destination, dirs_exist_ok=True)
+        return types.SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr("autoresearch_gym.external.targets.subprocess.run", fake_run)
+    target = SshTarget(
+        TargetConfig(
+            name="pytest-ssh",
+            kind="ssh",
+            host="example.invalid",
+            remote_root=str(tmp_path / "remote"),
+            path_style="posix",
+        )
+    )
+    session_dir = tmp_path / "session"
+    bundle = types.SimpleNamespace(run_id="run-1", external_dir=tmp_path / "local_external", session_dir=session_dir)
+
+    target.sync_live(bundle)
+
+    mirrored = json.loads((session_dir / "live" / "current_run_metrics.json").read_text(encoding="utf-8"))
+    assert mirrored["episodes"][0]["return"] == 1.0
+    assert (session_dir / "live" / "status.log").read_text(encoding="utf-8") == "st=running step=1\n"
+
+
+def test_ssh_target_sync_live_localizes_remote_sampled_rollout_paths(tmp_path, monkeypatch) -> None:
+    from autoresearch_gym.external.targets import SshTarget, TargetConfig
+
+    remote_root = "C:/code/autoresearch-gym"
+    run_id = "run-1"
+    remote_external = tmp_path / "remote" / "autoresearch_runs" / "external_remote" / run_id / "external"
+    remote_live = remote_external / "live"
+    remote_trajectory = remote_external / "trajectories" / "sample_000001"
+    remote_live.mkdir(parents=True)
+    remote_trajectory.mkdir(parents=True)
+    windows_manifest = (
+        f"{remote_root}\\autoresearch_runs\\external_remote\\{run_id}\\external"
+        "\\trajectories\\sample_000001\\manifest.json"
+    )
+    windows_frame = (
+        f"{remote_root}\\autoresearch_runs\\external_remote\\{run_id}\\external"
+        "\\trajectories\\sample_000001\\frame_0000.jpg"
+    )
+    (remote_live / "current_run_metrics.json").write_text(
+        json.dumps(
+            {
+                "run": {
+                    "run_id": run_id,
+                    "trajectory_manifest_path": windows_manifest,
+                    "visual": {
+                        "mode": "sampled_trajectory",
+                        "trajectory_manifest_path": windows_manifest,
+                        "trajectory_latest_frame_path": windows_frame,
+                    },
+                },
+                "episodes": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+    (remote_trajectory / "manifest.json").write_text(
+        json.dumps(
+            {
+                "status": "completed",
+                "frames": [windows_frame],
+                "latest_frame_path": windows_frame,
+                "frame_count": 1,
+            }
+        ),
+        encoding="utf-8",
+    )
+    (remote_trajectory / "frame_0000.jpg").write_bytes(b"fake image")
+
+    def fake_run(argv, **kwargs):
+        assert argv[0] == "scp"
+        destination = Path(argv[-1])
+        destination.mkdir(parents=True, exist_ok=True)
+        shutil.copytree(remote_external, destination, dirs_exist_ok=True)
+        return types.SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr("autoresearch_gym.external.targets.subprocess.run", fake_run)
+    target = SshTarget(
+        TargetConfig(
+            name="pytest-ssh",
+            kind="ssh",
+            host="example.invalid",
+            remote_root=remote_root,
+            path_style="windows",
+        )
+    )
+    session_dir = tmp_path / "session"
+    bundle = types.SimpleNamespace(run_id=run_id, external_dir=tmp_path / "local_external", session_dir=session_dir)
+
+    target.sync_live(bundle)
+
+    mirrored = json.loads((session_dir / "live" / "current_run_metrics.json").read_text(encoding="utf-8"))
+    manifest_path = mirrored["run"]["visual"]["trajectory_manifest_path"]
+    latest_frame_path = mirrored["run"]["visual"]["trajectory_latest_frame_path"]
+    assert "C:" not in manifest_path
+    assert "external_remote" not in manifest_path
+    assert manifest_path.endswith("local_external/trajectories/sample_000001/manifest.json")
+    assert latest_frame_path.endswith("local_external/trajectories/sample_000001/frame_0000.jpg")
+
+    manifest = json.loads((tmp_path / "local_external" / "trajectories" / "sample_000001" / "manifest.json").read_text())
+    assert manifest["frames"][0].endswith("local_external/trajectories/sample_000001/frame_0000.jpg")
+    assert "C:" not in manifest["latest_frame_path"]
 
 
 def test_unitree_lower_level_cleanrl_seed_trains_evals_and_renders(tmp_path) -> None:

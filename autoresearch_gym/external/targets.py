@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import json
 import os
+import shutil
 import shlex
 import subprocess
 import time
@@ -351,7 +353,41 @@ class SshTarget:
             )
             if "--checkpoint" in argv:
                 remote_command += f" --checkpoint {self._quote_remote(remote_checkpoint)}"
-        result = self._ssh(remote_command, timeout=command.timeout_seconds or 600.0)
+        started_at = time.time()
+        process = subprocess.Popen(
+            ["ssh", "-o", "BatchMode=yes", self.config.host or "", remote_command],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        deadline = started_at + float(command.timeout_seconds or 600.0)
+        sync_interval = float(self.config.extra.get("live_sync_interval_seconds", 20.0))
+        next_sync = time.time() + max(1.0, sync_interval)
+        timed_out = False
+        while process.poll() is None:
+            now = time.time()
+            if now >= deadline:
+                timed_out = True
+                process.kill()
+                break
+            if sync_interval > 0 and now >= next_sync:
+                self.sync_live(bundle)
+                next_sync = now + max(1.0, sync_interval)
+            time.sleep(1.0)
+        stdout, stderr = process.communicate()
+        if timed_out:
+            returncode = 124
+            stderr = (stderr or "") + f"\ncommand timed out after {command.timeout_seconds or 600.0} seconds"
+        else:
+            returncode = int(process.returncode or 0)
+        result = CommandResult(
+            returncode=returncode,
+            stdout=stdout or "",
+            stderr=stderr or "",
+            started_at=started_at,
+            finished_at=time.time(),
+        )
+        self.sync_live(bundle)
         log_dir = bundle.external_dir / "command_logs"
         log_dir.mkdir(parents=True, exist_ok=True)
         safe_label = "".join(ch if ch.isalnum() or ch in "._-" else "-" for ch in command.label)
@@ -360,7 +396,71 @@ class SshTarget:
         return result
 
     def sync_live(self, bundle: RunBundle) -> None:
-        return None
+        remote_external = self._remote_display_path(self._remote_external_dir(bundle))
+        bundle.external_dir.mkdir(parents=True, exist_ok=True)
+        completed = subprocess.run(
+            ["scp", "-r", f"{self.config.host}:{remote_external}/.", str(bundle.external_dir)],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if completed.returncode != 0:
+            return
+        self._localize_live_artifacts(bundle)
+        if bundle.session_dir is not None:
+            remote_live_metrics = bundle.external_dir / "live" / "current_run_metrics.json"
+            if remote_live_metrics.exists():
+                local_live = bundle.session_dir / "live"
+                local_live.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(remote_live_metrics, local_live / "current_run_metrics.json")
+            remote_status = bundle.external_dir / "live" / "status.log"
+            if remote_status.exists():
+                local_live = bundle.session_dir / "live"
+                local_live.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(remote_status, local_live / "status.log")
+
+    def _dashboard_path(self, path: Path) -> str:
+        try:
+            return path.resolve().relative_to(Path.cwd().resolve()).as_posix()
+        except ValueError:
+            return str(path.resolve())
+
+    def _localize_remote_path_value(self, bundle: RunBundle, value: Any) -> Any:
+        if not isinstance(value, str):
+            return value
+        normalized = value.replace("\\", "/")
+        remote_external = self._remote_display_path(self._remote_external_dir(bundle)).replace("\\", "/").rstrip("/")
+        suffix: str | None = None
+        if normalized.startswith(remote_external + "/"):
+            suffix = normalized[len(remote_external) + 1 :]
+        else:
+            marker = f"autoresearch_runs/external_remote/{bundle.run_id}/external/"
+            marker_index = normalized.find(marker)
+            if marker_index >= 0:
+                suffix = normalized[marker_index + len(marker) :]
+        if suffix is None:
+            return value
+        return self._dashboard_path(bundle.external_dir / suffix)
+
+    def _localize_remote_paths(self, bundle: RunBundle, payload: Any) -> Any:
+        if isinstance(payload, dict):
+            return {key: self._localize_remote_paths(bundle, item) for key, item in payload.items()}
+        if isinstance(payload, list):
+            return [self._localize_remote_paths(bundle, item) for item in payload]
+        return self._localize_remote_path_value(bundle, payload)
+
+    def _localize_live_artifacts(self, bundle: RunBundle) -> None:
+        json_paths = [bundle.external_dir / "live" / "current_run_metrics.json"]
+        json_paths.extend((bundle.external_dir / "trajectories").glob("sample_*/manifest.json"))
+        for path in json_paths:
+            if not path.exists():
+                continue
+            try:
+                payload = json.loads(path.read_text(encoding="utf-8"))
+            except Exception:
+                continue
+            localized = self._localize_remote_paths(bundle, payload)
+            path.write_text(json.dumps(localized, indent=2), encoding="utf-8")
 
     def fetch_artifacts(self, bundle: RunBundle) -> ArtifactSet:
         remote_external = self._remote_display_path(self._remote_external_dir(bundle))
