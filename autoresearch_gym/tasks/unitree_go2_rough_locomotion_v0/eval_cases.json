@@ -1,0 +1,20 @@
+{
+  "name": "unitree_go2_rough_locomotion_eval_cases_v0",
+  "description": "Fixed rough-terrain and command cases for Unitree Go2/G2 locomotion.",
+  "cases": [
+    {
+      "name": "forward-rough",
+      "terrain_type": "rough",
+      "terrain_seed": 1101,
+      "command": [0.6, 0.0, 0.0],
+      "duration_seconds": 10
+    },
+    {
+      "name": "turning-rough",
+      "terrain_type": "rough",
+      "terrain_seed": 1102,
+      "command": [0.35, 0.0, 0.45],
+      "duration_seconds": 10
+    }
+  ]
+}

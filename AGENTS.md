@@ -188,6 +188,14 @@ Use CleanRL-style explicit code over hidden abstractions. Shared utilities are
 acceptable only when they preserve readability and do not hide the training
 recipe from the autoresearch loop.
 
+External-environment seeds must stay target-agnostic. Do not branch inside a
+seed on local vs remote execution, SSH hostnames, Windows drive paths, private
+remote roots, or per-machine account names. Benchmark and runner/external
+target code own backend selection, path style, staging, launch, artifact fetch,
+and redaction. The seed should expose the editable recipe and produce the same
+normalized train/eval artifacts regardless of whether the harness executes on
+the local machine, a networked Windows GPU box, or another SSH target.
+
 `get_candidate()` should describe the seed or candidate in human language. The
 runner surfaces it in summaries and dashboards, but the actual training recipe
 belongs in executable code.

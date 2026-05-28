@@ -1,0 +1,22 @@
+{
+  "name": "unitree_g1_motion_mirror_eval_cases_v0",
+  "description": "Fixed G1 side-kick motion windows for runner-owned external evaluation.",
+  "cases": [
+    {
+      "name": "side-kick-start",
+      "motion_clip": "pbhc_side_kick_mjlab_motion",
+      "retargeting_profile": "unitree_g1_mjlab",
+      "start_frame": 0,
+      "end_frame": 120,
+      "fps": 30
+    },
+    {
+      "name": "side-kick-contact",
+      "motion_clip": "pbhc_side_kick_mjlab_motion",
+      "retargeting_profile": "unitree_g1_mjlab",
+      "start_frame": 120,
+      "end_frame": 240,
+      "fps": 30
+    }
+  ]
+}

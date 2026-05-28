@@ -1,0 +1,13 @@
+# Example only. Copy values into ~/.config/autoresearch-gym/targets.toml or
+# .autoresearch.local.toml and replace every placeholder with private values.
+
+[targets.windows_gpu]
+kind = "ssh"
+host = "user@windows-gpu.example.invalid"
+remote_root = "C:/code/autoresearch-gym"
+path_style = "windows"
+python = ".venv/Scripts/python.exe"
+artifact_sync = "scp"
+
+[targets.local]
+kind = "local"

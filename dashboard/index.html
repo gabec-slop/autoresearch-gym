@@ -2138,8 +2138,11 @@
       }
 
       function parallelEnvCount(run, losses = {}) {
-        const direct = Number(losses.num_envs);
+        const direct = Number(losses.num_envs ?? losses.mjlab_num_envs);
         if (Number.isFinite(direct) && direct > 0) return direct;
+        const metrics = run?.train?.last_metrics || run?.last_metrics || run?.current?.info_metrics || {};
+        const metricNumEnv = Number(metrics.num_envs ?? metrics.mjlab_num_envs);
+        if (Number.isFinite(metricNumEnv) && metricNumEnv > 0) return metricNumEnv;
         const liveObserved = Number(run?.observed_env_count || run?.visual?.observed_env_count);
         if (Number.isFinite(liveObserved) && liveObserved > 0) return liveObserved;
         const episodeEnvIndices = (Array.isArray(run?.episodes) ? run.episodes : [])
@@ -2150,7 +2153,7 @@
         if (Number.isFinite(trainNumEnv) && trainNumEnv > 0) return trainNumEnv;
         const curriculumNumEnv = Number(run?.train?.curriculum?.num_envs || run?.curriculum?.num_envs);
         if (Number.isFinite(curriculumNumEnv) && curriculumNumEnv > 0) return curriculumNumEnv;
-        const candidateValue = Number(run?.candidate?.hyperparameters?.num_envs);
+        const candidateValue = Number(run?.candidate?.hyperparameters?.num_envs ?? run?.candidate?.recipe?.num_envs);
         if (Number.isFinite(candidateValue) && candidateValue > 0) return candidateValue;
         const trainValue = Number(run?.train?.vector_envs || run?.vector_envs);
         if (Number.isFinite(trainValue) && trainValue > 0) return trainValue;

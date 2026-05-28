@@ -63,7 +63,77 @@ Bundled tasks:
 | Panda pick-and-place | `autoresearch_gym/tasks/panda_pick_and_place_v0/benchmark.json` | `autoresearch_gym/tasks/panda_pick_and_place_v0/seed_trainable.py` or `seed_trainable_her.py` |
 | Panda bat-to-goal | `autoresearch_gym/tasks/bat_to_goal_v0/benchmark.json` | `autoresearch_gym/tasks/bat_to_goal_v0/seed_trainable.py` |
 | Panda bat-to-goal vectorized wall-clock | `autoresearch_gym/tasks/bat_to_goal_v0/benchmark_vectorized_wall_clock.json` | `autoresearch_gym/tasks/bat_to_goal_v0/seed_trainable_vectorized.py` |
-| G1 velocity command | `autoresearch_gym/tasks/g1_velocity_command_v0/benchmark.json` | `autoresearch_gym/tasks/g1_velocity_command_v0/seed_trainable.py` |
+| Unitree G1 motion mirror external | `autoresearch_gym/tasks/unitree_g1_motion_mirror_v0/benchmark.json` | `autoresearch_gym/tasks/unitree_g1_motion_mirror_v0/seed_trainable.py` |
+| Unitree G1 lower-level CleanRL external | `autoresearch_gym/tasks/unitree_g1_motion_mirror_v0/benchmark_lower_level.json` | `autoresearch_gym/tasks/unitree_g1_motion_mirror_v0/seed_trainable_lower_level_cleanrl.py` |
+| Unitree Go2 rough locomotion external | `autoresearch_gym/tasks/unitree_go2_rough_locomotion_v0/benchmark.json` | `autoresearch_gym/tasks/unitree_go2_rough_locomotion_v0/seed_trainable.py` |
+| Unitree Go2 lower-level CleanRL external | `autoresearch_gym/tasks/unitree_go2_rough_locomotion_v0/benchmark_lower_level.json` | `autoresearch_gym/tasks/unitree_go2_rough_locomotion_v0/seed_trainable_lower_level_cleanrl.py` |
+
+External Unitree tasks use an `execution_backend` plus an `execution_target`.
+Bundled task files default to `execution_target = "local"` so a Windows or
+Linux machine with the simulator stack installed can run them directly. To run
+the same benchmark from another machine, pass `--execution-target <name>` and
+keep machine-specific SSH hosts, remote roots, and account names in ignored
+target config such as `.autoresearch.local.toml` or
+`~/.config/autoresearch-gym/targets.toml`; see
+`examples/remote_targets.example.toml`.
+
+### Unitree Local And Remote Execution
+
+The Unitree G1 and Go2 tasks are external-environment tasks. The benchmark owns
+the fixed eval contract, the seed owns the trainable recipe, and the runner
+decides where the simulator executes. The same seed file should work in local
+and remote mode.
+
+The MJLab-backed variants use:
+
+- `unitree_g1_motion_mirror_v0/benchmark.json` with `seed_trainable.py`
+- `unitree_go2_rough_locomotion_v0/benchmark.json` with `seed_trainable.py`
+
+These paths expect the upstream simulator repositories under `.external/` in
+the checkout where the harness runs. G1 motion mirroring also expects its source
+motion file under `autoresearch_runs/source_motions/`.
+
+Run locally on the simulator machine:
+
+```bash
+uv run autoresearch-gym run \
+  --benchmark autoresearch_gym/tasks/unitree_g1_motion_mirror_v0/benchmark.json \
+  --seed-candidate autoresearch_gym/tasks/unitree_g1_motion_mirror_v0/seed_trainable.py \
+  --candidate autoresearch_gym/tasks/unitree_g1_motion_mirror_v0/seed_trainable.py \
+  --tag g1-mjlab-smoke \
+  --train-episodes 1 \
+  --eval-episodes 1
+```
+
+Run from a MacBook or other controller while delegating the simulator to an SSH
+target:
+
+```bash
+uv run autoresearch-gym run \
+  --benchmark autoresearch_gym/tasks/unitree_go2_rough_locomotion_v0/benchmark.json \
+  --seed-candidate autoresearch_gym/tasks/unitree_go2_rough_locomotion_v0/seed_trainable.py \
+  --candidate autoresearch_gym/tasks/unitree_go2_rough_locomotion_v0/seed_trainable.py \
+  --tag go2-mjlab-remote-smoke \
+  --train-episodes 1 \
+  --eval-episodes 1 \
+  --execution-target windows_gpu
+```
+
+Private SSH settings belong in ignored target config, not in benchmark files or
+seeds. The public example uses `artifact_sync = "scp"`, which is the supported
+SSH artifact sync mode.
+
+The lower-level CleanRL variants use:
+
+- `unitree_g1_motion_mirror_v0/benchmark_lower_level.json` with
+  `seed_trainable_lower_level_cleanrl.py`
+- `unitree_go2_rough_locomotion_v0/benchmark_lower_level.json` with
+  `seed_trainable_lower_level_cleanrl.py`
+
+Those seeds expose a more editable training-control surface directly in the
+candidate file. They are intended for recipe evolution and smoke validation of
+the lower-level path; short smoke runs validate harness and artifact plumbing,
+not final policy quality.
 
 ## Testing Seed Performance Of A Task (With Dashboard)
 

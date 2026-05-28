@@ -263,6 +263,18 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         action="store_true",
         help="Disable deterministic train-time policy probes for throughput-sensitive runs.",
     )
+    parser.add_argument(
+        "--execution-target",
+        type=str,
+        default=None,
+        help="Override the logical execution target for external benchmarks.",
+    )
+    parser.add_argument(
+        "--target-config",
+        type=Path,
+        default=None,
+        help="Path to an ignored TOML file containing external execution target config.",
+    )
     parser.add_argument("--no-record", action="store_true")
     parser.add_argument(
         "--search-mode",
@@ -364,6 +376,8 @@ def main(argv: list[str] | None = None) -> None:
         train_probe_enabled=False if args.no_train_probe else None,
         train_probe_interval_seconds=args.probe_interval_seconds,
         train_probe_episodes=args.probe_episodes,
+        execution_target_override=args.execution_target,
+        target_config_path=args.target_config,
     )
     append_outer_loop_log(session_dir, summary)
     print(json.dumps(summary, indent=2))

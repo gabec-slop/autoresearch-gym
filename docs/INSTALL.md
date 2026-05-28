@@ -115,3 +115,73 @@ runtime, selected training device, and any GPUs visible to `nvidia-smi`. In
 `--strict` mode it exits nonzero if `nvidia-smi` sees an NVIDIA GPU but
 `torch.cuda.is_available()` is false. That usually means the venv installed a
 CPU-only Torch wheel and should be repaired with the PyTorch selector command.
+
+## Unitree MJLab And Lower-Level Tasks
+
+The Unitree G1 and Go2 tasks are external-environment tasks. The base package
+contains the runner integration, benchmark files, seed trainables, and artifact
+normalization code. It does not vendor MJLab, Unitree simulator repositories,
+large motion files, CUDA drivers, or private machine configuration.
+
+For the MJLab-backed Unitree tasks, set up the simulator stack in the checkout
+where the harness will run:
+
+```text
+.external/mjlab
+.external/unitree_rl_mjlab
+```
+
+The G1 motion-mirroring task also expects the source motion artifact:
+
+```text
+autoresearch_runs/source_motions/pbhc_side_kick_mjlab_motion.npz
+```
+
+Install this package and the Python dependencies needed by the selected
+simulator stack, then verify Torch sees the GPU:
+
+```powershell
+uv venv --seed --python 3.10 .venv
+uv sync --extra mujoco --extra dev
+uv run autoresearch-gym doctor --strict
+```
+
+On Windows with NVIDIA GPUs, install a CUDA-enabled Torch wheel after syncing if
+`doctor --strict` reports CPU-only Torch. Use the command from the official
+PyTorch selector for the installed driver/CUDA combination.
+
+The Unitree benchmark files default to local execution:
+
+```powershell
+uv run autoresearch-gym run `
+  --benchmark autoresearch_gym/tasks/unitree_go2_rough_locomotion_v0/benchmark.json `
+  --seed-candidate autoresearch_gym/tasks/unitree_go2_rough_locomotion_v0/seed_trainable.py `
+  --candidate autoresearch_gym/tasks/unitree_go2_rough_locomotion_v0/seed_trainable.py `
+  --tag go2-local-smoke `
+  --train-episodes 1 `
+  --eval-episodes 1
+```
+
+To drive the same benchmark from another machine, keep SSH details in ignored
+target config such as `.autoresearch.local.toml` or
+`~/.config/autoresearch-gym/targets.toml`, based on
+`examples/remote_targets.example.toml`, then pass only the target name:
+
+```bash
+uv run autoresearch-gym run \
+  --benchmark autoresearch_gym/tasks/unitree_g1_motion_mirror_v0/benchmark.json \
+  --seed-candidate autoresearch_gym/tasks/unitree_g1_motion_mirror_v0/seed_trainable.py \
+  --candidate autoresearch_gym/tasks/unitree_g1_motion_mirror_v0/seed_trainable.py \
+  --tag g1-remote-smoke \
+  --train-episodes 1 \
+  --eval-episodes 1 \
+  --execution-target windows_gpu
+```
+
+The same seed and benchmark are used in local and remote mode. The runner and
+external backend handle target resolution, path style, command launch, and
+artifact fetch. For SSH targets, the implemented artifact sync mode is `scp`.
+
+The lower-level CleanRL Unitree benchmarks do not require the MJLab bridge
+scripts, but they still exercise the external artifact contract and should be
+run on a machine with the simulator/training dependencies needed by the seed.

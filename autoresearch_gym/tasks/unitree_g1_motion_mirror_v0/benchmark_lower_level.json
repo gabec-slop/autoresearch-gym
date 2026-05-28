@@ -1,0 +1,33 @@
+{
+  "name": "unitree_g1_motion_mirror_lower_level_v0",
+  "description": "Lower-level CleanRL-style Unitree G1 motion mirroring benchmark path. The candidate seed owns the env adapter and PPO loop directly.",
+  "env_id": "external:cleanrl:Unitree-G1-LowerLevelMotionMirror-v0",
+  "env_kwargs": {
+    "render_mode": "rgb_array",
+    "robot": "unitree_g1",
+    "task": "motion_mirror",
+    "backend": "mujoco_warp_lower_level",
+    "num_envs": 8,
+    "steps_per_env_per_iteration": 16
+  },
+  "train_episodes": 1,
+  "eval_episodes": 2,
+  "max_steps": 80,
+  "render_mode": "rgb_array",
+  "primary_metric": "eval_avg_mpkpe",
+  "primary_metric_mode": "minimize",
+  "train_seed": 42,
+  "eval_seed_start": 9000,
+  "device": "cpu",
+  "eval_case_bank": "eval_cases.json",
+  "execution_backend": {
+    "kind": "external",
+    "name": "cleanrl_lower_level_unitree_g1",
+    "adapter": "autoresearch_gym.external.cleanrl_backend:CleanRlExternalBackend",
+    "task_family": "g1_motion_mirror_lower_level",
+    "artifact_schema_version": 1,
+    "supports_live_frame": true,
+    "supports_sampled_trajectory": true,
+    "execution_target": "local"
+  }
+}

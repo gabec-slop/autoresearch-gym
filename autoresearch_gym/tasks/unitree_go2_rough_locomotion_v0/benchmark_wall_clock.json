@@ -1,0 +1,41 @@
+{
+  "name": "unitree_go2_rough_locomotion_v0_wall_clock",
+  "description": "Wall-clock external Unitree Go2/G2 rough-terrain locomotion benchmark scaffold.",
+  "env_id": "external:unitree:Unitree-Go2-RoughLocomotion-v0",
+  "env_kwargs": {
+    "render_mode": "rgb_array",
+    "robot": "unitree_go2",
+    "task_id": "Unitree-Go2-Rough-Velocity",
+    "terrain": "rough",
+    "num_envs": 4096,
+    "eval_num_envs": 1024,
+    "steps_per_env_per_iteration": 24,
+    "dry_run": false
+  },
+  "train_episodes": 1000000,
+  "train_seconds": 300,
+  "eval_episodes": 2,
+  "max_steps": 500,
+  "render_mode": "rgb_array",
+  "primary_metric": "eval_success_rate",
+  "primary_metric_mode": "maximize",
+  "train_seed": 52,
+  "eval_seed_start": 9200,
+  "device": "external",
+  "eval_case_bank": "eval_cases.json",
+  "execution_backend": {
+    "kind": "external",
+    "name": "unitree_go2_rough_locomotion",
+    "adapter": "autoresearch_gym.external.unitree_backend:UnitreeExternalBackend",
+    "task_family": "go2_rough_locomotion",
+    "artifact_schema_version": 1,
+    "supports_live_frame": true,
+    "supports_sampled_trajectory": true,
+    "policy_artifact": "torch_checkpoint",
+    "execution_target": "local",
+    "dry_run": false,
+    "required_paths": [
+      ".external/unitree_rl_mjlab"
+    ]
+  }
+}

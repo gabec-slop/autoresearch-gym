@@ -4,6 +4,7 @@ import argparse
 import json
 import sys
 import types
+from pathlib import Path
 
 import gymnasium as gym
 import numpy as np
@@ -11,6 +12,7 @@ import pytest
 
 import autoresearch_gym  # noqa: F401
 from autoresearch_gym import cli
+from autoresearch_gym.external.base import ArtifactSet
 from autoresearch_gym.runner.experiment import (
     BenchmarkSpec,
     TrainProbeSpec,
@@ -24,6 +26,7 @@ from autoresearch_gym.runner.experiment import (
     utilization_flags,
     validate_train_curve_contract,
 )
+from autoresearch_gym.external.targets import load_target_config
 from autoresearch_gym.runner.curves import (
     make_policy_probe_record,
     make_train_collection_window_record,
@@ -63,6 +66,248 @@ def test_doctor_warns_when_nvidia_gpu_is_visible_but_torch_cuda_is_unavailable(
     assert payload["selected_device"] == "cpu"
     assert payload["checks"][0]["status"] == "warn"
     assert "cannot use CUDA through PyTorch" in payload["checks"][0]["message"]
+
+
+def test_external_target_config_redacts_private_ssh_fields(tmp_path) -> None:
+    config = tmp_path / "targets.toml"
+    config.write_text(
+        """
+[targets.windows_gpu]
+kind = "ssh"
+host = "user@windows-gpu.example.invalid"
+remote_root = "C:/code/autoresearch-gym"
+path_style = "windows"
+python = ".venv/Scripts/python.exe"
+""".strip(),
+        encoding="utf-8",
+    )
+
+    target = load_target_config("windows_gpu", config_path=config)
+    redacted = target.redacted_summary()
+
+    assert target.kind == "ssh"
+    assert target.host == "user@windows-gpu.example.invalid"
+    assert target.artifact_sync == "scp"
+    assert redacted == {
+        "target": "windows_gpu",
+        "target_kind": "ssh",
+        "host_redacted": True,
+        "remote_root_redacted": True,
+        "path_style": "windows",
+    }
+
+    config.write_text(config.read_text(encoding="utf-8") + '\nartifact_sync = "sftp"\n', encoding="utf-8")
+    legacy_target = load_target_config("windows_gpu", config_path=config)
+    assert legacy_target.artifact_sync == "scp"
+
+
+def test_fake_external_run_writes_normalized_artifacts(tmp_path) -> None:
+    task_dir = tmp_path / "fake_external_task"
+    task_dir.mkdir()
+    (task_dir / "eval_cases.json").write_text(
+        json.dumps(
+            {
+                "name": "fake_external_eval_cases_v0",
+                "cases": [
+                    {"name": "fake-case-01", "difficulty": 0.1},
+                    {"name": "fake-case-02", "difficulty": 0.2},
+                ],
+            },
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    (task_dir / "benchmark.json").write_text(
+        json.dumps(
+            {
+                "name": "fake_external_v0",
+                "env_id": "external:fake:FakeExternal-v0",
+                "env_kwargs": {"render_mode": "rgb_array"},
+                "train_episodes": 3,
+                "eval_episodes": 2,
+                "max_steps": 12,
+                "render_mode": "rgb_array",
+                "primary_metric": "eval_avg_return",
+                "primary_metric_mode": "maximize",
+                "train_seed": 1,
+                "eval_seed_start": 7000,
+                "device": "external",
+                "eval_case_bank": "eval_cases.json",
+                "execution_backend": {
+                    "kind": "external",
+                    "name": "fake",
+                    "adapter": "autoresearch_gym.external.fake_backend:FakeExternalBackend",
+                    "artifact_schema_version": 1,
+                    "supports_live_frame": True,
+                    "supports_sampled_trajectory": False,
+                    "policy_artifact": "fake_checkpoint",
+                    "execution_target": "fake",
+                },
+            },
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    (task_dir / "seed_trainable.py").write_text(
+        """
+from __future__ import annotations
+
+from pathlib import Path
+from typing import Any
+
+
+def get_candidate() -> dict[str, Any]:
+    return {"description": "Fake external backend candidate.", "recipe": {"algorithm": "fake"}}
+
+
+class RewardRecipeWrapper:
+    def __init__(self, env: Any, recipe: str | None = None) -> None:
+        self.env = env
+        self.recipe = recipe
+
+
+def train_agent(*args: Any, **kwargs: Any) -> Any:
+    raise RuntimeError("fake external tests must run through execution_backend")
+
+
+def save_agent_checkpoint(agent: Any, path: Path, metadata: dict[str, Any] | None = None) -> None:
+    path.write_text("fake checkpoint placeholder\\n", encoding="utf-8")
+""".strip(),
+        encoding="utf-8",
+    )
+    summary = cli.session_run.run_experiment(
+        benchmark_path=task_dir / "benchmark.json",
+        candidate_path=task_dir / "seed_trainable.py",
+        tag="pytest-fake-external",
+        out_dir=tmp_path / "runs",
+        results_path=tmp_path / "results.jsonl",
+    )
+
+    run_dir = Path(tmp_path / "runs" / summary["run_id"])
+    assert summary["execution"]["target_kind"] == "fake"
+    assert summary["objective"]["value"] == summary["eval"]["avg_return"]
+    assert (run_dir / "summary.json").exists()
+    assert (run_dir / "train_episodes.json").exists()
+    assert (run_dir / "eval_episodes.json").exists()
+    assert Path(summary["artifacts"]["checkpoint_path"]).exists()
+    assert Path(summary["media"]["live_frame_path"]).exists()
+
+
+def test_unitree_cleanrl_style_seeds_expose_mjlab_levers() -> None:
+    from autoresearch_gym.tasks.unitree_g1_motion_mirror_v0 import seed_trainable as g1_seed
+    from autoresearch_gym.tasks.unitree_go2_rough_locomotion_v0 import seed_trainable as go2_seed
+
+    g1_recipe = g1_seed.get_candidate()["recipe"]
+    go2_recipe = go2_seed.get_candidate()["recipe"]
+
+    for recipe in (g1_recipe, go2_recipe):
+        assert recipe["style"] == "cleanrl_mjlab_ppo"
+        assert recipe["runner"]["num_envs"] >= 1024
+        assert recipe["runner"]["num_steps_per_env"] > 0
+        assert recipe["actor"]["hidden_dims"]
+        assert recipe["critic"]["hidden_dims"]
+        assert "learning_rate" in recipe["ppo"]
+        assert "clip_param" in recipe["ppo"]
+        assert "action_scale" in recipe["environment"]
+        assert recipe["reward_weights"]
+        assert recipe["event_overrides"]
+        assert recipe["termination_overrides"]
+
+    assert "motion_command" in g1_recipe
+    assert "motion_global_root_pos" in g1_recipe["reward_weights"]
+    assert "motion_body_ang_vel" in g1_recipe["reward_params"]
+    assert "anchor_pos" in g1_recipe["termination_overrides"]
+
+    assert "twist_command" in go2_recipe
+    assert "terrain" in go2_recipe
+    assert "track_linear_velocity" in go2_recipe["reward_weights"]
+    assert "foot_gait" in go2_recipe["reward_params"]
+    assert "command_vel" in go2_recipe["curriculum_overrides"]
+
+
+def test_unitree_backend_reads_nested_recipe_budget_fields() -> None:
+    from autoresearch_gym.external.unitree_backend import (
+        _learning_iterations,
+        _parallel_env_count,
+        _seed,
+        _steps_per_env,
+    )
+
+    bundle = {
+        "candidate": {
+            "recipe": {
+                "runner": {
+                    "num_envs": 128,
+                    "eval_num_envs": 16,
+                    "num_steps_per_env": 12,
+                    "max_iterations": 7,
+                    "seed": 1234,
+                }
+            }
+        },
+        "benchmark": {"env_kwargs": {"num_envs": 4096, "eval_num_envs": 1024}, "train_episodes": 2},
+    }
+
+    assert _parallel_env_count(bundle) == 128
+    assert _parallel_env_count(bundle, for_eval=True) == 16
+    assert _steps_per_env(bundle) == 12
+    assert _learning_iterations(bundle) == 7
+    assert _seed(bundle, 42) == 1234
+
+
+def test_unitree_mjlab_train_bridge_compiles_with_recipe_overrides() -> None:
+    from autoresearch_gym.external.unitree_backend import MJLAB_TRAIN_SCRIPT
+
+    compile(MJLAB_TRAIN_SCRIPT, "mjlab_train_bridge.py", "exec")
+    assert "--recipe-json" in MJLAB_TRAIN_SCRIPT
+    assert "reward_weights" in MJLAB_TRAIN_SCRIPT
+    assert "curriculum_overrides" in MJLAB_TRAIN_SCRIPT
+
+
+def test_unitree_lower_level_cleanrl_seed_trains_evals_and_renders(tmp_path) -> None:
+    from autoresearch_gym.external.cleanrl_backend import CleanRlExternalBackend
+    from autoresearch_gym.tasks.unitree_g1_motion_mirror_v0 import seed_trainable_lower_level_cleanrl as g1_seed
+    from autoresearch_gym.tasks.unitree_go2_rough_locomotion_v0 import seed_trainable_lower_level_cleanrl as go2_seed
+
+    assert CleanRlExternalBackend().normalize_media(ArtifactSet(root=tmp_path)) == {"media_available": False}
+    g1_benchmark = types.SimpleNamespace(
+        env_kwargs={"render_mode": "rgb_array", "num_envs": 2, "steps_per_env_per_iteration": 4},
+        train_episodes=1,
+        train_seed=7,
+        eval_seed_start=17,
+        eval_episodes=1,
+        max_steps=8,
+        device="cpu",
+    )
+    agent, summary = g1_seed.train_agent(
+        g1_benchmark,
+        lambda control_type=None, reward_recipe=None: g1_seed.make_external_env(
+            g1_benchmark,
+            control_type=control_type,
+            reward_recipe=reward_recipe,
+        ),
+        g1_seed.get_candidate(),
+        "cpu",
+    )
+
+    assert summary["total_steps"] == 8
+    assert summary["episode_records"][0]["record_type"] == "train_collection_window"
+    assert g1_seed.evaluate_agent(agent, g1_benchmark)["episodes"] == 1
+    media = g1_seed.render_policy(agent, g1_benchmark, tmp_path / "g1-media")
+    assert media["media_available"] is True
+    assert Path(media["live_frame_path"]).exists()
+
+    go2_benchmark = types.SimpleNamespace(env_kwargs={"render_mode": "rgb_array"}, max_steps=8)
+    go2_env = go2_seed.make_external_env(go2_benchmark)
+    obs, _ = go2_env.reset(seed=11)
+    obs, reward, terminated, truncated, info = go2_env.step(go2_env.action_space.sample())
+    assert obs.shape == go2_env.observation_space.shape
+    assert isinstance(float(reward), float)
+    assert "command_tracking_error" in info
+    assert go2_env.render().ndim == 3
+    assert terminated in {True, False}
+    assert truncated in {True, False}
+    go2_env.close()
 
 
 def test_run_tag_normalization_collapses_duplicate_pass_prefix() -> None:

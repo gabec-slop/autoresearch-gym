@@ -79,6 +79,7 @@ class BenchmarkSpec:
     eval_seed_start: int
     device: str
     eval_case_bank: Path | None
+    execution_backend: dict[str, Any] | None = None
     train_probe: TrainProbeSpec = field(default_factory=TrainProbeSpec)
 
 
@@ -119,6 +120,7 @@ def load_benchmark(path: Path) -> BenchmarkSpec:
         eval_seed_start=int(payload["eval_seed_start"]),
         device=str(payload["device"]),
         eval_case_bank=(path.parent / payload["eval_case_bank"]).resolve() if payload.get("eval_case_bank") else None,
+        execution_backend=dict(payload["execution_backend"]) if isinstance(payload.get("execution_backend"), dict) else None,
         train_probe=train_probe,
     )
 
@@ -1373,6 +1375,8 @@ def run_experiment(
     train_probe_enabled: bool | None = None,
     train_probe_interval_seconds: float | None = None,
     train_probe_episodes: int | None = None,
+    execution_target_override: str | None = None,
+    target_config_path: Path | None = None,
 ) -> dict[str, Any]:
     benchmark = load_benchmark(benchmark_path)
     trainable_module = load_trainable_module(candidate_path)
@@ -1395,6 +1399,23 @@ def run_experiment(
         benchmark.train_probe.interval_seconds = float(train_probe_interval_seconds)
     if train_probe_episodes is not None:
         benchmark.train_probe.episodes = int(train_probe_episodes)
+    if benchmark.execution_backend is not None:
+        from autoresearch_gym.external.runner import run_external_experiment
+
+        return run_external_experiment(
+            benchmark=benchmark,
+            benchmark_path=benchmark_path,
+            candidate_path=candidate_path,
+            candidate=candidate,
+            tag=tag,
+            out_dir=out_dir,
+            results_path=results_path,
+            session_dir=session_dir,
+            evolution_metadata=evolution_metadata,
+            compact_status_file=compact_status_file,
+            execution_target_override=execution_target_override,
+            target_config_path=target_config_path,
+        )
     if headless_env:
         headless_env_state = apply_headless_env_override(benchmark)
 
@@ -1522,6 +1543,7 @@ def run_experiment(
             "primary_metric_mode": benchmark.primary_metric_mode,
             "device": str(device),
             "eval_case_bank": str(benchmark.eval_case_bank) if benchmark.eval_case_bank is not None else None,
+            "execution_backend": benchmark.execution_backend,
             "train_probe": asdict(benchmark.train_probe),
         },
         "candidate": candidate_metadata(candidate),

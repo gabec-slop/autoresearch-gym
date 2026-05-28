@@ -1,0 +1,33 @@
+{
+  "name": "unitree_go2_rough_locomotion_lower_level_v0",
+  "description": "Lower-level CleanRL-style Unitree Go2/G2 rough-locomotion benchmark path. The candidate seed owns the env adapter and PPO loop directly.",
+  "env_id": "external:cleanrl:Unitree-Go2-LowerLevelRoughLocomotion-v0",
+  "env_kwargs": {
+    "render_mode": "rgb_array",
+    "robot": "unitree_go2",
+    "task": "rough_locomotion",
+    "backend": "mujoco_warp_lower_level",
+    "num_envs": 8,
+    "steps_per_env_per_iteration": 16
+  },
+  "train_episodes": 1,
+  "eval_episodes": 2,
+  "max_steps": 80,
+  "render_mode": "rgb_array",
+  "primary_metric": "eval_success_rate",
+  "primary_metric_mode": "maximize",
+  "train_seed": 52,
+  "eval_seed_start": 9200,
+  "device": "cpu",
+  "eval_case_bank": "eval_cases.json",
+  "execution_backend": {
+    "kind": "external",
+    "name": "cleanrl_lower_level_unitree_go2",
+    "adapter": "autoresearch_gym.external.cleanrl_backend:CleanRlExternalBackend",
+    "task_family": "go2_rough_locomotion_lower_level",
+    "artifact_schema_version": 1,
+    "supports_live_frame": true,
+    "supports_sampled_trajectory": true,
+    "execution_target": "local"
+  }
+}
