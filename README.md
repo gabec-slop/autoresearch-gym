@@ -10,7 +10,7 @@ The project follows the Karpathy `autoresearch` pattern: the repo provides
 benchmarks, seed trainables, a runner, and a live dashboard; the external coding
 agent provides the research judgment and edits session-local candidate files.
 
-![Animated Panda pick-and-place dashboard sample](docs/media/panda-pick-place-dashboard.gif)
+![Animated live simulation and training dashboard sample](docs/media/panda-pick-place-dashboard.gif)
 
 ## Installation Setup
 
