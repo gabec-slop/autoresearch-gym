@@ -10,7 +10,7 @@ The project follows the Karpathy `autoresearch` pattern: the repo provides
 benchmarks, seed trainables, a runner, and a live dashboard; the external coding
 agent provides the research judgment and edits session-local candidate files.
 
-![Animated live simulation and training dashboard sample](docs/media/panda-pick-place-dashboard.gif)
+![Animated Unitree Go2 locomotion dashboard sample](docs/media/unitree-go2-locomotion-dash.gif)
 
 ## Installation Setup
 
