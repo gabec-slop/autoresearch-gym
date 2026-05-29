@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import ast
 import json
 import shutil
 import sys
@@ -197,11 +198,15 @@ def save_agent_checkpoint(agent: Any, path: Path, metadata: dict[str, Any] | Non
 def test_unitree_cleanrl_style_seeds_expose_mjlab_levers() -> None:
     from autoresearch_gym.tasks.unitree_g1_motion_mirror_v0 import seed_trainable as g1_seed
     from autoresearch_gym.tasks.unitree_go2_rough_locomotion_v0 import seed_trainable as go2_seed
+    from autoresearch_gym.tasks.unitree_go2_rough_locomotion_v0 import (
+        seed_trainable_staged_curriculum as go2_staged_seed,
+    )
 
     g1_recipe = g1_seed.get_candidate()["recipe"]
     go2_recipe = go2_seed.get_candidate()["recipe"]
+    go2_staged_recipe = go2_staged_seed.get_candidate()["recipe"]
 
-    for recipe in (g1_recipe, go2_recipe):
+    for recipe in (g1_recipe, go2_recipe, go2_staged_recipe):
         assert recipe["style"] == "cleanrl_mjlab_ppo"
         assert recipe["runner"]["num_envs"] >= 1024
         assert recipe["runner"]["num_steps_per_env"] > 0
@@ -224,6 +229,15 @@ def test_unitree_cleanrl_style_seeds_expose_mjlab_levers() -> None:
     assert "track_linear_velocity" in go2_recipe["reward_weights"]
     assert "foot_gait" in go2_recipe["reward_params"]
     assert "command_vel" in go2_recipe["curriculum_overrides"]
+    assert go2_staged_recipe["single_pass_curriculum"] is True
+    assert go2_staged_recipe["terrain"]["max_init_terrain_level"] == 5
+    assert go2_staged_recipe["runner"]["sample_trajectory_source"] == "train_context"
+    assert go2_staged_recipe["event_overrides"]["push_robot"]["enabled"] is False
+    assert go2_staged_recipe["twist_command"]["ranges"]["lin_vel_x"][1] >= 1.0
+    assert go2_staged_recipe["curriculum_plan"][0]["name"] == "stand_and_creep"
+    velocity_stages = go2_staged_recipe["curriculum_overrides"]["command_vel"]["params"]["velocity_stages"]
+    assert len(velocity_stages) == 5
+    assert [stage["step"] for stage in velocity_stages] == [-1, 7200, 12000, 16800, 21600]
 
 
 def test_unitree_backend_reads_nested_recipe_budget_fields() -> None:
@@ -254,6 +268,54 @@ def test_unitree_backend_reads_nested_recipe_budget_fields() -> None:
     assert _steps_per_env(bundle) == 12
     assert _learning_iterations(bundle) == 7
     assert _seed(bundle, 42) == 1234
+
+
+def test_unitree_backend_records_curriculum_signal_scalars() -> None:
+    from autoresearch_gym.external.unitree_backend import MJLAB_TRAIN_SCRIPT
+
+    assert "CURRICULUM_SIGNAL_SPECS" in MJLAB_TRAIN_SCRIPT
+    assert "CURRICULUM_SIGNAL_KEYS" in MJLAB_TRAIN_SCRIPT
+    assert "episode_reward_track_linear_velocity" in MJLAB_TRAIN_SCRIPT
+    assert "episode_reward_body_orientation_l2" in MJLAB_TRAIN_SCRIPT
+    assert "episode_termination_illegal_contact" in MJLAB_TRAIN_SCRIPT
+    assert "curriculum_terrain_levels" in MJLAB_TRAIN_SCRIPT
+    assert "curriculum_command_stage" in MJLAB_TRAIN_SCRIPT
+    assert '"curriculum_command_lin_vel_x"' in MJLAB_TRAIN_SCRIPT
+    assert "info_metrics[key] = value" in MJLAB_TRAIN_SCRIPT
+    assert "diagnostic_series" in MJLAB_TRAIN_SCRIPT
+    assert "_diagnostic_series_metadata(records)" in MJLAB_TRAIN_SCRIPT
+
+
+def test_dashboard_diagnostics_are_metadata_driven() -> None:
+    source = Path("dashboard/index.html").read_text(encoding="utf-8")
+
+    assert "diagnostic_series" in source
+    assert "data-diagnostic-series" in source
+    assert "inferDiagnosticSeriesSpecs" in source
+    assert "episode_reward_" in source
+    assert "normalizeDiagnosticSeriesSpecs" in source
+    assert "CURRICULUM_DIAGNOSTIC_SERIES" not in source
+    assert "episode_reward_track_linear_velocity" not in source
+
+
+def test_unitree_mjlab_train_context_probes_run_out_of_process() -> None:
+    from autoresearch_gym.external.unitree_backend import MJLAB_TRAIN_SCRIPT
+
+    assert "def _run_train_context_probe_subprocess" in MJLAB_TRAIN_SCRIPT
+    assert "--probe-checkpoint" in MJLAB_TRAIN_SCRIPT
+    assert "if args.probe_checkpoint" in MJLAB_TRAIN_SCRIPT
+    assert "train_script=Path(__file__).resolve()" in MJLAB_TRAIN_SCRIPT
+    assert "_run_train_context_probe_subprocess(" in MJLAB_TRAIN_SCRIPT
+    assert "def _probe_subprocess_env" in MJLAB_TRAIN_SCRIPT
+    assert 'env.setdefault("PYTHONIOENCODING", "utf-8")' in MJLAB_TRAIN_SCRIPT
+    assert "_run_checkpoint_probe(" in MJLAB_TRAIN_SCRIPT
+    assert "policy_probes\" / \"logs" in MJLAB_TRAIN_SCRIPT
+    assert "error=no_rollout" in MJLAB_TRAIN_SCRIPT
+    assert "env_cfg.scene.num_envs = 1 if frame_dir is not None else requested_num_envs" in MJLAB_TRAIN_SCRIPT
+    assert "command_metrics" in MJLAB_TRAIN_SCRIPT
+    assert "get_command(name)" in MJLAB_TRAIN_SCRIPT
+    assert "except PermissionError" in MJLAB_TRAIN_SCRIPT
+    assert "monitor_errors.log" in MJLAB_TRAIN_SCRIPT
 
 
 def test_unitree_go2_mjlab_uses_return_primary_without_fabricated_success(tmp_path, monkeypatch) -> None:
@@ -320,7 +382,111 @@ def test_unitree_mjlab_train_bridge_compiles_with_recipe_overrides() -> None:
     assert "policy_probe_records.jsonl" in MJLAB_TRAIN_SCRIPT
     assert "current_run_metrics.json" in MJLAB_TRAIN_SCRIPT
     assert "--sample-rollout-frame-count" in MJLAB_TRAIN_SCRIPT
+    assert "--sample-trajectory-source" in MJLAB_TRAIN_SCRIPT
+    assert "_run_train_context_sample" in MJLAB_TRAIN_SCRIPT
     assert "mjlab_live_probe" in MJLAB_TRAIN_SCRIPT
+
+
+def test_custom_trajectory_sampling_task_recipes_use_generic_live_writer_contract(tmp_path: Path) -> None:
+    custom_seed_recipes: list[tuple[Path, dict[str, object]]] = []
+    for seed_path in Path("autoresearch_gym/tasks").glob("*/seed_trainable*.py"):
+        source = seed_path.read_text(encoding="utf-8")
+        if "sample_trajectory_source" not in source:
+            continue
+        module_ast = ast.parse(source, filename=str(seed_path))
+        recipe: dict[str, object] | None = None
+        for node in module_ast.body:
+            if isinstance(node, ast.Assign) and any(
+                isinstance(target, ast.Name) and target.id == "RECIPE" for target in node.targets
+            ):
+                value = ast.literal_eval(node.value)
+                if isinstance(value, dict):
+                    recipe = value
+                break
+        assert recipe is not None, f"{seed_path} declares sample_trajectory_source without a literal RECIPE"
+        runner = recipe.get("runner")
+        assert isinstance(runner, dict)
+        source_name = runner.get("sample_trajectory_source")
+        if source_name and source_name != "fallback":
+            custom_seed_recipes.append((seed_path, recipe))
+
+    assert custom_seed_recipes, "expected at least one task seed to exercise custom trajectory sampling"
+
+    for seed_path, recipe in custom_seed_recipes:
+        runner = recipe["runner"]
+        assert isinstance(runner, dict)
+        sample_source = str(runner["sample_trajectory_source"])
+        benchmark = BenchmarkSpec(
+            name=seed_path.parent.name,
+            env_id="GenericCustomSampling-v0",
+            env_kwargs={"render_mode": "rgb_array"},
+            train_episodes=10,
+            train_seconds=30.0,
+            eval_episodes=1,
+            max_steps=50,
+            reward_type=None,
+            render_mode="rgb_array",
+            primary_metric="eval_avg_return",
+            primary_metric_mode="maximize",
+            train_seed=1,
+            eval_seed_start=2,
+            device="cpu",
+            eval_case_bank=None,
+            train_probe=TrainProbeSpec(enabled=False),
+        )
+        run_id = f"{seed_path.parent.name}-{seed_path.stem}"
+        writer = make_live_writer(
+            tmp_path / "session",
+            run_id,
+            "tag-1",
+            benchmark,
+            {"description": str(seed_path), "recipe": recipe},
+        )
+        assert writer is not None
+
+        response = writer(
+            status="running",
+            episode_records=[],
+            total_steps=0,
+            last_metrics=None,
+            current_episode=1,
+            episode_return=0.0,
+            episode_length=0,
+        )
+        request = response["sampled_trajectory_request"]
+        assert request["requested"] is True
+        assert request["source"] == sample_source
+
+        writer(
+            status="running",
+            episode_records=[],
+            total_steps=24,
+            last_metrics=None,
+            current_episode=int(request["episode"]),
+            episode_return=0.0,
+            episode_length=24,
+            sampled_trajectory={
+                "episode": request["episode"],
+                "sample_index": request["sample_index"],
+                "source": sample_source,
+                "frames": [
+                    np.zeros((8, 8, 3), dtype=np.uint8),
+                    np.full((8, 8, 3), 64, dtype=np.uint8),
+                ],
+                "metadata": {"seed_path": str(seed_path)},
+            },
+        )
+
+        metrics = json.loads(
+            (tmp_path / "session" / "live" / "current_run_metrics.json").read_text(encoding="utf-8")
+        )
+        manifest_path = Path(metrics["visual"]["trajectory_manifest_path"])
+        if not manifest_path.is_absolute():
+            manifest_path = Path.cwd() / manifest_path
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        assert manifest["source"] == sample_source
+        assert manifest["frame_count"] == 2
+        assert manifest["metadata"]["seed_path"] == str(seed_path)
 
 
 def test_ssh_target_sync_live_mirrors_remote_dashboard_metrics(tmp_path, monkeypatch) -> None:
