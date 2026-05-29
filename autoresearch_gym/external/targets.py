@@ -465,11 +465,13 @@ class SshTarget:
     def fetch_artifacts(self, bundle: RunBundle) -> ArtifactSet:
         remote_external = self._remote_display_path(self._remote_external_dir(bundle))
         bundle.external_dir.mkdir(parents=True, exist_ok=True)
+        timeout = float(os.environ.get("AUTORESEARCH_SSH_FETCH_TIMEOUT_SECONDS", "300"))
         completed = subprocess.run(
             ["scp", "-r", f"{self.config.host}:{remote_external}/.", str(bundle.external_dir)],
             capture_output=True,
             text=True,
             check=False,
+            timeout=timeout,
         )
         if completed.returncode != 0:
             raise RuntimeError(f"failed to fetch remote artifacts over scp: {completed.stderr[-1000:]}")
