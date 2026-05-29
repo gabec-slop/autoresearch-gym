@@ -170,6 +170,14 @@ as `step`, `elapsed_seconds`, or `episode`. Windowed records must include
 compatible and are treated as `train_episode`, but new seeds should emit typed
 records.
 
+If a task wants dashboard charts for task-specific diagnostics, the training run
+should emit metadata with the artifacts instead of requiring dashboard
+hard-coding. Use a `diagnostic_series` object with a `series` list; each series
+should name the metric key, label, color, source such as `info_metrics`, chart
+type such as `normalized_line`, and optional group. The dashboard consumes this
+metadata from live/final run payloads and falls back to generic update metrics
+when no diagnostic series metadata is present.
+
 `train_agent(...)` summaries should expose:
 
 - `total_steps`: cumulative env steps.
@@ -183,6 +191,36 @@ Runner-owned probes must not affect the training recipe or episode cap. Seeds
 should pass the current `agent` into `live_callback(...)`; the runner records
 policy probes separately for live/final artifacts and aggregates collection
 records separately from probe records.
+
+The harness owns sampled trajectory cadence, output paths, and dashboard
+consumption. Most seeds should use the default sampled-trajectory path, where
+the runner or backend renders the latest checkpoint in the benchmark/eval
+context and writes the standard sampled trajectory artifact.
+
+A seed may opt into a task-aware sampled trajectory override only when the
+default context cannot represent what the policy was actually trained on. Common
+cases include curricula, training-only domain randomization, environment
+wrappers, staged terrain/task parameters, or external trainers whose eval/play
+configuration is materially different from the train configuration. Keep the
+override generic and seed-owned: the seed or backend should generate the same
+standard sampled trajectory artifact from the training process or resolved
+training configuration, while the harness still decides when to request samples
+and where artifacts are written. For recipe-driven backends that support it,
+prefer a narrow runner recipe flag such as `sample_trajectory_source` over new
+manifest formats or task-specific runner branches.
+
+For in-process trainables, the generic contract is the `live_callback`: when a
+seed opts into a non-fallback `sample_trajectory_source`, the callback returns a
+`sampled_trajectory_request` at the harness-selected cadence. The trainable may
+answer with `sampled_trajectory={"episode": ..., "sample_index": ..., "source":
+..., "frames": [...]}` on a later callback call. Frames may be RGB arrays or
+paths to rendered images; the live writer owns converting them into the standard
+sampled trajectory artifact and dashboard pointers.
+
+Do not use a sampled trajectory override to change evaluation semantics,
+primary metrics, fixed eval seeds, or benchmark conditions. It is only for
+visual/debug trajectory sampling. If a seed does not opt into custom sampling,
+the framework must fall back to the existing generic sampled trajectory behavior.
 
 Use CleanRL-style explicit code over hidden abstractions. Shared utilities are
 acceptable only when they preserve readability and do not hide the training

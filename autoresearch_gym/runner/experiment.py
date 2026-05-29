@@ -5,6 +5,7 @@ import os
 import importlib.util
 import platform
 import re
+import shutil
 import subprocess
 import threading
 import time
@@ -586,6 +587,18 @@ def should_sample_visual_episode(episode: int, control: dict[str, Any]) -> bool:
     return episode == 1 or episode % interval == 0
 
 
+def sampled_trajectory_source(candidate: Any) -> str:
+    metadata = candidate_metadata(candidate)
+    recipe = metadata.get("recipe")
+    if not isinstance(recipe, dict):
+        return "fallback"
+    runner = recipe.get("runner")
+    if not isinstance(runner, dict):
+        return "fallback"
+    source = runner.get("sample_trajectory_source")
+    return str(source) if source else "fallback"
+
+
 def make_live_writer(
     session_dir: Path | None,
     run_id: str,
@@ -595,6 +608,7 @@ def make_live_writer(
     *,
     headless_env: bool = False,
     budget_mode: str | None = None,
+    sample_trajectory_source: str | None = None,
 ):
     if session_dir is None:
         return None
@@ -628,6 +642,10 @@ def make_live_writer(
     visual_env_ids: set[int] = set()
     mujoco_renderers: dict[int, Any] = {}
     effective_budget_mode = budget_mode or ("time" if benchmark.train_seconds is not None else "episodes")
+    effective_sample_trajectory_source = str(sample_trajectory_source or sampled_trajectory_source(candidate))
+    custom_sample_trajectory = effective_sample_trajectory_source not in {"", "fallback", "default"}
+    custom_sample_request_indices: dict[int, int] = {}
+    custom_sample_completed_episodes: set[int] = set()
 
     if visual_disabled_reason is not None or not control_path.exists():
         write_json_atomic(control_path, visual_control)
@@ -747,6 +765,71 @@ def make_live_writer(
         latest_trajectory_frame_path = frame_path
         write_sampled_manifest("recording", sampled_episode)
 
+    def write_custom_sampled_trajectory(payload: dict[str, Any]) -> None:
+        nonlocal sampled_trajectory_count, latest_trajectory_index, latest_trajectory_manifest_path
+        nonlocal latest_trajectory_frame_path, sampled_status
+        frames = payload.get("frames")
+        if not isinstance(frames, list):
+            frames = []
+        sampled_trajectory_count += 1
+        sample_index = int(payload.get("sample_index") or sampled_trajectory_count)
+        latest_trajectory_index = sample_index
+        episode = payload.get("episode")
+        if episode is not None:
+            custom_sample_completed_episodes.add(int(episode))
+        sampled_dir = trajectories_dir / f"sample_{sample_index:06d}"
+        manifest_path = sampled_dir / "manifest.json"
+        written_frames: list[str] = []
+        for idx, raw_frame in enumerate(frames):
+            frame_path = sampled_dir / f"frame_{idx:04d}.jpg"
+            if isinstance(raw_frame, np.ndarray):
+                write_frame_atomic(
+                    frame_path,
+                    raw_frame,
+                    quality=int(visual_control.get("jpeg_quality", 70)),
+                )
+            else:
+                source_path = Path(str(raw_frame))
+                if not source_path.is_absolute():
+                    source_path = ROOT_DIR / source_path
+                frame_path.parent.mkdir(parents=True, exist_ok=True)
+                try:
+                    image = Image.open(source_path)
+                    image.convert("RGB").save(
+                        frame_path,
+                        format="JPEG",
+                        quality=int(visual_control.get("jpeg_quality", 70)),
+                    )
+                except Exception:
+                    shutil.copy2(source_path, frame_path)
+            written_frames.append(repo_relative(frame_path))
+        latest_trajectory_manifest_path = manifest_path
+        latest_trajectory_frame_path = Path(written_frames[-1]) if written_frames else None
+        if latest_trajectory_frame_path is not None and not latest_trajectory_frame_path.is_absolute():
+            latest_trajectory_frame_path = ROOT_DIR / latest_trajectory_frame_path
+        sampled_status = "completed" if written_frames else "render_unavailable"
+        manifest_payload = {
+            "run_id": run_id,
+            "tag": tag,
+            "sample_index": sample_index,
+            "episode": int(episode) if episode is not None else None,
+            "env_id": payload.get("env_id"),
+            "status": sampled_status,
+            "reason": payload.get("reason"),
+            "source": str(payload.get("source") or effective_sample_trajectory_source),
+            "updated_at": time.time(),
+            "frame_count": len(written_frames),
+            "frames": written_frames,
+            "latest_frame_path": written_frames[-1] if written_frames else None,
+            "playback_fps": float(
+                payload.get("playback_fps") or visual_control.get("trajectory_playback_fps", 20.0)
+            ),
+            "frame_stride": int(payload.get("frame_stride") or visual_control.get("trajectory_frame_stride", 2)),
+            "sample_rate": float(visual_control.get("trajectory_sample_rate", 0.05)),
+            "metadata": payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {},
+        }
+        write_json_atomic(manifest_path, manifest_payload)
+
     def visual_reset(env: gym.Env[np.ndarray, np.ndarray]) -> None:
         nonlocal visual_episode, visual_sampling_eligible, sampled_status
         visual_episode += 1
@@ -816,6 +899,8 @@ def make_live_writer(
             return obs, reward, terminated, truncated, info
 
     def wrap_env(env: gym.Env[np.ndarray, np.ndarray]) -> gym.Env[np.ndarray, np.ndarray]:
+        if custom_sample_trajectory:
+            return env
         return LiveVisualWrapper(env)
 
     def write_live(
@@ -828,12 +913,16 @@ def make_live_writer(
         current_episode: int | None = None,
         episode_return: float = 0.0,
         episode_length: int = 0,
+        sampled_trajectory: dict[str, Any] | None = None,
+        diagnostic_series: dict[str, Any] | list[dict[str, Any]] | None = None,
         **_: Any,
     ) -> dict[str, Any]:
         nonlocal last_frame_at, sampled_status
         control = read_visual_control()
         visual_mode = str(control.get("visual_mode", DEFAULT_VISUAL_CONTROL["visual_mode"]))
         active_episode_number = int(current_episode or len(episode_records) + 1)
+        if isinstance(sampled_trajectory, dict):
+            write_custom_sampled_trajectory(sampled_trajectory)
 
         if sampled_episode is not None and visual_mode != "sampled_trajectory":
             stop_sampled_episode("interrupted", "visual_mode_changed")
@@ -907,6 +996,7 @@ def make_live_writer(
                         "visual_control": control,
                         "visual": visual_payload,
                         "observed_env_count": len(visual_env_ids),
+                        "diagnostic_series": diagnostic_series,
                     },
                     "current": {
                         "status": status,
@@ -927,6 +1017,7 @@ def make_live_writer(
                     },
                     "episodes": episode_records,
                     "latest_losses": last_metrics,
+                    "diagnostic_series": diagnostic_series,
                     "visual_control": control,
                     "visual": visual_payload,
                     "observed_env_count": len(visual_env_ids),
@@ -946,11 +1037,33 @@ def make_live_writer(
                     write_frame_atomic(frame_path, frame, quality=int(control.get("jpeg_quality", 70)))
                     last_frame_at = now
                     write_metrics()
+        custom_request: dict[str, Any] | None = None
+        if custom_sample_trajectory and visual_mode == "sampled_trajectory":
+            if (
+                should_sample_visual_episode(active_episode_number, control)
+                and active_episode_number not in custom_sample_completed_episodes
+            ):
+                sample_index = custom_sample_request_indices.setdefault(
+                    active_episode_number,
+                    sampled_trajectory_count + 1,
+                )
+                sampled_status = "waiting_for_custom_sample"
+                custom_request = {
+                    "requested": True,
+                    "source": effective_sample_trajectory_source,
+                    "episode": active_episode_number,
+                    "sample_index": sample_index,
+                    "frame_stride": int(control.get("trajectory_frame_stride", 2)),
+                    "playback_fps": float(control.get("trajectory_playback_fps", 20.0)),
+                }
+                write_metrics()
         return {
             "visual_mode": visual_mode,
             "sampled_trajectory_active": bool(visual_mode == "sampled_trajectory" and sampled_episode is not None),
             "sampled_trajectory_stride": int(control.get("trajectory_frame_stride", 2)),
             "sampled_trajectory_sample_index": sampled_trajectory_index,
+            "sampled_trajectory_source": effective_sample_trajectory_source,
+            "sampled_trajectory_request": custom_request,
         }
 
     write_live.wrap_env = wrap_env  # type: ignore[attr-defined]
@@ -1485,6 +1598,7 @@ def run_experiment(
             episode_records=train_summary["episode_records"],
             total_steps=train_summary.get("total_steps", 0),
             last_metrics=train_summary.get("last_metrics"),
+            diagnostic_series=train_summary.get("diagnostic_series"),
         )
     eval_summary = evaluate_agent(agent, benchmark, candidate)
     if live_callback is not None:
@@ -1493,6 +1607,7 @@ def run_experiment(
             episode_records=train_summary["episode_records"],
             total_steps=train_summary.get("total_steps", 0),
             last_metrics=train_summary.get("last_metrics"),
+            diagnostic_series=train_summary.get("diagnostic_series"),
         )
     checkpoint_path = run_dir / "agent_checkpoint.pt"
     trainable_module.save_agent_checkpoint(
