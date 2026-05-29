@@ -371,6 +371,45 @@
         line-height: 1.35;
       }
 
+      .metric-toggle-row {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        margin: 10px 0 8px;
+      }
+
+      .metric-toggle {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        min-height: 28px;
+        padding: 4px 8px;
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        background: rgba(255, 255, 255, 0.035);
+        color: var(--text);
+        font-size: 12px;
+        cursor: pointer;
+        user-select: none;
+      }
+
+      .metric-toggle input {
+        width: 14px;
+        height: 14px;
+        margin: 0;
+        accent-color: var(--accent);
+      }
+
+      .metric-toggle .toggle-swatch {
+        width: 16px;
+        height: 0;
+        border-top: 3px solid var(--swatch-color);
+      }
+
+      .metric-toggle.is-unavailable {
+        color: rgba(232, 238, 252, 0.48);
+      }
+
       .legend-swatch {
         display: inline-block;
         width: 22px;
@@ -894,6 +933,7 @@
                 <span id="diagnosticChartStatus">Waiting for update stats</span>
               </div>
               <canvas id="lossChart" width="360" height="220"></canvas>
+              <div class="metric-toggle-row" id="diagnosticMetricToggles" aria-label="Diagnostic metric visibility"></div>
               <div class="chart-note" id="diagnosticChartNote"></div>
               <table class="metric-table">
                 <thead>
@@ -1820,6 +1860,30 @@
         /value_loss/,
       ];
 
+      const DIAGNOSTIC_SERIES_SELECTION_STORAGE = "autoresearch.diagnosticSeriesSelection.v1";
+      const DIAGNOSTIC_SERIES_COLORS = ["#54d2ff", "#8cff98", "#ffb454", "#ff6b7a", "#c9a7ff", "#7ee4c6"];
+
+      function loadDiagnosticSeriesSelection() {
+        try {
+          const raw = JSON.parse(window.localStorage.getItem(DIAGNOSTIC_SERIES_SELECTION_STORAGE) || "null");
+          if (Array.isArray(raw)) {
+            return new Set(raw.map((key) => String(key)));
+          }
+        } catch (error) {
+          // Ignore malformed local storage and fall back to the full metric set.
+        }
+        return null;
+      }
+
+      let selectedDiagnosticSeriesKeys = loadDiagnosticSeriesSelection();
+
+      function saveDiagnosticSeriesSelection() {
+        window.localStorage.setItem(
+          DIAGNOSTIC_SERIES_SELECTION_STORAGE,
+          JSON.stringify([...(selectedDiagnosticSeriesKeys || [])]),
+        );
+      }
+
       function shouldChartUpdateMetric(label, value) {
         if (!Number.isFinite(Number(value))) return false;
         const key = String(label || "").toLowerCase();
@@ -1897,6 +1961,209 @@
           lossCtx.font = "12px sans-serif";
           lossCtx.fillText(item.label.slice(0, 10), x, height - 14);
           lossCtx.fillText(formatNumber(item.value, 3), x, Math.max(14, y - 8));
+        });
+      }
+
+      function rawDiagnosticSeriesMetadata(data) {
+        const metadata = data?.diagnostic_series || data?.run?.diagnostic_series || latestRun?.diagnostic_series;
+        if (Array.isArray(metadata)) return { series: metadata };
+        return metadata && typeof metadata === "object" ? metadata : null;
+      }
+
+      function normalizeDiagnosticSeriesSpecs(data) {
+        const metadata = rawDiagnosticSeriesMetadata(data);
+        const rawSeries = Array.isArray(metadata?.series) ? metadata.series : [];
+        const specs = rawSeries.map((raw, index) => {
+          const key = String(raw?.key || raw?.metric || raw?.value_key || "").trim();
+          if (!key) return null;
+          return {
+            key,
+            label: String(raw?.label || key.replaceAll("_", " ")),
+            color: String(raw?.color || DIAGNOSTIC_SERIES_COLORS[index % DIAGNOSTIC_SERIES_COLORS.length]),
+            source: String(raw?.source || "info_metrics"),
+            chart: String(raw?.chart || "normalized_line"),
+            group: raw?.group ? String(raw.group) : "",
+          };
+        }).filter(Boolean);
+        return specs.length ? specs : inferDiagnosticSeriesSpecs(latestEpisodes);
+      }
+
+      function labelForDiagnosticKey(key) {
+        return String(key || "")
+          .replace(/^episode_reward_/, "")
+          .replace(/^episode_termination_/, "")
+          .replace(/^curriculum_/, "")
+          .replace(/^metrics_/, "")
+          .replaceAll("_", " ");
+      }
+
+      function shouldInferDiagnosticSeriesKey(key) {
+        const name = String(key || "");
+        if (!name) return false;
+        if (name.startsWith("episode_reward_")) return true;
+        if (name.startsWith("episode_termination_")) return true;
+        if (name.startsWith("metrics_")) return true;
+        if (name.startsWith("curriculum_")) {
+          return !/common_step|start_step/.test(name);
+        }
+        return false;
+      }
+
+      function inferDiagnosticSeriesSpecs(episodes) {
+        const collection = (Array.isArray(episodes) ? episodes : []).filter((entry) => !isPolicyProbe(entry));
+        const keys = new Set();
+        collection.forEach((entry) => {
+          Object.entries(entry?.info_metrics || {}).forEach(([key, value]) => {
+            if (shouldInferDiagnosticSeriesKey(key) && Number.isFinite(Number(value))) {
+              keys.add(key);
+            }
+          });
+        });
+        return [...keys].sort().map((key, index) => ({
+          key,
+          label: labelForDiagnosticKey(key),
+          color: DIAGNOSTIC_SERIES_COLORS[index % DIAGNOSTIC_SERIES_COLORS.length],
+          source: "info_metrics",
+          chart: "normalized_line",
+          group: key.split("_", 1)[0] || "",
+          inferred: true,
+        }));
+      }
+
+      function diagnosticSeriesValue(record, spec) {
+        if (spec.source === "record") {
+          return record?.[spec.key];
+        }
+        return record?.info_metrics?.[spec.key];
+      }
+
+      function diagnosticSeriesFromEpisodes(episodes, specs) {
+        const collection = (Array.isArray(episodes) ? episodes : []).filter((entry) => !isPolicyProbe(entry));
+        const xValues = collection.map((entry, index) => Number(entry.elapsed_seconds ?? entry.step ?? entry.episode ?? index));
+        return specs.map((spec) => {
+          if (selectedDiagnosticSeriesKeys && !selectedDiagnosticSeriesKeys.has(spec.key)) return null;
+          const values = collection.map((entry) => {
+            const value = diagnosticSeriesValue(entry, spec);
+            return Number.isFinite(Number(value)) ? Number(value) : null;
+          });
+          const finite = finiteValues(values);
+          return { ...spec, xValues, values, finite };
+        }).filter((series) => series && series.finite.length >= 2);
+      }
+
+      function availableDiagnosticSeriesKeys(episodes, specs) {
+        const collection = (Array.isArray(episodes) ? episodes : []).filter((entry) => !isPolicyProbe(entry));
+        const available = new Set();
+        collection.forEach((entry) => {
+          specs.forEach((spec) => {
+            if (Number.isFinite(Number(diagnosticSeriesValue(entry, spec)))) available.add(spec.key);
+          });
+        });
+        return available;
+      }
+
+      function renderDiagnosticSeriesToggles(specs, availableKeys) {
+        const container = document.getElementById("diagnosticMetricToggles");
+        if (!container) return;
+        if (!specs.length) {
+          container.innerHTML = "";
+          return;
+        }
+        container.innerHTML = specs.map((spec) => {
+          const checked = !selectedDiagnosticSeriesKeys || selectedDiagnosticSeriesKeys.has(spec.key) ? "checked" : "";
+          const unavailable = availableKeys && availableKeys.size && !availableKeys.has(spec.key) ? " is-unavailable" : "";
+          return `<label class="metric-toggle${unavailable}">
+            <input type="checkbox" data-diagnostic-series="${escapeHtml(spec.key)}" ${checked}>
+            <span class="toggle-swatch" style="--swatch-color: ${escapeHtml(spec.color)}"></span>
+            <span>${escapeHtml(spec.label)}</span>
+          </label>`;
+        }).join("");
+        container.querySelectorAll("[data-diagnostic-series]").forEach((input) => {
+          input.addEventListener("change", () => {
+            const key = input.getAttribute("data-diagnostic-series");
+            if (!key) return;
+            if (!selectedDiagnosticSeriesKeys) {
+              selectedDiagnosticSeriesKeys = new Set(specs.map((item) => item.key));
+            }
+            if (input.checked) selectedDiagnosticSeriesKeys.add(key);
+            else selectedDiagnosticSeriesKeys.delete(key);
+            saveDiagnosticSeriesSelection();
+            drawMetadataDiagnostics(latestEpisodes, latestRun.latest_losses, latestRun);
+          });
+        });
+      }
+
+      function drawMetadataDiagnostics(episodes, fallbackMetrics, data) {
+        const metadata = rawDiagnosticSeriesMetadata(data);
+        const specs = normalizeDiagnosticSeriesSpecs(data);
+        const availableKeys = availableDiagnosticSeriesKeys(episodes, specs);
+        renderDiagnosticSeriesToggles(specs, availableKeys);
+        const series = diagnosticSeriesFromEpisodes(episodes, specs);
+        if (!series.length) {
+          if (availableKeys.size) {
+            const status = document.getElementById("diagnosticChartStatus");
+            const note = document.getElementById("diagnosticChartNote");
+            status.textContent = "No selected diagnostic signals";
+            note.textContent = "Select one or more emitted metrics to show normalized diagnostic curves.";
+            const chart = drawChartBase(lossCtx, { leftPad: 42, rightPad: 16, bottomPad: 48, yLabel: "Normalized" });
+            lossCtx.fillStyle = "rgba(255,255,255,0.35)";
+            lossCtx.font = "16px sans-serif";
+            lossCtx.fillText("No metrics selected", chart.left + 8, chart.top + 8);
+            return;
+          }
+          drawDiagnosticBars(fallbackMetrics);
+          return;
+        }
+
+        const status = document.getElementById("diagnosticChartStatus");
+        const note = document.getElementById("diagnosticChartNote");
+        status.textContent = `${series.length} diagnostic signals`;
+        note.textContent = metadata?.description || "Normalized per-signal curves; latest exact values remain in the metric table.";
+
+        const chart = drawChartBase(lossCtx, {
+          emptyText: "No diagnostic series yet",
+          leftPad: 42,
+          rightPad: 16,
+          bottomPad: 48,
+          yLabel: "Normalized",
+        });
+        const allX = series.flatMap((item) => item.xValues).filter(Number.isFinite);
+        const xMin = allX.length ? Math.min(...allX) : 0;
+        const xMax = allX.length ? Math.max(...allX) : 1;
+
+        series.forEach((item) => {
+          const min = Math.min(...item.finite);
+          const max = Math.max(...item.finite);
+          const normalized = item.values.map((value) => {
+            const numeric = Number(value);
+            if (!Number.isFinite(numeric)) return null;
+            if (Math.abs(max - min) < 1e-9) return 0.5;
+            return (numeric - min) / (max - min);
+          });
+          drawSeries(lossCtx, chart, normalized, 0, 1, {
+            color: item.color,
+            xValues: item.xValues,
+            xMin,
+            xMax,
+            lineWidth: 2,
+            alpha: 0.92,
+            maxRawPoints: 260,
+          });
+        });
+
+        lossCtx.fillStyle = "rgba(255,255,255,0.7)";
+        lossCtx.font = "12px sans-serif";
+        lossCtx.fillText("1.00", chart.left + 5, chart.top + 13);
+        lossCtx.fillText("0.00", chart.left + 5, chart.height - chart.bottom - 5);
+
+        let legendX = chart.left + 8;
+        let legendY = chart.height - 18;
+        series.slice(0, 6).forEach((item) => {
+          lossCtx.fillStyle = item.color;
+          lossCtx.fillRect(legendX, legendY - 8, 10, 3);
+          lossCtx.fillStyle = "rgba(255,255,255,0.72)";
+          lossCtx.fillText(item.label, legendX + 14, legendY - 3);
+          legendX += Math.max(56, lossCtx.measureText(item.label).width + 28);
         });
       }
 
@@ -2224,6 +2491,7 @@
           latestRun.current = current;
           latestRun.episodes = latestEpisodes;
           latestRun.latest_losses = data.latest_losses || {};
+          latestRun.diagnostic_series = data.diagnostic_series || run.diagnostic_series || null;
           if (data.visual) latestRun.visual = data.visual;
           if (data.visual_control) latestRun.visual_control = data.visual_control;
           updateVisualControls(activeVisualMode());
@@ -2269,7 +2537,7 @@
               budgetMode === "episodes" ? "Completed rollouts" : "Training time",
             );
           }
-          drawDiagnosticBars(data.latest_losses);
+          drawMetadataDiagnostics(latestEpisodes, data.latest_losses, data);
           updateMetricRows(current, infoMetrics);
           document.getElementById("rawPayload").textContent = JSON.stringify(data, null, 2);
           renderResearch(latestResults, latestLogText);
@@ -2277,7 +2545,7 @@
           updateText("runStatus", "Waiting for metrics");
           latestEpisodes = [];
           drawReturnChart([]);
-          drawDiagnosticBars(null);
+          drawMetadataDiagnostics([], null, {});
         }
       }
 
