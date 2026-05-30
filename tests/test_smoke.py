@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import argparse
 import ast
+import io
 import json
 import shutil
 import sys
+import tarfile
 import types
 from pathlib import Path
 
@@ -549,9 +551,16 @@ def test_ssh_target_sync_live_mirrors_remote_dashboard_metrics(tmp_path, monkeyp
 
     def fake_run(argv, **kwargs):
         assert argv[0] == "scp"
+        remote_arg = str(argv[-2]).replace("\\", "/")
         destination = Path(argv[-1])
-        destination.mkdir(parents=True, exist_ok=True)
-        shutil.copytree(remote_external, destination, dirs_exist_ok=True)
+        if remote_arg.endswith("/live/current_run_metrics.json"):
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(remote_live / "current_run_metrics.json", destination)
+        elif remote_arg.endswith("/live/status.log"):
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(remote_live / "status.log", destination)
+        else:
+            return types.SimpleNamespace(returncode=1, stdout="", stderr="missing")
         return types.SimpleNamespace(returncode=0, stdout="", stderr="")
 
     monkeypatch.setattr("autoresearch_gym.external.targets.subprocess.run", fake_run)
@@ -624,9 +633,19 @@ def test_ssh_target_sync_live_localizes_remote_sampled_rollout_paths(tmp_path, m
 
     def fake_run(argv, **kwargs):
         assert argv[0] == "scp"
+        remote_arg = str(argv[-2]).replace("\\", "/")
         destination = Path(argv[-1])
-        destination.mkdir(parents=True, exist_ok=True)
-        shutil.copytree(remote_external, destination, dirs_exist_ok=True)
+        if remote_arg.endswith("/live/current_run_metrics.json"):
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(remote_live / "current_run_metrics.json", destination)
+        elif remote_arg.endswith("/trajectories/sample_000001/manifest.json"):
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(remote_trajectory / "manifest.json", destination)
+        elif remote_arg.endswith("/trajectories/sample_000001/frame_0000.jpg"):
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(remote_trajectory / "frame_0000.jpg", destination)
+        else:
+            return types.SimpleNamespace(returncode=1, stdout="", stderr="missing")
         return types.SimpleNamespace(returncode=0, stdout="", stderr="")
 
     monkeypatch.setattr("autoresearch_gym.external.targets.subprocess.run", fake_run)
@@ -655,6 +674,53 @@ def test_ssh_target_sync_live_localizes_remote_sampled_rollout_paths(tmp_path, m
     manifest = json.loads((tmp_path / "local_external" / "trajectories" / "sample_000001" / "manifest.json").read_text())
     assert manifest["frames"][0].endswith("local_external/trajectories/sample_000001/frame_0000.jpg")
     assert "C:" not in manifest["latest_frame_path"]
+
+
+def test_ssh_target_fetch_artifacts_uses_single_remote_archive(tmp_path, monkeypatch) -> None:
+    from autoresearch_gym.external.targets import SshTarget, TargetConfig
+
+    remote_external = tmp_path / "remote" / "autoresearch_runs" / "external_remote" / "run-1" / "external"
+    remote_external.mkdir(parents=True)
+    (remote_external / "train_result.json").write_text(json.dumps({"total_steps": 12}), encoding="utf-8")
+    (remote_external / "agent_checkpoint.pt").write_bytes(b"checkpoint")
+
+    archive_bytes = io.BytesIO()
+    with tarfile.open(fileobj=archive_bytes, mode="w") as archive:
+        for path in remote_external.iterdir():
+            archive.add(path, arcname=path.name)
+
+    calls: list[list[str]] = []
+
+    def fake_run(argv, **kwargs):
+        calls.append(list(argv))
+        if argv[0] == "ssh":
+            assert "tar -cf -" in argv[-1]
+            return types.SimpleNamespace(returncode=0, stdout=archive_bytes.getvalue(), stderr=b"")
+        if argv[0] == "tar":
+            destination = Path(argv[argv.index("-C") + 1])
+            with tarfile.open(fileobj=io.BytesIO(kwargs["input"]), mode="r:") as archive:
+                archive.extractall(destination)
+            return types.SimpleNamespace(returncode=0, stdout=b"", stderr=b"")
+        raise AssertionError(f"unexpected command: {argv}")
+
+    monkeypatch.setattr("autoresearch_gym.external.targets.subprocess.run", fake_run)
+    target = SshTarget(
+        TargetConfig(
+            name="pytest-ssh",
+            kind="ssh",
+            host="example.invalid",
+            remote_root=str(tmp_path / "remote"),
+            path_style="posix",
+        )
+    )
+    bundle = types.SimpleNamespace(run_id="run-1", external_dir=tmp_path / "local_external", session_dir=None)
+
+    artifacts = target.fetch_artifacts(bundle)
+
+    assert artifacts.root == tmp_path / "local_external"
+    assert json.loads((artifacts.root / "train_result.json").read_text(encoding="utf-8"))["total_steps"] == 12
+    assert (artifacts.root / "agent_checkpoint.pt").read_bytes() == b"checkpoint"
+    assert [call[0] for call in calls] == ["ssh", "tar"]
 
 
 def test_unitree_lower_level_cleanrl_seed_trains_evals_and_renders(tmp_path) -> None:

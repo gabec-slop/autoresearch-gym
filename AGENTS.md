@@ -234,6 +234,15 @@ and redaction. The seed should expose the editable recipe and produce the same
 normalized train/eval artifacts regardless of whether the harness executes on
 the local machine, a networked Windows GPU box, or another SSH target.
 
+Before running any remote external benchmark or remote autoresearch pass, sync
+or explicitly verify the remote checkout is current with the local intended
+code. For Git-backed targets, prefer a fast-forward pull on the remote checkout
+such as `git -C <remote_root> pull --ff-only` before staging and launching the
+run. Record the sync or verification in the session log when running an
+autoresearch session. If a remote run starts before this sync/verification, mark
+that attempt invalidated and restart it after the remote checkout is current;
+do not use its metrics as research evidence.
+
 `get_candidate()` should describe the seed or candidate in human language. The
 runner surfaces it in summaries and dashboards, but the actual training recipe
 belongs in executable code.
@@ -276,6 +285,8 @@ or dashboard behavior:
   or visualization
 - verify compact status stderr/file output when the change affects runner status
   reporting
+- for remote external runs, sync or verify the remote checkout before launch and
+  record that fact in the session log
 - for trainable, runner, dashboard, benchmark, or task changes, do not use
   `scripts/pre_commit_checks.py --skip-artifact-smoke`; the full artifact smoke
   must pass before commit

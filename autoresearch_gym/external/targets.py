@@ -207,7 +207,7 @@ class SshTarget:
     def _ssh(self, remote_command: str, timeout: float = 30.0) -> CommandResult:
         started_at = time.time()
         completed = subprocess.run(
-            ["ssh", "-o", "BatchMode=yes", self.config.host or "", remote_command],
+            [*self._ssh_base_args(), self.config.host or "", remote_command],
             capture_output=True,
             text=True,
             timeout=timeout,
@@ -249,6 +249,101 @@ class SshTarget:
 
     def _remote_display_path(self, path: str) -> str:
         return path.replace("\\", "/") if self.config.path_style == "windows" else path
+
+    def _scp_base_args(self) -> list[str]:
+        return [
+            "scp",
+            "-o",
+            "BatchMode=yes",
+            "-o",
+            "ConnectTimeout=10",
+            "-o",
+            "ConnectionAttempts=1",
+        ]
+
+    def _ssh_base_args(self) -> list[str]:
+        return [
+            "ssh",
+            "-o",
+            "BatchMode=yes",
+            "-o",
+            "ConnectTimeout=10",
+            "-o",
+            "ConnectionAttempts=1",
+        ]
+
+    def _scp_remote_file(
+        self,
+        remote_file: str,
+        local_file: Path,
+        *,
+        timeout: float = 30.0,
+        skip_existing: bool = False,
+    ) -> bool:
+        if skip_existing and local_file.exists():
+            return True
+        local_file.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            completed = subprocess.run(
+                [*self._scp_base_args(), f"{self.config.host}:{self._remote_display_path(remote_file)}", str(local_file)],
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=timeout,
+            )
+        except subprocess.TimeoutExpired:
+            return False
+        return completed.returncode == 0
+
+    def _scp_remote_dir_contents(self, remote_dir: str, local_dir: Path, *, timeout: float = 60.0) -> bool:
+        local_dir.mkdir(parents=True, exist_ok=True)
+        remote_display = self._remote_display_path(remote_dir).rstrip("/")
+        try:
+            completed = subprocess.run(
+                [*self._scp_base_args(), "-r", f"{self.config.host}:{remote_display}/.", str(local_dir)],
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=timeout,
+            )
+        except subprocess.TimeoutExpired:
+            return False
+        return completed.returncode == 0
+
+    def _remote_tar_command(self, remote_dir: str) -> str:
+        if self.config.path_style == "windows":
+            quoted = self._quote_remote(remote_dir)
+            return (
+                "powershell.exe -NoProfile -Command "
+                f"\"if (!(Test-Path {quoted})) {{ exit 2 }}; tar -cf - -C {quoted} .\""
+            )
+        quoted = self._quote_remote(remote_dir)
+        return f"test -d {quoted} && tar -cf - -C {quoted} ."
+
+    def _fetch_remote_dir_archive(self, remote_dir: str, local_dir: Path, *, timeout: float) -> bool:
+        local_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            archive = subprocess.run(
+                [*self._ssh_base_args(), self.config.host or "", self._remote_tar_command(remote_dir)],
+                capture_output=True,
+                check=False,
+                timeout=timeout,
+            )
+        except subprocess.TimeoutExpired:
+            return False
+        if archive.returncode != 0:
+            return False
+        try:
+            extracted = subprocess.run(
+                ["tar", "-xf", "-", "-C", str(local_dir)],
+                input=archive.stdout,
+                capture_output=True,
+                check=False,
+                timeout=timeout,
+            )
+        except subprocess.TimeoutExpired:
+            return False
+        return extracted.returncode == 0
 
     def preflight(self, bundle: RunBundle) -> TargetPreflight:
         checks: list[dict[str, Any]] = []
@@ -306,7 +401,7 @@ class SshTarget:
             raise FileNotFoundError(f"bundle was not written before staging: {bundle_path}")
         remote_stage = self._remote_display_path(remote_external)
         completed = subprocess.run(
-            ["scp", "-r", f"{bundle.external_dir}/.", f"{self.config.host}:{remote_stage}/"],
+            [*self._scp_base_args(), "-r", f"{bundle.external_dir}/.", f"{self.config.host}:{remote_stage}/"],
             capture_output=True,
             text=True,
             check=False,
@@ -355,7 +450,7 @@ class SshTarget:
                 remote_command += f" --checkpoint {self._quote_remote(remote_checkpoint)}"
         started_at = time.time()
         process = subprocess.Popen(
-            ["ssh", "-o", "BatchMode=yes", self.config.host or "", remote_command],
+            [*self._ssh_base_args(), self.config.host or "", remote_command],
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
@@ -396,16 +491,12 @@ class SshTarget:
         return result
 
     def sync_live(self, bundle: RunBundle) -> None:
-        remote_external = self._remote_display_path(self._remote_external_dir(bundle))
         bundle.external_dir.mkdir(parents=True, exist_ok=True)
-        completed = subprocess.run(
-            ["scp", "-r", f"{self.config.host}:{remote_external}/.", str(bundle.external_dir)],
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-        if completed.returncode != 0:
-            return
+        remote_external = self._remote_external_dir(bundle)
+        self._scp_remote_file(self._remote_join(remote_external, "live", "current_run_metrics.json"), bundle.external_dir / "live" / "current_run_metrics.json", timeout=15.0)
+        self._scp_remote_file(self._remote_join(remote_external, "live", "status.log"), bundle.external_dir / "live" / "status.log", timeout=15.0)
+        self._scp_remote_file(self._remote_join(remote_external, "current_run_frame.jpg"), bundle.external_dir / "current_run_frame.jpg", timeout=15.0)
+        self._sync_live_trajectory_refs(bundle)
         self._localize_live_artifacts(bundle)
         if bundle.session_dir is not None:
             remote_live_metrics = bundle.external_dir / "live" / "current_run_metrics.json"
@@ -425,19 +516,21 @@ class SshTarget:
         except ValueError:
             return str(path.resolve())
 
-    def _localize_remote_path_value(self, bundle: RunBundle, value: Any) -> Any:
+    def _remote_suffix_from_path_value(self, bundle: RunBundle, value: Any) -> str | None:
         if not isinstance(value, str):
-            return value
+            return None
         normalized = value.replace("\\", "/")
         remote_external = self._remote_display_path(self._remote_external_dir(bundle)).replace("\\", "/").rstrip("/")
-        suffix: str | None = None
         if normalized.startswith(remote_external + "/"):
-            suffix = normalized[len(remote_external) + 1 :]
-        else:
-            marker = f"autoresearch_runs/external_remote/{bundle.run_id}/external/"
-            marker_index = normalized.find(marker)
-            if marker_index >= 0:
-                suffix = normalized[marker_index + len(marker) :]
+            return normalized[len(remote_external) + 1 :]
+        marker = f"autoresearch_runs/external_remote/{bundle.run_id}/external/"
+        marker_index = normalized.find(marker)
+        if marker_index >= 0:
+            return normalized[marker_index + len(marker) :]
+        return None
+
+    def _localize_remote_path_value(self, bundle: RunBundle, value: Any) -> Any:
+        suffix = self._remote_suffix_from_path_value(bundle, value)
         if suffix is None:
             return value
         return self._dashboard_path(bundle.external_dir / suffix)
@@ -462,19 +555,83 @@ class SshTarget:
             localized = self._localize_remote_paths(bundle, payload)
             path.write_text(json.dumps(localized, indent=2), encoding="utf-8")
 
+    def _remote_path_values(self, payload: Any) -> list[str]:
+        values: list[str] = []
+        if isinstance(payload, dict):
+            for item in payload.values():
+                values.extend(self._remote_path_values(item))
+        elif isinstance(payload, list):
+            for item in payload:
+                values.extend(self._remote_path_values(item))
+        elif isinstance(payload, str):
+            values.append(payload)
+        return values
+
+    def _sync_live_trajectory_refs(self, bundle: RunBundle) -> None:
+        metrics_path = bundle.external_dir / "live" / "current_run_metrics.json"
+        if not metrics_path.exists():
+            return
+        try:
+            metrics = json.loads(metrics_path.read_text(encoding="utf-8"))
+        except Exception:
+            return
+        remote_external = self._remote_external_dir(bundle)
+        suffixes = {
+            suffix
+            for value in self._remote_path_values(metrics)
+            if (suffix := self._remote_suffix_from_path_value(bundle, value)) is not None
+            and suffix.startswith("trajectories/")
+        }
+        for suffix in sorted(suffixes):
+            self._scp_remote_file(
+                self._remote_join(remote_external, suffix),
+                bundle.external_dir / suffix,
+                timeout=15.0,
+                skip_existing=not suffix.endswith("manifest.json"),
+            )
+        manifests = [bundle.external_dir / suffix for suffix in suffixes if suffix.endswith("manifest.json")]
+        for manifest_path in manifests:
+            if not manifest_path.exists():
+                continue
+            try:
+                manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            except Exception:
+                continue
+            for value in self._remote_path_values(manifest):
+                suffix = self._remote_suffix_from_path_value(bundle, value)
+                if suffix is None or not suffix.startswith("trajectories/"):
+                    continue
+                self._scp_remote_file(
+                    self._remote_join(remote_external, suffix),
+                    bundle.external_dir / suffix,
+                    timeout=15.0,
+                    skip_existing=not suffix.endswith("manifest.json"),
+                )
+
     def fetch_artifacts(self, bundle: RunBundle) -> ArtifactSet:
-        remote_external = self._remote_display_path(self._remote_external_dir(bundle))
+        remote_external = self._remote_external_dir(bundle)
         bundle.external_dir.mkdir(parents=True, exist_ok=True)
-        timeout = float(os.environ.get("AUTORESEARCH_SSH_FETCH_TIMEOUT_SECONDS", "300"))
-        completed = subprocess.run(
-            ["scp", "-r", f"{self.config.host}:{remote_external}/.", str(bundle.external_dir)],
-            capture_output=True,
-            text=True,
-            check=False,
-            timeout=timeout,
-        )
-        if completed.returncode != 0:
-            raise RuntimeError(f"failed to fetch remote artifacts over scp: {completed.stderr[-1000:]}")
+        timeout = float(os.environ.get("AUTORESEARCH_SSH_FETCH_TIMEOUT_SECONDS", "60"))
+        if self._fetch_remote_dir_archive(remote_external, bundle.external_dir, timeout=timeout):
+            self._localize_live_artifacts(bundle)
+            return ArtifactSet(root=bundle.external_dir)
+        for suffix in (
+            "bundle.json",
+            "candidate_trainable.py",
+            "benchmark_snapshot.json",
+            "eval_cases.json",
+            "candidate_metadata.json",
+            "train_result.json",
+            "eval_result.json",
+            "media_result.json",
+            "agent_checkpoint.pt",
+            "current_run_frame.jpg",
+            "train_result_partial.json",
+        ):
+            self._scp_remote_file(self._remote_join(remote_external, suffix), bundle.external_dir / suffix, timeout=min(timeout, 30.0))
+        for suffix in ("live", "trajectories", "policy_probes", "command_logs"):
+            self._scp_remote_dir_contents(self._remote_join(remote_external, suffix), bundle.external_dir / suffix, timeout=timeout)
+        self._localize_live_artifacts(bundle)
         return ArtifactSet(root=bundle.external_dir)
 
 
