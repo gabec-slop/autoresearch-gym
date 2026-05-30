@@ -17,7 +17,7 @@ import pytest
 
 import autoresearch_gym  # noqa: F401
 from autoresearch_gym import cli
-from autoresearch_gym.external.base import ArtifactSet
+from autoresearch_gym.external.base import ArtifactSet, RunBundle
 from autoresearch_gym.runner.experiment import (
     BenchmarkSpec,
     TrainProbeSpec,
@@ -224,6 +224,9 @@ def test_unitree_cleanrl_style_seeds_expose_mjlab_levers() -> None:
         assert recipe["termination_overrides"]
 
     assert "motion_command" in g1_recipe
+    assert g1_recipe["runner"]["save_interval"] == 100
+    assert g1_recipe["runner"]["probe_interval_iterations"] == 100
+    assert g1_recipe["runner"]["sample_rollout_frame_count"] == 24
     assert "motion_global_root_pos" in g1_recipe["reward_weights"]
     assert "motion_body_ang_vel" in g1_recipe["reward_params"]
     assert "anchor_pos" in g1_recipe["termination_overrides"]
@@ -288,6 +291,90 @@ def test_unitree_backend_reads_nested_recipe_budget_fields() -> None:
     assert _steps_per_env(bundle) == 12
     assert _learning_iterations(bundle) == 7
     assert _seed(bundle, 42) == 1234
+
+
+def test_unitree_backend_scales_mjlab_probe_interval_to_run_length(monkeypatch: pytest.MonkeyPatch) -> None:
+    from autoresearch_gym.external.unitree_backend import _mjlab_probe_interval_iterations
+
+    bundle = {"benchmark": {"train_seconds": 1800.0}}
+    recipe = {"runner": {"save_interval": 500}}
+
+    assert _mjlab_probe_interval_iterations(recipe, bundle, 692) == 139
+    assert _mjlab_probe_interval_iterations({"runner": {"probe_interval_iterations": 100}}, bundle, 692) == 100
+    assert _mjlab_probe_interval_iterations({"runner": {"probe_interval_iterations": 0}}, bundle, 692) == 0
+
+    monkeypatch.setenv("UNITREE_MJLAB_TARGET_POLICY_PROBES", "10")
+    assert _mjlab_probe_interval_iterations(recipe, bundle, 692) == 70
+
+
+def test_ssh_live_sync_merges_policy_probe_records_for_dashboard(tmp_path) -> None:
+    from autoresearch_gym.external.targets import SshTarget, TargetConfig
+
+    external_dir = tmp_path / "external"
+    live_dir = external_dir / "live"
+    live_dir.mkdir(parents=True)
+    (live_dir / "current_run_metrics.json").write_text(
+        json.dumps(
+            {
+                "current": {"info_metrics": {"train_mean_reward": 1.0}},
+                "episodes": [
+                    {
+                        "record_type": "train_collection_window",
+                        "episode": 1,
+                        "return": 1.0,
+                        "step": 100,
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    (external_dir / "policy_probe_records.jsonl").write_text(
+        json.dumps(
+            {
+                "record_type": "policy_probe",
+                "episode": 100,
+                "return": -2.5,
+                "length": 120.0,
+                "step": 100,
+                "probe_seed_start": 900100,
+                "elapsed_seconds": 30.0,
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    bundle = RunBundle(
+        run_id="pytest-run",
+        tag="pytest",
+        benchmark_path=tmp_path / "benchmark.json",
+        candidate_path=tmp_path / "candidate.py",
+        local_run_dir=tmp_path,
+        external_dir=external_dir,
+        benchmark={},
+        candidate={},
+        candidate_metadata={},
+        execution_backend={},
+        eval_cases=None,
+        train_episodes=1,
+        train_seconds=None,
+        eval_episodes=1,
+        max_steps=120,
+        compact_status_file=None,
+        session_dir=None,
+        target_name="ssh",
+    )
+    target = SshTarget(TargetConfig(name="ssh", kind="ssh", host="example.invalid", remote_root="/tmp/repo"))
+
+    target._merge_live_policy_probe_records(bundle)
+    payload = json.loads((live_dir / "current_run_metrics.json").read_text(encoding="utf-8"))
+
+    assert [record["record_type"] for record in payload["episodes"]] == [
+        "train_collection_window",
+        "policy_probe",
+    ]
+    assert payload["current"]["info_metrics"]["policy_probe_count"] == 1.0
+    assert payload["current"]["info_metrics"]["policy_probe_return"] == -2.5
 
 
 def test_unitree_backend_records_curriculum_signal_scalars() -> None:

@@ -496,6 +496,8 @@ class SshTarget:
         self._scp_remote_file(self._remote_join(remote_external, "live", "current_run_metrics.json"), bundle.external_dir / "live" / "current_run_metrics.json", timeout=15.0)
         self._scp_remote_file(self._remote_join(remote_external, "live", "status.log"), bundle.external_dir / "live" / "status.log", timeout=15.0)
         self._scp_remote_file(self._remote_join(remote_external, "current_run_frame.jpg"), bundle.external_dir / "current_run_frame.jpg", timeout=15.0)
+        self._scp_remote_file(self._remote_join(remote_external, "policy_probe_records.jsonl"), bundle.external_dir / "policy_probe_records.jsonl", timeout=15.0)
+        self._merge_live_policy_probe_records(bundle)
         self._sync_live_trajectory_refs(bundle)
         self._localize_live_artifacts(bundle)
         if bundle.session_dir is not None:
@@ -555,6 +557,69 @@ class SshTarget:
             localized = self._localize_remote_paths(bundle, payload)
             path.write_text(json.dumps(localized, indent=2), encoding="utf-8")
 
+    def _read_jsonl_records(self, path: Path) -> list[dict[str, Any]]:
+        if not path.exists():
+            return []
+        records: list[dict[str, Any]] = []
+        for line in path.read_text(encoding="utf-8").splitlines():
+            if not line.strip():
+                continue
+            try:
+                payload = json.loads(line)
+            except Exception:
+                continue
+            if isinstance(payload, dict):
+                records.append(payload)
+        return records
+
+    def _merge_live_policy_probe_records(self, bundle: RunBundle) -> None:
+        metrics_path = bundle.external_dir / "live" / "current_run_metrics.json"
+        probe_records = self._read_jsonl_records(bundle.external_dir / "policy_probe_records.jsonl")
+        if not metrics_path.exists() or not probe_records:
+            return
+        try:
+            metrics = json.loads(metrics_path.read_text(encoding="utf-8"))
+        except Exception:
+            return
+        episodes = metrics.get("episodes")
+        if not isinstance(episodes, list):
+            episodes = []
+        seen = {
+            (
+                str(record.get("record_type") or ""),
+                str(record.get("step") or ""),
+                str(record.get("probe_seed_start") or ""),
+            )
+            for record in episodes
+            if isinstance(record, dict)
+        }
+        merged = [record for record in episodes if isinstance(record, dict)]
+        for record in probe_records:
+            key = (
+                str(record.get("record_type") or ""),
+                str(record.get("step") or ""),
+                str(record.get("probe_seed_start") or ""),
+            )
+            if key not in seen:
+                merged.append(record)
+                seen.add(key)
+        merged.sort(
+            key=lambda record: (
+                float(record.get("step") or 0.0),
+                1 if str(record.get("record_type") or "") == "policy_probe" else 0,
+            )
+        )
+        metrics["episodes"] = merged
+        info_metrics = metrics.setdefault("current", {}).setdefault("info_metrics", {})
+        if isinstance(info_metrics, dict):
+            info_metrics["policy_probe_count"] = float(len(probe_records))
+            latest_probe = probe_records[-1]
+            info_metrics["policy_probe_return"] = float(latest_probe.get("return") or 0.0)
+            info_metrics["policy_probe_length"] = float(latest_probe.get("length") or 0.0)
+            if "elapsed_seconds" in latest_probe:
+                info_metrics["policy_probe_elapsed_seconds"] = float(latest_probe.get("elapsed_seconds") or 0.0)
+        metrics_path.write_text(json.dumps(metrics, indent=2), encoding="utf-8")
+
     def _remote_path_values(self, payload: Any) -> list[str]:
         values: list[str] = []
         if isinstance(payload, dict):
@@ -613,6 +678,7 @@ class SshTarget:
         bundle.external_dir.mkdir(parents=True, exist_ok=True)
         timeout = float(os.environ.get("AUTORESEARCH_SSH_FETCH_TIMEOUT_SECONDS", "60"))
         if self._fetch_remote_dir_archive(remote_external, bundle.external_dir, timeout=timeout):
+            self._merge_live_policy_probe_records(bundle)
             self._localize_live_artifacts(bundle)
             return ArtifactSet(root=bundle.external_dir)
         for suffix in (
@@ -627,10 +693,12 @@ class SshTarget:
             "agent_checkpoint.pt",
             "current_run_frame.jpg",
             "train_result_partial.json",
+            "policy_probe_records.jsonl",
         ):
             self._scp_remote_file(self._remote_join(remote_external, suffix), bundle.external_dir / suffix, timeout=min(timeout, 30.0))
         for suffix in ("live", "trajectories", "policy_probes", "command_logs"):
             self._scp_remote_dir_contents(self._remote_join(remote_external, suffix), bundle.external_dir / suffix, timeout=timeout)
+        self._merge_live_policy_probe_records(bundle)
         self._localize_live_artifacts(bundle)
         return ArtifactSet(root=bundle.external_dir)
 

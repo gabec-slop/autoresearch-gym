@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -17,6 +18,7 @@ class SeedCase:
     name: str
     benchmark: str
     seed: str
+    visual_artifact_smoke: bool = True
 
 
 SEED_CASES: tuple[SeedCase, ...] = (
@@ -104,6 +106,14 @@ def candidate_for_session(repo_root: Path, session_dir: Path, seed: str) -> Path
     return candidate
 
 
+def visual_artifact_smoke_enabled(case: SeedCase) -> bool:
+    if not case.visual_artifact_smoke:
+        return False
+    if os.environ.get("AUTORESEARCH_SMOKE_VISUALS") == "1":
+        return True
+    return sys.platform != "darwin"
+
+
 def run_case(repo_root: Path, case: SeedCase, mode: str, output_root: Path, timeout: float) -> dict[str, Any]:
     session_dir = output_root / "sessions" / f"{case.name}-{mode}"
     if session_dir.exists():
@@ -134,21 +144,38 @@ def run_case(repo_root: Path, case: SeedCase, mode: str, output_root: Path, time
         "--compact-status-file",
         str(session_dir / "live" / "status.log"),
     ]
-    completed = subprocess.run(
-        cmd,
-        cwd=repo_root,
-        text=True,
-        capture_output=True,
-        timeout=timeout,
-        check=False,
-    )
+    visual_enabled = visual_artifact_smoke_enabled(case)
+    if not visual_enabled:
+        cmd.append("--headless-env")
     result: dict[str, Any] = {
         "case": case.name,
         "mode": mode,
         "session_dir": str(session_dir),
-        "returncode": completed.returncode,
+        "returncode": None,
         "errors": [],
     }
+    try:
+        completed = subprocess.run(
+            cmd,
+            cwd=repo_root,
+            text=True,
+            capture_output=True,
+            timeout=timeout,
+            check=False,
+        )
+    except subprocess.TimeoutExpired as exc:
+        result["returncode"] = 124
+        stdout = exc.stdout or ""
+        stderr = exc.stderr or ""
+        if isinstance(stdout, bytes):
+            stdout = stdout.decode(errors="replace")
+        if isinstance(stderr, bytes):
+            stderr = stderr.decode(errors="replace")
+        result["errors"].append(
+            f"run timed out after {timeout:.1f}s: stdout={str(stdout)[-1000:]} stderr={str(stderr)[-1000:]}"
+        )
+        return result
+    result["returncode"] = completed.returncode
     if completed.returncode != 0:
         result["errors"].append(f"run exited {completed.returncode}: {completed.stderr[-2000:]}")
         return result
@@ -185,7 +212,9 @@ def run_case(repo_root: Path, case: SeedCase, mode: str, output_root: Path, time
         result["errors"].append("live latest_losses missing gradient_updates")
 
     visual = metrics.get("visual", {})
-    if mode == "live_frame":
+    if not visual_enabled:
+        result["visual_artifact_smoke"] = "skipped-headless"
+    elif mode == "live_frame":
         frame_path = repo_path(repo_root, visual.get("live_frame_path"))
         if frame_path is None or not frame_path.exists() or frame_path.stat().st_size <= 0:
             result["errors"].append("missing or empty live frame")

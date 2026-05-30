@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import re
 import shutil
@@ -982,6 +983,14 @@ def _write_partial_train_payload(
                 latest_metrics[key] = value
     if event_status:
         latest_metrics["mjlab_live_status"] = str(event_status)
+    probe_count = len(probe_records)
+    latest_metrics["policy_probe_count"] = float(probe_count)
+    if probe_records:
+        latest_probe = probe_records[-1]
+        latest_metrics["policy_probe_return"] = _safe_float(latest_probe.get("return", 0.0))
+        latest_metrics["policy_probe_length"] = _safe_float(latest_probe.get("length", 0.0))
+        if "elapsed_seconds" in latest_probe:
+            latest_metrics["policy_probe_elapsed_seconds"] = _safe_float(latest_probe.get("elapsed_seconds", 0.0))
     avg_return = float(sum(record["return"] for record in records) / len(records)) if records else 0.0
     diagnostic_series = _diagnostic_series_metadata(records, recipe)
     payload = {
@@ -1000,7 +1009,7 @@ def _write_partial_train_payload(
             "task_id": task_id,
             "scalar_status": scalar_status,
             "record_count": len(records),
-            "probe_count": len(probe_records),
+            "probe_count": probe_count,
             "status": status,
         },
     }
@@ -1422,6 +1431,22 @@ def _monitor_live_training(stop_event, *, cfg, out_dir, log_dir, run_id, tag, ta
                     with (out_dir / "policy_probe_records.jsonl").open("a", encoding="utf-8") as handle:
                         handle.write(json.dumps(record) + "\n")
                     probed.add(index)
+                    _write_partial_train_payload(
+                        out_dir=out_dir,
+                        log_dir=log_dir,
+                        run_id=run_id,
+                        tag=tag,
+                        task_id=task_id,
+                        status="running",
+                        budget_mode=budget_mode,
+                        train_seconds=train_seconds,
+                        num_envs=num_envs,
+                        steps_per_env=steps_per_env,
+                        iterations=iterations,
+                        started_at=started_at,
+                        recipe_json=recipe_json,
+                        event_status="probe_recorded",
+                    )
         except Exception:
             error_dir = out_dir / "live"
             error_dir.mkdir(parents=True, exist_ok=True)
@@ -1509,6 +1534,11 @@ def main() -> None:
     resolved = _apply_mjlab_recipe(cfg, recipe, args.run_id)
     cfg.env.scene.num_envs = int(args.num_envs)
     cfg.agent.max_iterations = int(args.iterations)
+    if int(args.probe_interval_iterations) > 0:
+        current_save_interval = int(getattr(cfg.agent, "save_interval", 0) or 0)
+        if current_save_interval <= 0 or current_save_interval > int(args.probe_interval_iterations):
+            cfg.agent.save_interval = int(args.probe_interval_iterations)
+            resolved["applied"].append("runner.save_interval<=probe_interval_iterations")
     if not getattr(cfg.agent, "run_name", None):
         cfg.agent.run_name = args.run_id
     cfg.agent.seed = int(args.seed)
@@ -1816,6 +1846,16 @@ def _learning_iterations(bundle: dict[str, Any]) -> int:
     return max(1, int(value))
 
 
+def _mjlab_probe_interval_iterations(recipe: dict[str, Any], bundle: dict[str, Any], iterations: int) -> int:
+    runner = _recipe_section(recipe, "runner")
+    explicit = runner.get("probe_interval_iterations")
+    if explicit is not None:
+        return max(0, int(explicit))
+    target_raw = runner.get("target_policy_probe_count") or os.environ.get("UNITREE_MJLAB_TARGET_POLICY_PROBES") or 5
+    target = max(1, int(target_raw))
+    return max(1, int(math.ceil(max(1, int(iterations)) / target)))
+
+
 def _seed(bundle: dict[str, Any], default: int) -> int:
     recipe = _candidate_recipe(bundle)
     runner = _recipe_section(recipe, "runner")
@@ -2060,7 +2100,7 @@ def _run_mjlab_train(bundle: dict[str, Any], out_dir: Path) -> None:
     recipe_path = (out_dir / "mjlab_recipe.json").resolve()
     resolved_path = (out_dir / "mjlab_resolved_config.json").resolve()
     _write_json(recipe_path, recipe)
-    probe_interval = int(_recipe_section(recipe, "runner").get("probe_interval_iterations") or _recipe_section(recipe, "runner").get("save_interval") or 100)
+    probe_interval = _mjlab_probe_interval_iterations(recipe, bundle, iterations)
     probe_num_envs = min(_parallel_env_count(bundle, for_eval=True), int(os.environ.get("UNITREE_MJLAB_PROBE_NUM_ENVS_MAX", "16")))
     probe_steps = min(int(bundle["benchmark"].get("max_steps") or 200), int(os.environ.get("UNITREE_MJLAB_PROBE_STEPS_MAX", "120")))
     argv: list[str | Path] = [
