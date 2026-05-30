@@ -170,6 +170,9 @@ class UnitreeG1LowerLevelEnv(gym.Env[np.ndarray, np.ndarray]):
         self.home_qpos = np.zeros(0, dtype=np.float64)
         self.motion: dict[str, np.ndarray] = {}
         self.motion_frame = 0
+        self.fixed_case_start_frame: int | None = None
+        self.fixed_case_end_frame: int | None = None
+        self.fixed_case_max_steps: int | None = None
 
         xml_path = _g1_xml_path()
         if self._mujoco is not None and xml_path.exists():
@@ -317,8 +320,26 @@ class UnitreeG1LowerLevelEnv(gym.Env[np.ndarray, np.ndarray]):
     def reset(self, *, seed: int | None = None, options: dict[str, Any] | None = None):
         if seed is not None:
             self.rng = np.random.default_rng(seed)
-        fixed_case = (options or {}).get("fixed_case", {})
-        self.phase = float(fixed_case.get("phase", self.rng.uniform(0.0, 2.0 * math.pi)))
+        raw_fixed_case = (options or {}).get("fixed_case", {})
+        fixed_case = raw_fixed_case if isinstance(raw_fixed_case, dict) else {}
+        start_frame = fixed_case.get("start_frame")
+        end_frame = fixed_case.get("end_frame")
+        self.fixed_case_start_frame = int(start_frame) if isinstance(start_frame, (int, float)) else None
+        self.fixed_case_end_frame = int(end_frame) if isinstance(end_frame, (int, float)) else None
+        if self.fixed_case_start_frame is not None and self.fixed_case_end_frame is not None:
+            self.fixed_case_max_steps = max(1, self.fixed_case_end_frame - self.fixed_case_start_frame)
+        else:
+            self.fixed_case_max_steps = None
+        if "phase" in fixed_case:
+            self.phase = float(fixed_case["phase"])
+        elif self.fixed_case_start_frame is not None:
+            clip_len = len(self.motion["joint_pos"]) if "joint_pos" in self.motion and len(self.motion["joint_pos"]) else 0
+            if clip_len:
+                self.phase = 2.0 * math.pi * (self.fixed_case_start_frame % clip_len) / clip_len
+            else:
+                self.phase = 0.10 * self.fixed_case_start_frame
+        else:
+            self.phase = float(self.rng.uniform(0.0, 2.0 * math.pi))
         self.step_count = 0
         if self.model is not None and self.data is not None:
             self.data.qpos[:] = self.home_qpos
@@ -326,7 +347,10 @@ class UnitreeG1LowerLevelEnv(gym.Env[np.ndarray, np.ndarray]):
             self.data.qpos[:2] += self.rng.normal(0.0, 0.01, size=2)
             self.data.qpos[2] += self.rng.normal(0.0, 0.005)
             if "joint_pos" in self.motion and len(self.motion["joint_pos"]):
-                self.motion_frame = int((self.phase / (2.0 * math.pi)) * len(self.motion["joint_pos"])) % len(self.motion["joint_pos"])
+                if self.fixed_case_start_frame is not None:
+                    self.motion_frame = self.fixed_case_start_frame % len(self.motion["joint_pos"])
+                else:
+                    self.motion_frame = int((self.phase / (2.0 * math.pi)) * len(self.motion["joint_pos"])) % len(self.motion["joint_pos"])
                 self.data.qpos[self.qpos_adrs] = self._target_mujoco().astype(np.float64)
             self._mujoco.mj_forward(self.model, self.data)
             self.last_action = np.zeros(self.model.nu, dtype=np.float32)
@@ -382,6 +406,8 @@ class UnitreeG1LowerLevelEnv(gym.Env[np.ndarray, np.ndarray]):
             self.last_mpkpe = mpkpe
             terminated = bool(mpkpe > 1.25 or self.data.qpos[2] < 0.35)
             truncated = self.step_count >= self.max_steps
+            if self.fixed_case_max_steps is not None:
+                truncated = truncated or self.step_count >= self.fixed_case_max_steps
             info = {
                 "mpkpe": mpkpe,
                 "tracking_error": mpkpe,
@@ -408,6 +434,8 @@ class UnitreeG1LowerLevelEnv(gym.Env[np.ndarray, np.ndarray]):
         self.last_mpkpe = mpkpe
         terminated = bool(mpkpe > 1.75)
         truncated = self.step_count >= self.max_steps
+        if self.fixed_case_max_steps is not None:
+            truncated = truncated or self.step_count >= self.fixed_case_max_steps
         info = {"mpkpe": mpkpe, "tracking_error": mpkpe, "action_rate": action_rate, "is_success": mpkpe < 0.18}
         return self._obs(), float(reward), terminated, truncated, info
 
@@ -805,14 +833,18 @@ def train_agent(
     physics_backend = str(getattr(envs[0].unwrapped, "physics_backend", "unknown")) if envs else "unknown"
     for env in envs:
         env.close()
+    gradient_updates = int(len(records) * UPDATE_EPOCHS * NUM_MINIBATCHES)
+    last_metrics = dict(records[-1]["info_metrics"]) if records else {}
+    last_metrics["gradient_updates"] = float(gradient_updates)
     summary = {
         "episode_records": records,
         "total_steps": int(global_step),
         "env_steps": int(global_step),
         "episodes_completed": int(completed + len(records) * num_envs),
+        "completed_episodes": int(completed + len(records) * num_envs),
         "episode_batches": len(records),
-        "gradient_updates": int(len(records) * UPDATE_EPOCHS * NUM_MINIBATCHES),
-        "last_metrics": records[-1]["info_metrics"] if records else {},
+        "gradient_updates": gradient_updates,
+        "last_metrics": last_metrics,
         "physics_backend": physics_backend,
         "stop_reason": stop_reason,
     }
@@ -917,14 +949,18 @@ def _train_agent_vectorized(
             stop_reason = "time_budget_exhausted"
             break
     vector_env.close()
+    gradient_updates = int(len(records) * UPDATE_EPOCHS * NUM_MINIBATCHES)
+    last_metrics = dict(records[-1]["info_metrics"]) if records else {}
+    last_metrics["gradient_updates"] = float(gradient_updates)
     summary = {
         "episode_records": records,
         "total_steps": int(global_step),
         "env_steps": int(global_step),
         "episodes_completed": int(completed + len(records) * num_envs),
+        "completed_episodes": int(completed + len(records) * num_envs),
         "episode_batches": len(records),
-        "gradient_updates": int(len(records) * UPDATE_EPOCHS * NUM_MINIBATCHES),
-        "last_metrics": records[-1]["info_metrics"] if records else {},
+        "gradient_updates": gradient_updates,
+        "last_metrics": last_metrics,
         "physics_backend": str(getattr(vector_env, "physics_backend", "mujoco_warp")),
         "vectorized_backend": "mujoco_warp",
         "num_envs": int(num_envs),

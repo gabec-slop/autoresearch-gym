@@ -223,13 +223,29 @@ def test_unitree_cleanrl_style_seeds_expose_mjlab_levers() -> None:
     assert "motion_global_root_pos" in g1_recipe["reward_weights"]
     assert "motion_body_ang_vel" in g1_recipe["reward_params"]
     assert "anchor_pos" in g1_recipe["termination_overrides"]
+    g1_diagnostic = g1_recipe["diagnostic_series"]
+    g1_diagnostic_keys = [item["key"] for item in g1_diagnostic["series"]]
+    assert g1_diagnostic["title"] == "G1 motion mirroring diagnostics"
+    assert "episode_reward_motion_global_root_pos" in g1_diagnostic_keys
+    assert "episode_reward_motion_body_ang_vel" in g1_diagnostic_keys
+    assert "metrics_mpkpe" in g1_diagnostic_keys
+    assert "episode_termination_anchor_pos" in g1_diagnostic_keys
 
     assert "twist_command" in go2_recipe
     assert "terrain" in go2_recipe
     assert "track_linear_velocity" in go2_recipe["reward_weights"]
     assert "foot_gait" in go2_recipe["reward_params"]
     assert "command_vel" in go2_recipe["curriculum_overrides"]
+    go2_diagnostic = go2_recipe["diagnostic_series"]
+    go2_diagnostic_keys = [item["key"] for item in go2_diagnostic["series"]]
+    assert go2_diagnostic["title"] == "Go2 locomotion diagnostics"
+    assert "episode_reward_track_linear_velocity" in go2_diagnostic_keys
+    assert "episode_reward_body_orientation_l2" in go2_diagnostic_keys
+    assert "curriculum_terrain_levels" in go2_diagnostic_keys
+    assert "episode_reward_pose" not in go2_diagnostic_keys
+    assert "episode_reward_soft_landing" not in go2_diagnostic_keys
     assert go2_staged_recipe["single_pass_curriculum"] is True
+    assert go2_staged_recipe["diagnostic_series"] == go2_diagnostic
     assert go2_staged_recipe["terrain"]["max_init_terrain_level"] == 5
     assert go2_staged_recipe["runner"]["sample_trajectory_source"] == "train_context"
     assert go2_staged_recipe["event_overrides"]["push_robot"]["enabled"] is False
@@ -273,17 +289,21 @@ def test_unitree_backend_reads_nested_recipe_budget_fields() -> None:
 def test_unitree_backend_records_curriculum_signal_scalars() -> None:
     from autoresearch_gym.external.unitree_backend import MJLAB_TRAIN_SCRIPT
 
-    assert "CURRICULUM_SIGNAL_SPECS" in MJLAB_TRAIN_SCRIPT
     assert "CURRICULUM_SIGNAL_KEYS" in MJLAB_TRAIN_SCRIPT
     assert "episode_reward_track_linear_velocity" in MJLAB_TRAIN_SCRIPT
     assert "episode_reward_body_orientation_l2" in MJLAB_TRAIN_SCRIPT
+    assert "episode_reward_motion_global_root_pos" in MJLAB_TRAIN_SCRIPT
+    assert "episode_reward_motion_body_ang_vel" in MJLAB_TRAIN_SCRIPT
+    assert "episode_termination_anchor_pos" in MJLAB_TRAIN_SCRIPT
+    assert "metrics_mpkpe" in MJLAB_TRAIN_SCRIPT
     assert "episode_termination_illegal_contact" in MJLAB_TRAIN_SCRIPT
     assert "curriculum_terrain_levels" in MJLAB_TRAIN_SCRIPT
     assert "curriculum_command_stage" in MJLAB_TRAIN_SCRIPT
     assert '"curriculum_command_lin_vel_x"' in MJLAB_TRAIN_SCRIPT
     assert "info_metrics[key] = value" in MJLAB_TRAIN_SCRIPT
     assert "diagnostic_series" in MJLAB_TRAIN_SCRIPT
-    assert "_diagnostic_series_metadata(records)" in MJLAB_TRAIN_SCRIPT
+    assert "_recipe_diagnostic_series(recipe)" in MJLAB_TRAIN_SCRIPT
+    assert "_diagnostic_series_metadata(records, recipe)" in MJLAB_TRAIN_SCRIPT
 
 
 def test_dashboard_diagnostics_are_metadata_driven() -> None:
@@ -387,6 +407,19 @@ def test_unitree_mjlab_train_bridge_compiles_with_recipe_overrides() -> None:
     assert "mjlab_live_probe" in MJLAB_TRAIN_SCRIPT
 
 
+def _literal_eval_with_module_constants(node: ast.AST, constants: dict[str, object]) -> object:
+    class ConstantResolver(ast.NodeTransformer):
+        def visit_Name(self, name_node: ast.Name) -> ast.AST:
+            if name_node.id not in constants:
+                return name_node
+            replacement = ast.parse(repr(constants[name_node.id]), mode="eval").body
+            return ast.copy_location(replacement, name_node)
+
+    resolved = ConstantResolver().visit(node)
+    ast.fix_missing_locations(resolved)
+    return ast.literal_eval(resolved)
+
+
 def test_custom_trajectory_sampling_task_recipes_use_generic_live_writer_contract(tmp_path: Path) -> None:
     custom_seed_recipes: list[tuple[Path, dict[str, object]]] = []
     for seed_path in Path("autoresearch_gym/tasks").glob("*/seed_trainable*.py"):
@@ -394,12 +427,28 @@ def test_custom_trajectory_sampling_task_recipes_use_generic_live_writer_contrac
         if "sample_trajectory_source" not in source:
             continue
         module_ast = ast.parse(source, filename=str(seed_path))
+        constants: dict[str, object] = {}
+        for node in module_ast.body:
+            if isinstance(node, ast.ImportFrom) and node.module:
+                imported = __import__(node.module, fromlist=[alias.name for alias in node.names])
+                for alias in node.names:
+                    constants[alias.asname or alias.name] = getattr(imported, alias.name)
+                continue
+            if not isinstance(node, ast.Assign) or len(node.targets) != 1:
+                continue
+            target = node.targets[0]
+            if not isinstance(target, ast.Name) or target.id == "RECIPE":
+                continue
+            try:
+                constants[target.id] = ast.literal_eval(node.value)
+            except (SyntaxError, ValueError):
+                continue
         recipe: dict[str, object] | None = None
         for node in module_ast.body:
             if isinstance(node, ast.Assign) and any(
                 isinstance(target, ast.Name) and target.id == "RECIPE" for target in node.targets
             ):
-                value = ast.literal_eval(node.value)
+                value = _literal_eval_with_module_constants(node.value, constants)
                 if isinstance(value, dict):
                     recipe = value
                 break
@@ -635,7 +684,15 @@ def test_unitree_lower_level_cleanrl_seed_trains_evals_and_renders(tmp_path) -> 
     )
 
     assert summary["total_steps"] == 8
+    assert summary["completed_episodes"] == summary["episodes_completed"]
+    assert validate_summary(summary, require_gradient_updates=True) == []
+    assert validate_records(summary["episode_records"]) == []
     assert summary["episode_records"][0]["record_type"] == "train_collection_window"
+    g1_env = g1_seed.make_external_env(g1_benchmark)
+    obs_start, _ = g1_env.reset(seed=123, options={"fixed_case": {"start_frame": 0, "end_frame": 4}})
+    obs_contact, _ = g1_env.reset(seed=123, options={"fixed_case": {"start_frame": 120, "end_frame": 124}})
+    assert not np.allclose(obs_start[:2], obs_contact[:2])
+    g1_env.close()
     assert g1_seed.evaluate_agent(agent, g1_benchmark)["episodes"] == 1
     media = g1_seed.render_policy(agent, g1_benchmark, tmp_path / "g1-media")
     assert media["media_available"] is True
@@ -653,6 +710,28 @@ def test_unitree_lower_level_cleanrl_seed_trains_evals_and_renders(tmp_path) -> 
     assert truncated in {True, False}
     go2_agent = go2_seed.Agent(int(go2_env.observation_space.shape[0]), int(go2_env.action_space.shape[0]))
     go2_env.close()
+    go2_train_benchmark = types.SimpleNamespace(
+        env_kwargs={"render_mode": "rgb_array", "num_envs": 2, "steps_per_env_per_iteration": 4},
+        train_episodes=1,
+        train_seed=13,
+        eval_seed_start=9200,
+        eval_episodes=1,
+        max_steps=8,
+        device="cpu",
+    )
+    _, go2_train_summary = go2_seed.train_agent(
+        go2_train_benchmark,
+        lambda control_type=None, reward_recipe=None: go2_seed.make_external_env(
+            go2_train_benchmark,
+            control_type=control_type,
+            reward_recipe=reward_recipe,
+        ),
+        go2_seed.get_candidate(),
+        "cpu",
+    )
+    assert go2_train_summary["completed_episodes"] == go2_train_summary["episodes_completed"]
+    assert validate_summary(go2_train_summary, require_gradient_updates=True) == []
+    assert validate_records(go2_train_summary["episode_records"]) == []
     go2_eval_benchmark = types.SimpleNamespace(
         env_kwargs={"render_mode": "rgb_array"},
         eval_seed_start=9200,

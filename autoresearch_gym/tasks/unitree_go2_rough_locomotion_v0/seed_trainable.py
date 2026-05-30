@@ -4,6 +4,36 @@ from pathlib import Path
 from typing import Any
 
 
+GO2_DIAGNOSTIC_SERIES = {
+    "title": "Go2 locomotion diagnostics",
+    "description": "Normalized Go2 subreward, stability, command, and terrain signals selected by the task recipe.",
+    "x_axis": "elapsed_seconds",
+    "series": [
+        {"key": "episode_reward_track_linear_velocity", "label": "lin vel", "color": "#54d2ff", "source": "info_metrics", "chart": "normalized_line", "group": "velocity"},
+        {"key": "episode_reward_track_angular_velocity", "label": "yaw vel", "color": "#8cff98", "source": "info_metrics", "chart": "normalized_line", "group": "velocity"},
+        {"key": "metrics_twist_error_vel_xy", "label": "xy error", "color": "#f29dff", "source": "info_metrics", "chart": "normalized_line", "group": "velocity"},
+        {"key": "metrics_twist_error_vel_yaw", "label": "yaw error", "color": "#ffcf70", "source": "info_metrics", "chart": "normalized_line", "group": "velocity"},
+        {"key": "episode_reward_body_orientation_l2", "label": "upright", "color": "#ffb454", "source": "info_metrics", "chart": "normalized_line", "group": "stability"},
+        {"key": "episode_reward_body_ang_vel", "label": "body ang", "color": "#a4d4ff", "source": "info_metrics", "chart": "normalized_line", "group": "stability"},
+        {"key": "episode_reward_is_terminated", "label": "term rew", "color": "#ff8f70", "source": "info_metrics", "chart": "normalized_line", "group": "stability"},
+        {"key": "episode_termination_fell_over", "label": "fall", "color": "#ff4f7d", "source": "info_metrics", "chart": "normalized_line", "group": "stability"},
+        {"key": "episode_termination_illegal_contact", "label": "contact", "color": "#ff6b7a", "source": "info_metrics", "chart": "normalized_line", "group": "stability"},
+        {"key": "episode_termination_time_out", "label": "timeout", "color": "#f8e16c", "source": "info_metrics", "chart": "normalized_line", "group": "stability"},
+        {"key": "episode_reward_foot_gait", "label": "gait", "color": "#7ee4c6", "source": "info_metrics", "chart": "normalized_line", "group": "locomotion"},
+        {"key": "episode_reward_foot_clearance", "label": "clearance", "color": "#91bfff", "source": "info_metrics", "chart": "normalized_line", "group": "locomotion"},
+        {"key": "episode_reward_foot_slip", "label": "slip rew", "color": "#ff9f8e", "source": "info_metrics", "chart": "normalized_line", "group": "locomotion"},
+        {"key": "metrics_slip_velocity_mean", "label": "slip", "color": "#fa8fb1", "source": "info_metrics", "chart": "normalized_line", "group": "locomotion"},
+        {"key": "metrics_landing_force_mean", "label": "force", "color": "#8ad7ff", "source": "info_metrics", "chart": "normalized_line", "group": "locomotion"},
+        {"key": "episode_reward_action_rate_l2", "label": "smooth", "color": "#c9a7ff", "source": "info_metrics", "chart": "normalized_line", "group": "control"},
+        {"key": "episode_reward_stand_still", "label": "stand", "color": "#efc074", "source": "info_metrics", "chart": "normalized_line", "group": "control"},
+        {"key": "curriculum_terrain_levels", "label": "terrain", "color": "#7ee4c6", "source": "info_metrics", "chart": "normalized_line", "group": "curriculum"},
+        {"key": "curriculum_command_stage", "label": "cmd stage", "color": "#b9a8ff", "source": "info_metrics", "chart": "normalized_line", "group": "curriculum"},
+        {"key": "curriculum_command_lin_vel_x_max", "label": "cmd x max", "color": "#54d2ff", "source": "info_metrics", "chart": "normalized_line", "group": "curriculum"},
+        {"key": "curriculum_command_ang_vel_z_max", "label": "cmd yaw max", "color": "#8cff98", "source": "info_metrics", "chart": "normalized_line", "group": "curriculum"},
+    ],
+}
+
+
 RECIPE = {
     "style": "cleanrl_mjlab_ppo",
     "algorithm": "ppo",
@@ -12,6 +42,7 @@ RECIPE = {
         "plain and mutable; the backend compiles supported values into MJLab "
         "runner, env, reward, command, event, and curriculum config."
     ),
+    "diagnostic_series": GO2_DIAGNOSTIC_SERIES,
     "runner": {
         "num_envs": 1024,
         "eval_num_envs": 256,

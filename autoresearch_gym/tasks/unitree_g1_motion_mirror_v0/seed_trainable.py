@@ -4,6 +4,29 @@ from pathlib import Path
 from typing import Any
 
 
+G1_DIAGNOSTIC_SERIES = {
+    "title": "G1 motion mirroring diagnostics",
+    "description": "Normalized G1 motion-tracking reward, error, and termination signals selected by the task recipe.",
+    "x_axis": "elapsed_seconds",
+    "series": [
+        {"key": "episode_reward_motion_global_root_pos", "label": "root pos", "color": "#54d2ff", "source": "info_metrics", "chart": "normalized_line", "group": "root"},
+        {"key": "episode_reward_motion_global_root_ori", "label": "root ori", "color": "#8ad7ff", "source": "info_metrics", "chart": "normalized_line", "group": "root"},
+        {"key": "episode_reward_motion_body_pos", "label": "body pos", "color": "#8cff98", "source": "info_metrics", "chart": "normalized_line", "group": "body"},
+        {"key": "episode_reward_motion_body_ori", "label": "body ori", "color": "#d3f36b", "source": "info_metrics", "chart": "normalized_line", "group": "body"},
+        {"key": "episode_reward_motion_body_lin_vel", "label": "body lin", "color": "#f29dff", "source": "info_metrics", "chart": "normalized_line", "group": "velocity"},
+        {"key": "episode_reward_motion_body_ang_vel", "label": "body ang", "color": "#ffcf70", "source": "info_metrics", "chart": "normalized_line", "group": "velocity"},
+        {"key": "metrics_mpkpe", "label": "mpkpe", "color": "#ff9f8e", "source": "info_metrics", "chart": "normalized_line", "group": "tracking"},
+        {"key": "metrics_r_mpkpe", "label": "root mpkpe", "color": "#fa8fb1", "source": "info_metrics", "chart": "normalized_line", "group": "tracking"},
+        {"key": "episode_reward_action_rate_l2", "label": "smooth", "color": "#c9a7ff", "source": "info_metrics", "chart": "normalized_line", "group": "control"},
+        {"key": "episode_reward_joint_limit", "label": "joint limit", "color": "#ffb454", "source": "info_metrics", "chart": "normalized_line", "group": "safety"},
+        {"key": "episode_reward_self_collisions", "label": "self col", "color": "#ff4f7d", "source": "info_metrics", "chart": "normalized_line", "group": "safety"},
+        {"key": "episode_termination_anchor_pos", "label": "anchor pos", "color": "#f8e16c", "source": "info_metrics", "chart": "normalized_line", "group": "termination"},
+        {"key": "episode_termination_anchor_ori", "label": "anchor ori", "color": "#efc074", "source": "info_metrics", "chart": "normalized_line", "group": "termination"},
+        {"key": "episode_termination_ee_body_pos", "label": "ee body", "color": "#b9a8ff", "source": "info_metrics", "chart": "normalized_line", "group": "termination"},
+    ],
+}
+
+
 RECIPE = {
     "style": "cleanrl_mjlab_ppo",
     "algorithm": "ppo",
@@ -12,6 +35,7 @@ RECIPE = {
         "mutate this plain recipe; the Unitree backend post-processes supported "
         "fields into MJLab TrainConfig overrides."
     ),
+    "diagnostic_series": G1_DIAGNOSTIC_SERIES,
     "runner": {
         "num_envs": 4096,
         "eval_num_envs": 1024,

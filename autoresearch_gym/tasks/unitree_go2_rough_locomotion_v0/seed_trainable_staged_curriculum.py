@@ -3,6 +3,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+from autoresearch_gym.tasks.unitree_go2_rough_locomotion_v0.seed_trainable import GO2_DIAGNOSTIC_SERIES
+
 
 RECIPE = {
     "style": "cleanrl_mjlab_ppo",
@@ -12,6 +14,7 @@ RECIPE = {
         "training run should begin with upright/simple-terrain behavior and "
         "advance toward full rough-terrain command tracking."
     ),
+    "diagnostic_series": GO2_DIAGNOSTIC_SERIES,
     "single_pass_curriculum": True,
     "curriculum_plan": [
         {

@@ -730,14 +730,18 @@ def train_agent(
     physics_backend = str(getattr(envs[0].unwrapped, "physics_backend", "unknown")) if envs else "unknown"
     for env in envs:
         env.close()
+    gradient_updates = int(len(records) * UPDATE_EPOCHS * NUM_MINIBATCHES)
+    last_metrics = dict(records[-1]["info_metrics"]) if records else {}
+    last_metrics["gradient_updates"] = float(gradient_updates)
     summary = {
         "episode_records": records,
         "total_steps": int(global_step),
         "env_steps": int(global_step),
         "episodes_completed": int(completed + len(records) * num_envs),
+        "completed_episodes": int(completed + len(records) * num_envs),
         "episode_batches": len(records),
-        "gradient_updates": int(len(records) * UPDATE_EPOCHS * NUM_MINIBATCHES),
-        "last_metrics": records[-1]["info_metrics"] if records else {},
+        "gradient_updates": gradient_updates,
+        "last_metrics": last_metrics,
         "physics_backend": physics_backend,
         "stop_reason": stop_reason,
     }
@@ -843,14 +847,18 @@ def _train_agent_vectorized(
             stop_reason = "time_budget_exhausted"
             break
     vector_env.close()
+    gradient_updates = int(len(records) * UPDATE_EPOCHS * NUM_MINIBATCHES)
+    last_metrics = dict(records[-1]["info_metrics"]) if records else {}
+    last_metrics["gradient_updates"] = float(gradient_updates)
     summary = {
         "episode_records": records,
         "total_steps": int(global_step),
         "env_steps": int(global_step),
         "episodes_completed": int(completed + len(records) * num_envs),
+        "completed_episodes": int(completed + len(records) * num_envs),
         "episode_batches": len(records),
-        "gradient_updates": int(len(records) * UPDATE_EPOCHS * NUM_MINIBATCHES),
-        "last_metrics": records[-1]["info_metrics"] if records else {},
+        "gradient_updates": gradient_updates,
+        "last_metrics": last_metrics,
         "physics_backend": str(getattr(vector_env, "physics_backend", "mujoco_warp")),
         "vectorized_backend": "mujoco_warp",
         "num_envs": int(num_envs),

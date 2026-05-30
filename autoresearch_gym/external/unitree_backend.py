@@ -551,32 +551,41 @@ def _scalar_metric_key(tag):
     return re.sub(r"[^a-zA-Z0-9_]+", "_", str(tag).strip().lower()).strip("_")
 
 
-CURRICULUM_SIGNAL_SPECS = (
-    {"key": "episode_reward_track_linear_velocity", "label": "lin vel", "color": "#54d2ff", "group": "reward"},
-    {"key": "episode_reward_track_angular_velocity", "label": "yaw vel", "color": "#8cff98", "group": "reward"},
-    {"key": "episode_reward_body_orientation_l2", "label": "upright", "color": "#ffb454", "group": "reward"},
-    {"key": "episode_reward_pose", "label": "pose", "color": "#d3f36b", "group": "reward"},
-    {"key": "episode_reward_body_ang_vel", "label": "body ang", "color": "#a4d4ff", "group": "reward"},
-    {"key": "episode_reward_action_rate_l2", "label": "smooth", "color": "#c9a7ff", "group": "reward"},
-    {"key": "episode_reward_stand_still", "label": "stand", "color": "#efc074", "group": "reward"},
-    {"key": "episode_reward_foot_gait", "label": "gait", "color": "#7ee4c6", "group": "reward"},
-    {"key": "episode_reward_foot_clearance", "label": "clearance", "color": "#91bfff", "group": "reward"},
-    {"key": "episode_reward_foot_slip", "label": "slip rew", "color": "#ff9f8e", "group": "reward"},
-    {"key": "episode_reward_soft_landing", "label": "landing", "color": "#b2f7a0", "group": "reward"},
-    {"key": "episode_reward_is_terminated", "label": "term rew", "color": "#ff8f70", "group": "reward"},
-    {"key": "episode_termination_time_out", "label": "timeout", "color": "#f8e16c", "group": "termination"},
-    {"key": "episode_termination_fell_over", "label": "fall", "color": "#ff4f7d", "group": "termination"},
-    {"key": "episode_termination_illegal_contact", "label": "contact", "color": "#ff6b7a", "group": "termination"},
-    {"key": "metrics_twist_error_vel_xy", "label": "xy error", "color": "#f29dff", "group": "task"},
-    {"key": "metrics_twist_error_vel_yaw", "label": "yaw error", "color": "#ffcf70", "group": "task"},
-    {"key": "metrics_slip_velocity_mean", "label": "slip", "color": "#fa8fb1", "group": "task"},
-    {"key": "metrics_landing_force_mean", "label": "force", "color": "#8ad7ff", "group": "task"},
-    {"key": "curriculum_terrain_levels", "label": "terrain", "color": "#7ee4c6", "group": "curriculum"},
-    {"key": "curriculum_command_stage", "label": "cmd stage", "color": "#b9a8ff", "group": "curriculum"},
-    {"key": "curriculum_command_lin_vel_x_max", "label": "cmd x max", "color": "#54d2ff", "group": "curriculum"},
-    {"key": "curriculum_command_ang_vel_z_max", "label": "cmd yaw max", "color": "#8cff98", "group": "curriculum"},
+CURRICULUM_SIGNAL_KEYS = (
+    "episode_reward_track_linear_velocity",
+    "episode_reward_track_angular_velocity",
+    "episode_reward_body_orientation_l2",
+    "episode_reward_pose",
+    "episode_reward_body_ang_vel",
+    "episode_reward_action_rate_l2",
+    "episode_reward_stand_still",
+    "episode_reward_foot_gait",
+    "episode_reward_foot_clearance",
+    "episode_reward_foot_slip",
+    "episode_reward_soft_landing",
+    "episode_reward_is_terminated",
+    "episode_reward_motion_global_root_pos",
+    "episode_reward_motion_global_root_ori",
+    "episode_reward_motion_body_pos",
+    "episode_reward_motion_body_ori",
+    "episode_reward_motion_body_lin_vel",
+    "episode_reward_motion_body_ang_vel",
+    "episode_reward_joint_limit",
+    "episode_reward_self_collisions",
+    "episode_termination_time_out",
+    "episode_termination_fell_over",
+    "episode_termination_illegal_contact",
+    "episode_termination_anchor_pos",
+    "episode_termination_anchor_ori",
+    "episode_termination_ee_body_pos",
+    "metrics_mpkpe",
+    "metrics_r_mpkpe",
+    "metrics_twist_error_vel_xy",
+    "metrics_twist_error_vel_yaw",
+    "metrics_slip_velocity_mean",
+    "metrics_landing_force_mean",
+    "curriculum_terrain_levels",
 )
-CURRICULUM_SIGNAL_KEYS = tuple(spec["key"] for spec in CURRICULUM_SIGNAL_SPECS)
 
 
 def _curriculum_signal_events(scalars):
@@ -651,7 +660,55 @@ def _command_stage_metrics(record_index, *, steps_per_env, command_stages):
     return metrics
 
 
-def _diagnostic_series_metadata(records):
+def _normal_diagnostic_series_spec(raw):
+    if not _is_mapping(raw):
+        return None
+    key = str(raw.get("key") or raw.get("metric") or raw.get("value_key") or "").strip()
+    if not key:
+        return None
+    item = dict(raw)
+    item["key"] = key
+    item.setdefault("label", key.replace("_", " "))
+    item.setdefault("source", "info_metrics")
+    item.setdefault("chart", "normalized_line")
+    item.setdefault("record_type", "train_collection_window")
+    return item
+
+
+def _recipe_diagnostic_series(recipe):
+    diagnostic = recipe.get("diagnostic_series") if _is_mapping(recipe) else None
+    if not diagnostic:
+        return None
+    if isinstance(diagnostic, list):
+        raw_series = diagnostic
+        base = {}
+    elif _is_mapping(diagnostic):
+        raw_series = diagnostic.get("series")
+        base = {key: value for key, value in diagnostic.items() if key != "series"}
+    else:
+        return None
+    if not isinstance(raw_series, list):
+        return None
+    series = []
+    for raw in raw_series:
+        item = _normal_diagnostic_series_spec(raw)
+        if item is not None:
+            series.append(item)
+    if not series:
+        return None
+    return {
+        "title": "Training diagnostics",
+        "description": "Normalized diagnostic curves emitted by the training run.",
+        "x_axis": "elapsed_seconds",
+        **base,
+        "series": series,
+    }
+
+
+def _diagnostic_series_metadata(records, recipe):
+    diagnostic = _recipe_diagnostic_series(recipe)
+    if diagnostic is None:
+        return None
     available = {
         key
         for record in records
@@ -659,26 +716,13 @@ def _diagnostic_series_metadata(records):
         if isinstance(value, (int, float))
     }
     series = []
-    for spec in CURRICULUM_SIGNAL_SPECS:
+    for spec in diagnostic["series"]:
         if spec["key"] not in available:
             continue
-        item = dict(spec)
-        item.update(
-            {
-                "source": "info_metrics",
-                "chart": "normalized_line",
-                "record_type": "train_collection_window",
-            }
-        )
-        series.append(item)
+        series.append(dict(spec))
     if not series:
         return None
-    return {
-        "title": "Curriculum diagnostics",
-        "description": "Normalized per-series curves emitted by the training run.",
-        "x_axis": "elapsed_seconds",
-        "series": series,
-    }
+    return {**diagnostic, "series": series}
 
 
 def _event_step_to_env_step(event_step, *, num_envs, steps_per_env):
@@ -930,7 +974,7 @@ def _write_partial_train_payload(
     if event_status:
         latest_metrics["mjlab_live_status"] = str(event_status)
     avg_return = float(sum(record["return"] for record in records) / len(records)) if records else 0.0
-    diagnostic_series = _diagnostic_series_metadata(records)
+    diagnostic_series = _diagnostic_series_metadata(records, recipe)
     payload = {
         "episode_records": all_records,
         "total_steps": total_steps,
@@ -1937,6 +1981,7 @@ def _run_train(bundle: dict[str, Any], out_dir: Path) -> None:
         "total_steps": total_steps,
         "env_steps": total_steps,
         "episodes_completed": episodes,
+        "completed_episodes": episodes,
         "episode_batches": episodes,
         "gradient_updates": 0,
         "last_metrics": _train_last_metrics(task_family, records),
@@ -2113,6 +2158,7 @@ def _run_mjlab_train(bundle: dict[str, Any], out_dir: Path) -> None:
         "total_steps": total_steps,
         "env_steps": total_steps,
         "episodes_completed": int(iterations * num_envs),
+        "completed_episodes": int(iterations * num_envs),
         "episode_batches": len(collection_records) or iterations,
         "gradient_updates": len(collection_records) or iterations,
         "avg_return": float(np.mean([float(record.get("return", 0.0)) for record in collection_records])) if collection_records else 0.0,
