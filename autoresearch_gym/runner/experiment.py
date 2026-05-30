@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import importlib.util
 import platform
@@ -16,7 +17,7 @@ from typing import Any
 
 import gymnasium as gym
 import numpy as np
-from PIL import Image
+from PIL import Image, ImageDraw
 
 from autoresearch_gym.runner.curves import (
     aggregate_info_metrics,
@@ -131,6 +132,10 @@ PYBULLET_RENDER_REQUIRED_ENV_IDS = {
     "PandaBatToGoal-v0",
 }
 
+MUJOCO_KINEMATIC_RENDER_ENV_IDS = {
+    "InvertedPendulum-v5",
+}
+
 
 def apply_headless_env_override(benchmark: BenchmarkSpec) -> dict[str, Any]:
     if benchmark.env_id in PYBULLET_RENDER_REQUIRED_ENV_IDS:
@@ -233,6 +238,62 @@ def make_env(
 
 def make_eval_env(benchmark: BenchmarkSpec, control_type: str | None) -> gym.Env[np.ndarray, np.ndarray]:
     return gym.make(benchmark.env_id, **env_kwargs_for_candidate(benchmark, control_type))
+
+
+def env_spec_id(env: Any) -> str | None:
+    spec = getattr(env, "spec", None)
+    env_id = getattr(spec, "id", None)
+    return str(env_id) if env_id else None
+
+
+def render_mujoco_kinematic_frame(env: Any, *, height: int = 360, width: int = 480) -> np.ndarray | None:
+    """Render simple MuJoCo state views that should not need a GL context."""
+    env_id = env_spec_id(env)
+    if env_id not in MUJOCO_KINEMATIC_RENDER_ENV_IDS:
+        return None
+    data = getattr(env, "data", None)
+    qpos = getattr(data, "qpos", None)
+    if qpos is None or len(qpos) < 2:
+        return None
+
+    if env_id == "InvertedPendulum-v5":
+        cart_x = float(qpos[0])
+        pole_angle = float(qpos[1])
+        image = Image.new("RGB", (width, height), (242, 244, 247))
+        draw = ImageDraw.Draw(image)
+
+        rail_y = int(height * 0.68)
+        scale = width * 0.18
+        cart_center_x = int(width * 0.5 + np.clip(cart_x, -2.4, 2.4) * scale)
+        cart_w = max(54, int(width * 0.13))
+        cart_h = max(24, int(height * 0.075))
+        pole_len = int(height * 0.38)
+        pole_tip = (
+            int(cart_center_x + pole_len * math.sin(pole_angle)),
+            int(rail_y - cart_h // 2 - pole_len * math.cos(pole_angle)),
+        )
+
+        draw.line((int(width * 0.08), rail_y, int(width * 0.92), rail_y), fill=(94, 104, 117), width=4)
+        for tick in np.linspace(-2.4, 2.4, 7):
+            x = int(width * 0.5 + tick * scale)
+            draw.line((x, rail_y - 7, x, rail_y + 7), fill=(148, 155, 164), width=2)
+        cart_box = (
+            cart_center_x - cart_w // 2,
+            rail_y - cart_h,
+            cart_center_x + cart_w // 2,
+            rail_y,
+        )
+        draw.rounded_rectangle(cart_box, radius=5, fill=(34, 84, 145), outline=(22, 49, 87), width=2)
+        pivot = (cart_center_x, rail_y - cart_h // 2)
+        draw.line((pivot[0], pivot[1], pole_tip[0], pole_tip[1]), fill=(202, 81, 0), width=8)
+        radius = 8
+        draw.ellipse(
+            (pivot[0] - radius, pivot[1] - radius, pivot[0] + radius, pivot[1] + radius),
+            fill=(28, 31, 35),
+        )
+        return np.asarray(image, dtype=np.uint8)
+
+    return None
 
 
 def load_eval_cases(benchmark: BenchmarkSpec) -> list[dict[str, Any]] | None:
@@ -652,6 +713,9 @@ def make_live_writer(
 
     def render_live_frame(env: gym.Env[np.ndarray, np.ndarray]) -> np.ndarray | None:
         render_env = getattr(env, "unwrapped", env)
+        kinematic_frame = render_mujoco_kinematic_frame(render_env, height=360, width=480)
+        if kinematic_frame is not None:
+            return kinematic_frame
         model = getattr(render_env, "model", None)
         data = getattr(render_env, "data", None)
         if model is not None and data is not None:

@@ -29,6 +29,7 @@ from autoresearch_gym.runner.experiment import (
     make_policy_probe_callback,
     normalize_train_summary_curve,
     normalize_run_tag,
+    render_mujoco_kinematic_frame,
     utilization_flags,
     validate_train_curve_contract,
 )
@@ -1055,6 +1056,20 @@ def test_headless_env_override_keeps_panda_pybullet_render_mode() -> None:
     assert benchmark.render_mode == "rgb_array"
     assert benchmark.env_kwargs["render_mode"] == "rgb_array"
     assert benchmark.env_kwargs["renderer"] == "Tiny"
+
+
+def test_inverted_pendulum_kinematic_render_fallback_uses_mujoco_state() -> None:
+    fake_env = types.SimpleNamespace(
+        spec=types.SimpleNamespace(id="InvertedPendulum-v5"),
+        data=types.SimpleNamespace(qpos=np.asarray([0.25, 0.15], dtype=np.float64)),
+    )
+
+    frame = render_mujoco_kinematic_frame(fake_env, height=180, width=240)
+
+    assert frame is not None
+    assert frame.shape == (180, 240, 3)
+    assert frame.dtype == np.uint8
+    assert np.unique(frame.reshape(-1, 3), axis=0).shape[0] > 3
 
 
 def test_compact_status_writer_uses_stderr(capsys: pytest.CaptureFixture[str]) -> None:

@@ -111,6 +111,8 @@ def visual_artifact_smoke_enabled(case: SeedCase) -> bool:
         return False
     if os.environ.get("AUTORESEARCH_SMOKE_VISUALS") == "1":
         return True
+    if sys.platform == "darwin" and case.name == "inverted-pendulum":
+        return True
     return sys.platform != "darwin"
 
 
