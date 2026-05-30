@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import ast
+import importlib.util
 import io
 import json
 import shutil
@@ -21,6 +22,7 @@ from autoresearch_gym.runner.experiment import (
     BenchmarkSpec,
     TrainProbeSpec,
     apply_headless_env_override,
+    candidate_metadata,
     compact_status_line,
     make_compact_status_writer,
     make_live_writer,
@@ -1046,6 +1048,94 @@ def test_live_writer_ignores_enriched_live_callback_fields(tmp_path) -> None:
     assert payload["current"]["episode_batch"] == 0
     assert payload["current"]["active_episode_batch"] == 1
     assert payload["current"]["completed_episodes"] == 0
+
+
+def test_all_bundled_seed_live_metrics_include_candidate_description(tmp_path) -> None:
+    benchmark = BenchmarkSpec(
+        name="test",
+        env_id="CartPole-v1",
+        env_kwargs={"render_mode": "rgb_array"},
+        train_episodes=10,
+        train_seconds=30.0,
+        eval_episodes=1,
+        max_steps=50,
+        reward_type=None,
+        render_mode="rgb_array",
+        primary_metric="eval_avg_return",
+        primary_metric_mode="maximize",
+        train_seed=1,
+        eval_seed_start=2,
+        device="cpu",
+        eval_case_bank=None,
+        train_probe=TrainProbeSpec(enabled=False),
+    )
+    seed_paths = sorted(Path("autoresearch_gym/tasks").glob("*/seed_trainable*.py"))
+    assert seed_paths
+
+    for index, seed_path in enumerate(seed_paths):
+        module_name = "autoresearch_gym_test_seed_" + "_".join(seed_path.with_suffix("").parts[-3:])
+        spec = importlib.util.spec_from_file_location(module_name, seed_path)
+        assert spec is not None and spec.loader is not None
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[module_name] = module
+        spec.loader.exec_module(module)
+        candidate = module.get_candidate()
+        metadata = candidate_metadata(candidate)
+        description = metadata.get("description")
+        assert isinstance(description, str) and description.strip(), f"{seed_path} must expose a candidate description"
+
+        writer = make_live_writer(tmp_path / f"session-{index}", "run-1", "tag-1", benchmark, candidate)
+        assert writer is not None
+        writer(status="running", episode_records=[], total_steps=1, last_metrics=None)
+        payload = json.loads((tmp_path / f"session-{index}" / "live" / "current_run_metrics.json").read_text(encoding="utf-8"))
+        assert payload["run"]["candidate"]["description"] == description
+
+
+def test_external_live_status_preserves_candidate_description(tmp_path) -> None:
+    from autoresearch_gym.external.runner import _write_external_live_status
+
+    _write_external_live_status(
+        tmp_path / "session",
+        "run-1",
+        "tag-1",
+        "finished",
+        {
+            "benchmark": {
+                "train_episodes": 1,
+                "train_seconds": None,
+                "budget_mode": "episodes",
+                "eval_episodes": 1,
+                "max_steps": 5,
+                "render_mode": "rgb_array",
+            },
+            "candidate": {"description": "external candidate"},
+            "train": {"total_steps": 5, "env_steps": 5, "episodes_completed": 1, "episode_batches": 1},
+            "media": {},
+        },
+        {"episode_records": [], "last_metrics": {}},
+    )
+    payload = json.loads((tmp_path / "session" / "live" / "current_run_metrics.json").read_text(encoding="utf-8"))
+    assert payload["run"]["candidate"]["description"] == "external candidate"
+
+
+def test_unitree_dry_run_live_metrics_preserve_candidate_description(tmp_path) -> None:
+    from autoresearch_gym.external.unitree_backend import _run_media
+
+    session_dir = tmp_path / "session"
+    bundle = {
+        "run_id": "run-1",
+        "tag": "tag-1",
+        "task_family": "g1_motion_mirror",
+        "dry_run": True,
+        "required_paths": [],
+        "benchmark": {"eval_episodes": 1},
+        "candidate": {"description": "unitree candidate"},
+        "session_dir": str(session_dir),
+    }
+    _run_media(bundle, tmp_path / "external")
+
+    payload = json.loads((session_dir / "live" / "current_run_metrics.json").read_text(encoding="utf-8"))
+    assert payload["run"]["candidate"]["description"] == "unitree candidate"
 
 
 def test_live_writer_keeps_full_episode_history(tmp_path) -> None:

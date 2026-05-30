@@ -923,6 +923,15 @@ def _write_live_sample_manifest(out_dir, *, run_id, tag, sample_index, checkpoin
     return manifest_path
 
 
+def _candidate_metadata(out_dir):
+    try:
+        payload = json.loads((Path(out_dir) / "bundle.json").read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    candidate = payload.get("candidate")
+    return candidate if isinstance(candidate, dict) else {}
+
+
 def _write_partial_train_payload(
     *,
     out_dir,
@@ -1010,7 +1019,7 @@ def _write_partial_train_payload(
             "updated_at": time.time(),
             "budget_mode": budget_mode,
             "train_seconds": train_seconds,
-            "candidate": {},
+            "candidate": _candidate_metadata(out_dir),
             "frame_path": live_visual.get("live_frame_path"),
             "trajectory_manifest_path": live_visual.get("trajectory_manifest_path"),
             "trajectory_latest_frame_path": live_visual.get("trajectory_latest_frame_path"),
@@ -2490,7 +2499,12 @@ def _run_media(bundle: dict[str, Any], out_dir: Path) -> None:
         _write_json(
             live_dir / "current_run_metrics.json",
             {
-                "run": {"run_id": bundle["run_id"], "tag": bundle["tag"], "status": "finished"},
+                "run": {
+                    "run_id": bundle["run_id"],
+                    "tag": bundle["tag"],
+                    "status": "finished",
+                    "candidate": bundle.get("candidate", {}),
+                },
                 "current": {"status": "finished", "step": 0, "episodes_complete": bundle["benchmark"]["eval_episodes"]},
                 "visual": {
                     "mode": "sampled_trajectory",
