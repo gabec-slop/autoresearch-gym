@@ -54,6 +54,12 @@ The package should make it easy for a coding agent to:
   before changing benchmark or runner code. On Linux/headless hosts, prefer a
   configured offscreen backend such as EGL or OSMesa when available, and record
   the required environment setup with the run.
+- Treat hanging simulator tests as sandbox-suspect first. If a MuJoCo,
+  Gymnasium-Robotics, PyBullet, or visual artifact smoke/pre-commit command
+  hangs or times out in Codex's normal sandbox, rerun the exact same command
+  outside the sandbox / from a GUI-permitted shell before editing code. In
+  Codex, request escalation for that rerun instead of replacing render paths,
+  skipping visuals, or weakening tests based only on the sandbox result.
 
 ## Repository Layout
 
@@ -293,6 +299,10 @@ or dashboard behavior:
 - on macOS, if MuJoCo/PyBullet visual smoke fails inside a restricted sandbox,
   rerun the same pre-commit command from a normal GUI-permitted shell before
   changing render code
+- if any simulator smoke or pre-commit test hangs, timeouts, or emits
+  CoreGraphics/WindowServer/service-connection errors under Codex, rerun the
+  exact same command with sandbox escalation / a GUI-permitted shell before
+  marking it failed or changing code
 - remove generated `__pycache__`, `*.egg-info`, `autoresearch_runs/`, temporary
   checkpoints, logs, and rendered rollout artifacts before publishing
 
