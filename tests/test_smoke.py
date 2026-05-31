@@ -14,6 +14,7 @@ from pathlib import Path
 import gymnasium as gym
 import numpy as np
 import pytest
+from PIL import Image
 
 import autoresearch_gym  # noqa: F401
 from autoresearch_gym import cli
@@ -106,6 +107,113 @@ python = ".venv/Scripts/python.exe"
     config.write_text(config.read_text(encoding="utf-8") + '\nartifact_sync = "sftp"\n', encoding="utf-8")
     legacy_target = load_target_config("windows_gpu", config_path=config)
     assert legacy_target.artifact_sync == "scp"
+
+
+def test_remote_in_process_extracts_summary_from_noisy_stdout() -> None:
+    from autoresearch_gym.external.in_process import _extract_summary
+
+    summary = {
+        "run_id": "20260530-remote",
+        "benchmark": {"name": "task"},
+        "train": {"total_steps": 12},
+        "eval": {"avg_return": 1.5},
+    }
+
+    assert _extract_summary("kernel warmup\n" + json.dumps({"not": "summary"}) + "\n" + json.dumps(summary)) == summary
+
+
+def test_remote_in_process_windows_command_uses_target_python_and_paths() -> None:
+    from autoresearch_gym.external.in_process import _remote_command
+    from autoresearch_gym.external.targets import SshTarget, TargetConfig
+
+    target = SshTarget(
+        TargetConfig(
+            name="windows_gpu",
+            kind="ssh",
+            host="user@example.invalid",
+            remote_root="C:/code/autoresearch-gym",
+            path_style="windows",
+            python=".venv/Scripts/python.exe",
+        )
+    )
+
+    command = _remote_command(
+        target,
+        [
+            "-m",
+            "autoresearch_gym.cli",
+            "run",
+            "--benchmark",
+            "C:/code/autoresearch-gym/tasks/benchmark.json",
+            "--tag",
+            "pass01-baseline",
+        ],
+    )
+
+    assert "powershell.exe" in command
+    assert "Set-Location 'C:/code/autoresearch-gym'" in command
+    assert ".venv\\Scripts\\python.exe" in command
+    assert "'-m' 'autoresearch_gym.cli' 'run'" in command
+    assert "'--benchmark' 'C:/code/autoresearch-gym/tasks/benchmark.json'" in command
+
+
+def test_remote_in_process_sync_fetches_live_sampled_rollout_refs(tmp_path) -> None:
+    from autoresearch_gym.external.in_process import _sync_remote_session
+
+    session_name = "20260530-panda-remote"
+    remote_session = f"C:/code/autoresearch-gym/autoresearch_runs/sessions/{session_name}"
+    remote_live = tmp_path / "remote" / "live"
+    remote_trajectory = remote_live / "trajectories" / "run-1" / "sample_000001"
+    remote_trajectory.mkdir(parents=True)
+    windows_manifest = f"{remote_session}\\live\\trajectories\\run-1\\sample_000001\\manifest.json"
+    windows_frame = f"{remote_session}\\live\\trajectories\\run-1\\sample_000001\\frame_0000.jpg"
+    (remote_live / "current_run_metrics.json").write_text(
+        json.dumps(
+            {
+                "run": {"run_id": "run-1", "visual": {"trajectory_manifest_path": windows_manifest}},
+                "visual": {
+                    "trajectory_manifest_path": windows_manifest,
+                    "trajectory_latest_frame_path": windows_frame,
+                    "sampled_status": "completed",
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    (remote_live / "status.log").write_text("st=run step=1\n", encoding="utf-8")
+    (remote_live / "control.json").write_text("{}", encoding="utf-8")
+    (remote_trajectory / "manifest.json").write_text(
+        json.dumps({"status": "completed", "frames": [windows_frame], "latest_frame_path": windows_frame, "frame_count": 1}),
+        encoding="utf-8",
+    )
+    (remote_trajectory / "frame_0000.jpg").write_bytes(b"fake image")
+
+    class FakeTarget:
+        def remote_join(self, *parts):
+            return "/".join(str(part).replace("\\", "/").strip("/") for part in parts)
+
+        def fetch_remote_file(self, remote_file, local_file, *, timeout=15.0):
+            del timeout
+            suffix = str(remote_file).split("/live/", 1)[1]
+            source = remote_live / suffix
+            if not source.exists():
+                return False
+            local_file.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(source, local_file)
+            return True
+
+    session_dir = tmp_path / session_name
+    _sync_remote_session(FakeTarget(), remote_session, session_dir)
+
+    metrics = json.loads((session_dir / "live" / "current_run_metrics.json").read_text(encoding="utf-8"))
+    manifest_path = metrics["visual"]["trajectory_manifest_path"]
+    latest_frame_path = metrics["visual"]["trajectory_latest_frame_path"]
+    assert "C:" not in manifest_path
+    assert manifest_path.endswith(f"{session_name}/live/trajectories/run-1/sample_000001/manifest.json")
+    assert latest_frame_path.endswith(f"{session_name}/live/trajectories/run-1/sample_000001/frame_0000.jpg")
+    manifest = json.loads((session_dir / "live" / "trajectories" / "run-1" / "sample_000001" / "manifest.json").read_text())
+    assert manifest["frames"][0].endswith(f"{session_name}/live/trajectories/run-1/sample_000001/frame_0000.jpg")
+    assert (session_dir / "live" / "trajectories" / "run-1" / "sample_000001" / "frame_0000.jpg").read_bytes() == b"fake image"
 
 
 def test_fake_external_run_writes_normalized_artifacts(tmp_path) -> None:
@@ -627,7 +735,174 @@ def test_custom_trajectory_sampling_task_recipes_use_generic_live_writer_contrac
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
         assert manifest["source"] == sample_source
         assert manifest["frame_count"] == 2
+        assert manifest["width"] == 720
+        assert manifest["height"] == 480
         assert manifest["metadata"]["seed_path"] == str(seed_path)
+        first_frame = Path(manifest["frames"][0])
+        if not first_frame.is_absolute():
+            first_frame = Path.cwd() / first_frame
+        with Image.open(first_frame) as image:
+            assert image.size == (720, 480)
+
+
+def test_panda_mjwarp_benchmarks_keep_train_probes_enabled() -> None:
+    task_dir = Path("autoresearch_gym/tasks/panda_pick_and_place_mjwarp_v0")
+    for benchmark_path in task_dir.glob("benchmark*.json"):
+        payload = json.loads(benchmark_path.read_text(encoding="utf-8"))
+        train_probe = payload.get("train_probe")
+        assert isinstance(train_probe, dict), f"{benchmark_path} must declare train_probe"
+        assert train_probe.get("enabled") is True, f"{benchmark_path} must not disable train probes"
+
+
+def test_seed_artifact_smoke_cases_cover_every_bundled_seed_trainable() -> None:
+    from scripts.smoke_seed_artifacts import SEED_CASES
+
+    task_seeds = set(Path("autoresearch_gym/tasks").glob("*/seed_trainable*.py"))
+    smoke_seeds = {Path(case.seed) for case in SEED_CASES}
+
+    assert smoke_seeds == task_seeds
+    for case in SEED_CASES:
+        assert Path(case.benchmark).exists(), f"{case.name} benchmark is missing"
+
+
+def test_panda_mjwarp_vectorized_seed_answers_sampled_trajectory_requests(tmp_path: Path) -> None:
+    torch = pytest.importorskip("torch")
+    from autoresearch_gym.tasks.panda_pick_and_place_mjwarp_v0 import seed_trainable
+
+    class FakeVectorEnv:
+        def __init__(self, num_envs: int) -> None:
+            self.num_envs = num_envs
+            self.action_space = gym.spaces.Box(low=-1.0, high=1.0, shape=(1,), dtype=np.float32)
+
+        def reset(self, seed: int | None = None):
+            return np.zeros((self.num_envs, 3), dtype=np.float32)
+
+        def step(self, actions):
+            obs = np.zeros((self.num_envs, 3), dtype=np.float32)
+            rewards = np.zeros(self.num_envs, dtype=np.float32)
+            dones = np.zeros(self.num_envs, dtype=bool)
+            infos = {
+                "ee_to_cube_distance": np.full(self.num_envs, 0.5, dtype=np.float32),
+                "cube_to_goal_distance": np.full(self.num_envs, 0.4, dtype=np.float32),
+                "cube_lift_height": np.zeros(self.num_envs, dtype=np.float32),
+                "near_cube": np.zeros(self.num_envs, dtype=bool),
+                "gripper_closed_near_cube": np.zeros(self.num_envs, dtype=bool),
+                "lifted": np.zeros(self.num_envs, dtype=bool),
+                "placed_success": np.zeros(self.num_envs, dtype=bool),
+                "is_success": np.zeros(self.num_envs, dtype=bool),
+            }
+            return obs, rewards, dones, infos
+
+        def reset_worlds(self, dones):
+            return np.zeros((self.num_envs, 3), dtype=np.float32)
+
+        def close(self):
+            pass
+
+    class FakePandaEnv(gym.Env):
+        metadata = {"render_modes": ["rgb_array"]}
+
+        def __init__(self) -> None:
+            self.observation_space = gym.spaces.Box(low=-1.0, high=1.0, shape=(3,), dtype=np.float32)
+            self.action_space = gym.spaces.Box(low=-1.0, high=1.0, shape=(1,), dtype=np.float32)
+            self.steps = 0
+
+        def make_vectorized(self, num_envs: int, seed: int):
+            return FakeVectorEnv(num_envs)
+
+        def reset(self, *, seed=None, options=None):
+            super().reset(seed=seed)
+            self.steps = 0
+            return np.zeros(3, dtype=np.float32), {}
+
+        def step(self, action):
+            self.steps += 1
+            info = {
+                "ee_to_cube_distance": 0.5,
+                "cube_to_goal_distance": 0.4,
+                "cube_lift_height": 0.0,
+                "near_cube": False,
+                "gripper_closed_near_cube": False,
+                "lifted": False,
+                "placed_success": False,
+                "is_success": False,
+            }
+            return np.zeros(3, dtype=np.float32), 0.0, self.steps >= 4, False, info
+
+        def render(self, *args, **kwargs):
+            return np.full((8, 8, 3), self.steps, dtype=np.uint8)
+
+    benchmark = BenchmarkSpec(
+        name="panda-mjwarp-test",
+        env_id="FakePanda-v0",
+        env_kwargs={"render_mode": "rgb_array", "backend": "mujoco_warp", "num_envs": 2, "steps_per_env_per_iteration": 2},
+        train_episodes=1,
+        train_seconds=None,
+        eval_episodes=1,
+        max_steps=4,
+        reward_type=None,
+        render_mode="rgb_array",
+        primary_metric="eval_avg_return",
+        primary_metric_mode="maximize",
+        train_seed=1,
+        eval_seed_start=100,
+        device="cpu",
+        eval_case_bank=None,
+        train_probe=TrainProbeSpec(enabled=False),
+    )
+    candidate = seed_trainable.get_candidate()
+    writer = make_live_writer(tmp_path / "session", "run-1", "tag-1", benchmark, candidate)
+    assert writer is not None
+
+    def env_factory(control_type=None, reward_recipe=None):
+        return FakePandaEnv()
+
+    _, summary = seed_trainable.train_agent(
+        benchmark,
+        env_factory,
+        candidate,
+        torch.device("cpu"),
+        live_callback=writer,
+    )
+
+    metrics = json.loads((tmp_path / "session" / "live" / "current_run_metrics.json").read_text(encoding="utf-8"))
+    manifest_path = Path(metrics["visual"]["trajectory_manifest_path"])
+    if not manifest_path.is_absolute():
+        manifest_path = Path.cwd() / manifest_path
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    assert summary["vectorized_backend"] == "mujoco_warp_vectorized"
+    assert summary["num_envs"] == 2
+    assert summary["vector_envs"] == 2
+    assert summary["last_metrics"]["num_envs"] == 2.0
+    assert manifest["source"] == "policy_eval_rollout"
+    assert manifest["status"] == "completed"
+    assert manifest["frame_count"] >= 2
+
+
+def test_panda_mjwarp_render_policy_frame_falls_back_after_width_typeerror() -> None:
+    from autoresearch_gym.tasks.panda_pick_and_place_mjwarp_v0.seed_trainable import _render_policy_frame
+
+    class FakeRenderEnv:
+        def __init__(self) -> None:
+            self.calls: list[dict[str, int]] = []
+
+        def render(self, **kwargs):
+            self.calls.append(dict(kwargs))
+            if kwargs:
+                raise TypeError("render() got an unexpected keyword argument 'width'")
+            return np.full((5, 6, 3), 17, dtype=np.uint8)
+
+    class FakeWrappedEnv:
+        def __init__(self) -> None:
+            self.unwrapped = FakeRenderEnv()
+
+    env = FakeWrappedEnv()
+    frame = _render_policy_frame(env)
+
+    assert frame is not None
+    assert frame.shape == (5, 6, 3)
+    assert frame.dtype == np.uint8
+    assert env.unwrapped.calls == [{"width": 480, "height": 360}, {}]
 
 
 def test_ssh_target_sync_live_mirrors_remote_dashboard_metrics(tmp_path, monkeypatch) -> None:
@@ -1343,6 +1618,13 @@ def test_live_writer_sampled_trajectory_records_full_episode(tmp_path) -> None:
     )
     assert manifest["status"] == "completed"
     assert manifest["frame_count"] >= 3
+    assert manifest["width"] == 720
+    assert manifest["height"] == 480
+    first_frame = Path(manifest["frames"][0])
+    if not first_frame.is_absolute():
+        first_frame = Path.cwd() / first_frame
+    with Image.open(first_frame) as image:
+        assert image.size == (720, 480)
 
 
 def test_live_writer_sampled_trajectory_is_pinned_to_one_env(tmp_path) -> None:
@@ -2056,6 +2338,25 @@ def test_all_bundled_benchmarks_have_expected_budget_shape() -> None:
             assert payload["primary_metric"]
 
 
+def test_all_bundled_eval_case_banks_cover_benchmark_eval_budget() -> None:
+    from pathlib import Path
+
+    task_root = Path(__file__).resolve().parents[1] / "autoresearch_gym" / "tasks"
+    benchmark_paths = sorted(task_root.glob("*/benchmark*.json"))
+    assert benchmark_paths
+    for benchmark_path in benchmark_paths:
+        benchmark = json.loads(benchmark_path.read_text(encoding="utf-8"))
+        eval_case_bank = benchmark.get("eval_case_bank")
+        if not eval_case_bank:
+            continue
+        case_bank_path = benchmark_path.parent / str(eval_case_bank)
+        cases = json.loads(case_bank_path.read_text(encoding="utf-8")).get("cases", [])
+        assert len(cases) >= int(benchmark["eval_episodes"]), (
+            f"{benchmark_path} requests {benchmark['eval_episodes']} eval episodes "
+            f"but {case_bank_path} only has {len(cases)} cases"
+        )
+
+
 def test_registered_env_resets_and_steps() -> None:
     pytest.importorskip("panda_gym")
     pytest.importorskip("pybullet")
@@ -2233,3 +2534,326 @@ def test_panda_pick_and_place_her_seed_task_resets_and_steps_when_panda_gym_is_i
     assert isinstance(bool(terminated), bool)
     assert isinstance(bool(truncated), bool)
     env.close()
+
+
+def test_mujoco_panda_pick_and_place_curriculum_wrapper_shapes_subskills() -> None:
+    from autoresearch_gym.tasks.panda_pick_and_place_mjwarp_v0.seed_trainable import RewardRecipeWrapper
+
+    class DummyGoalEnv(gym.Env):
+        action_space = gym.spaces.Box(low=-1.0, high=1.0, shape=(2,), dtype=np.float32)
+        observation_space = gym.spaces.Dict(
+            {
+                "observation": gym.spaces.Box(low=-np.inf, high=np.inf, shape=(7,), dtype=np.float32),
+                "achieved_goal": gym.spaces.Box(low=-np.inf, high=np.inf, shape=(3,), dtype=np.float32),
+                "desired_goal": gym.spaces.Box(low=-np.inf, high=np.inf, shape=(3,), dtype=np.float32),
+            }
+        )
+
+        def reset(self, *, seed=None, options=None):
+            del seed, options
+            return {
+                "observation": np.zeros(7, dtype=np.float32),
+                "achieved_goal": np.zeros(3, dtype=np.float32),
+                "desired_goal": np.ones(3, dtype=np.float32),
+            }, {}
+
+        def step(self, action):
+            del action
+            obs = {
+                "observation": np.zeros(7, dtype=np.float32),
+                "achieved_goal": np.zeros(3, dtype=np.float32),
+                "desired_goal": np.ones(3, dtype=np.float32),
+            }
+            return obs, -1.0, False, False, {
+                "ee_to_cube_distance": 0.03,
+                "cube_to_goal_distance": 0.40,
+                "initial_ee_to_cube_distance": 0.10,
+                "initial_cube_to_goal_distance": 0.40,
+                "ee_to_cube_progress": 0.07,
+                "cube_to_goal_progress": 0.00,
+                "cube_lift_height": 0.00,
+                "near_cube": True,
+                "gripper_closed_near_cube": True,
+                "lifted": False,
+                "placed_success": False,
+            }
+
+    env = RewardRecipeWrapper(DummyGoalEnv(), "subskill_curriculum")
+    obs, _ = env.reset()
+    assert obs.shape == env.observation_space.shape
+    _, reward, _, _, info = env.step(np.zeros(2, dtype=np.float32))
+    assert reward > -1.0
+    assert info["training_reward"] == reward
+    assert info["curriculum_phase_index"] == 0.0
+
+
+def test_mujoco_panda_pick_and_place_curriculum_rewards_use_reset_relative_progress() -> None:
+    from autoresearch_gym.tasks.panda_pick_and_place_mjwarp_v0.seed_trainable import (
+        GRASP_LIFT_STEPS,
+        _curriculum_reward,
+        _curriculum_reward_vector,
+    )
+
+    base_info = {
+        "ee_to_cube_distance": 0.05,
+        "cube_to_goal_distance": 0.16,
+        "initial_ee_to_cube_distance": 0.20,
+        "initial_cube_to_goal_distance": 0.30,
+        "cube_lift_height": 0.00,
+        "near_cube": False,
+        "gripper_closed_near_cube": False,
+        "lifted": False,
+        "placed_success": False,
+    }
+    no_progress = {**base_info, "ee_to_cube_progress": 0.00, "cube_to_goal_progress": 0.00}
+    approach_progress = {**base_info, "ee_to_cube_progress": 0.10, "cube_to_goal_progress": 0.00}
+    assert _curriculum_reward(-0.16, approach_progress, 0) > _curriculum_reward(-0.16, no_progress, 0)
+
+    place_progress = {**base_info, "ee_to_cube_progress": 0.00, "cube_to_goal_progress": 0.12, "lifted": True}
+    assert _curriculum_reward(-0.16, place_progress, GRASP_LIFT_STEPS) > _curriculum_reward(-0.16, no_progress, GRASP_LIFT_STEPS)
+
+    push_progress = {
+        **base_info,
+        "ee_to_cube_progress": 0.00,
+        "cube_to_goal_progress": 0.12,
+        "lifted": False,
+        "lifted_ever": False,
+    }
+    lifted_progress = {**push_progress, "lifted_ever": True}
+    assert _curriculum_reward(-0.16, push_progress, GRASP_LIFT_STEPS) == pytest.approx(
+        _curriculum_reward(-0.16, no_progress, GRASP_LIFT_STEPS)
+    )
+    assert _curriculum_reward(-0.16, lifted_progress, GRASP_LIFT_STEPS) > _curriculum_reward(-0.16, push_progress, GRASP_LIFT_STEPS)
+
+    vector_rewards = _curriculum_reward_vector(
+        np.array([-0.16, -0.16], dtype=np.float32),
+        {
+            "ee_to_cube_distance": np.array([0.05, 0.05], dtype=np.float32),
+            "cube_to_goal_distance": np.array([0.16, 0.16], dtype=np.float32),
+            "initial_ee_to_cube_distance": np.array([0.20, 0.20], dtype=np.float32),
+            "initial_cube_to_goal_distance": np.array([0.30, 0.30], dtype=np.float32),
+            "ee_to_cube_progress": np.array([0.00, 0.10], dtype=np.float32),
+            "cube_to_goal_progress": np.array([0.00, 0.00], dtype=np.float32),
+            "near_cube": np.array([False, False]),
+            "gripper_closed_near_cube": np.array([False, False]),
+            "lifted": np.array([False, False]),
+            "placed_success": np.array([False, False]),
+        },
+        0,
+    )
+    assert vector_rewards[1] > vector_rewards[0]
+
+    place_vector_rewards = _curriculum_reward_vector(
+        np.array([-0.16, -0.16], dtype=np.float32),
+        {
+            "ee_to_cube_distance": np.array([0.05, 0.05], dtype=np.float32),
+            "cube_to_goal_distance": np.array([0.16, 0.16], dtype=np.float32),
+            "initial_ee_to_cube_distance": np.array([0.20, 0.20], dtype=np.float32),
+            "initial_cube_to_goal_distance": np.array([0.30, 0.30], dtype=np.float32),
+            "ee_to_cube_progress": np.array([0.00, 0.00], dtype=np.float32),
+            "cube_to_goal_progress": np.array([0.12, 0.12], dtype=np.float32),
+            "near_cube": np.array([False, False]),
+            "gripper_closed_near_cube": np.array([False, False]),
+            "lifted": np.array([False, False]),
+            "lifted_ever": np.array([False, True]),
+            "placed_success": np.array([False, False]),
+        },
+        GRASP_LIFT_STEPS,
+    )
+    assert place_vector_rewards[1] > place_vector_rewards[0]
+
+
+def test_mujoco_panda_pick_and_place_success_requires_lift_before_place() -> None:
+    from autoresearch_gym.envs import mujoco_panda_pick_and_place as panda_env
+
+    assert not bool(panda_env._pick_place_success(0.0, False))
+    assert bool(panda_env._pick_place_success(0.0, True))
+    assert not bool(panda_env._pick_place_success(panda_env.SUCCESS_THRESHOLD + 0.01, True))
+
+    env = panda_env.AutoresearchMujocoPandaPickAndPlaceEnv.__new__(panda_env.AutoresearchMujocoPandaPickAndPlaceEnv)
+    env.reward_type = "dense"
+    at_goal = np.zeros(3, dtype=np.float32)
+    assert float(env.compute_reward(at_goal, at_goal, {"lifted_ever": False})) == pytest.approx(-1.0)
+    assert float(env.compute_reward(at_goal, at_goal, {"lifted_ever": True})) == pytest.approx(0.0)
+
+
+def test_mujoco_panda_scene_matches_panda_gym_work_surface_layout(tmp_path: Path) -> None:
+    from autoresearch_gym.envs import mujoco_panda_pick_and_place as panda_env
+
+    panda_xml = tmp_path / "panda.xml"
+    panda_xml.write_text(
+        '<mujoco model="panda"><compiler/><worldbody><body name="link0" pos="0 0 0"/></worldbody></mujoco>',
+        encoding="utf-8",
+    )
+
+    scene_path = panda_env._write_scene_xml(panda_xml)
+    root = panda_env.ET.parse(scene_path).getroot()
+    worldbody = root.find("worldbody")
+    assert worldbody is not None
+
+    robot_base = worldbody.find("./body[@name='link0']")
+    table = worldbody.find("./geom[@name='table']")
+    cube = worldbody.find("./body[@name='object']")
+    target = worldbody.find("./site[@name='target']")
+    visual = root.find("visual/global")
+    assert robot_base is not None
+    assert table is not None
+    assert cube is not None
+    assert target is not None
+    assert visual is not None
+
+    assert robot_base.get("pos") == "-0.600 0 0"
+    assert int(visual.get("offwidth", "0")) >= 1024
+    assert int(visual.get("offheight", "0")) >= 768
+    assert [float(value) for value in table.get("pos", "").split()] == pytest.approx([-0.3, 0.0, -0.2])
+    assert [float(value) for value in table.get("size", "").split()] == pytest.approx([0.55, 0.35, 0.2])
+    assert [float(value) for value in cube.get("pos", "").split()] == pytest.approx([0.0, 0.0, 0.02])
+    assert [float(value) for value in target.get("pos", "").split()] == pytest.approx([0.12, 0.0, 0.02])
+    assert target.get("type") == "box"
+    assert [float(value) for value in target.get("size", "").split()] == pytest.approx([0.02, 0.02, 0.02])
+
+
+def test_mujoco_panda_goal_sampler_uses_tabletop_goals() -> None:
+    from autoresearch_gym.envs import mujoco_panda_pick_and_place as panda_env
+
+    env = panda_env.AutoresearchMujocoPandaPickAndPlaceEnv.__new__(panda_env.AutoresearchMujocoPandaPickAndPlaceEnv)
+    env.rng = np.random.default_rng(4500)
+
+    goal, cube, attempts = env._sample_goal_and_cube_pos()
+
+    assert goal == pytest.approx([0.00691743, -0.07961766, 0.02])
+    assert cube == pytest.approx([-0.05418519, -0.10684564, 0.02])
+    assert attempts == 0
+
+    for seed in range(4500, 4550):
+        env.rng = np.random.default_rng(seed)
+        goal, _, _ = env._sample_goal_and_cube_pos()
+        assert goal[2] == pytest.approx(panda_env.CUBE_Z)
+
+
+def test_mujoco_panda_goal_sampler_rejects_initial_successes() -> None:
+    from autoresearch_gym.envs import mujoco_panda_pick_and_place as panda_env
+
+    env = panda_env.AutoresearchMujocoPandaPickAndPlaceEnv.__new__(panda_env.AutoresearchMujocoPandaPickAndPlaceEnv)
+    env.rng = np.random.default_rng(7)
+
+    for _ in range(500):
+        goal, cube, _ = env._sample_goal_and_cube_pos()
+        assert np.linalg.norm(cube - goal) >= panda_env.SUCCESS_THRESHOLD
+
+    vec = panda_env.MujocoWarpPandaPickAndPlaceVectorEnv.__new__(panda_env.MujocoWarpPandaPickAndPlaceVectorEnv)
+    vec.rng = np.random.default_rng(7)
+    goals, cubes = vec._sample_goal_and_cube_positions(2048)
+    assert np.min(np.linalg.norm(cubes - goals, axis=1)) >= panda_env.SUCCESS_THRESHOLD
+    assert goals[:, 2] == pytest.approx(np.full(2048, panda_env.CUBE_Z))
+
+
+def test_mujoco_panda_fixed_eval_cases_use_work_surface_coordinates() -> None:
+    cases = json.loads(Path("autoresearch_gym/tasks/panda_pick_and_place_mjwarp_v0/eval_cases.json").read_text(encoding="utf-8"))["cases"]
+
+    assert cases
+    for case in cases:
+        cube = np.asarray(case["cube_pos"], dtype=np.float32)
+        goal = np.asarray(case["goal_pos"], dtype=np.float32)
+        assert -0.16 <= cube[0] <= 0.16
+        assert -0.16 <= cube[1] <= 0.16
+        assert cube[2] == pytest.approx(0.02)
+        assert -0.16 <= goal[0] <= 0.16
+        assert -0.16 <= goal[1] <= 0.16
+        assert goal[2] == pytest.approx(0.02)
+        assert np.linalg.norm(cube - goal) >= 0.05
+    assert all(float(case["goal_pos"][2]) == pytest.approx(0.02) for case in cases)
+
+
+def test_mujoco_panda_benchmarks_select_lift_gated_success_metric() -> None:
+    for name in ["benchmark.json", "benchmark_wall_clock.json", "benchmark_large_vector_wall_clock.json"]:
+        payload = json.loads(Path("autoresearch_gym/tasks/panda_pick_and_place_mjwarp_v0", name).read_text(encoding="utf-8"))
+        assert payload["primary_metric"] == "eval_success_rate"
+        assert payload["primary_metric_mode"] == "maximize"
+
+
+def test_mujoco_panda_pick_and_place_seed_task_resets_and_steps_when_assets_are_installed() -> None:
+    pytest.importorskip("mujoco")
+    pytest.importorskip("robot_descriptions")
+    from autoresearch_gym.tasks.panda_pick_and_place_mjwarp_v0.seed_trainable import RewardRecipeWrapper
+
+    try:
+        env = RewardRecipeWrapper(
+            gym.make("AutoresearchMujocoPandaPickAndPlaceDense-v0", render_mode="rgb_array", backend="mujoco", max_steps=4),
+            "subskill_curriculum",
+        )
+    except FileNotFoundError as exc:
+        pytest.skip(str(exc))
+    obs, info = env.reset(seed=123)
+    assert obs.shape == env.observation_space.shape
+    action = env.action_space.sample()
+    next_obs, reward, terminated, truncated, info = env.step(action)
+    assert next_obs.shape == env.observation_space.shape
+    assert isinstance(float(reward), float)
+    assert isinstance(bool(terminated), bool)
+    assert isinstance(bool(truncated), bool)
+    assert "ee_to_cube_distance" in info
+    assert "ee_to_cube_progress" in info
+    assert "initial_ee_to_cube_distance" in info
+    env.close()
+
+
+def test_mujoco_panda_real_env_default_render_returns_nonblank_frame_when_assets_are_installed() -> None:
+    pytest.importorskip("mujoco")
+    pytest.importorskip("robot_descriptions")
+
+    try:
+        env = gym.make("AutoresearchMujocoPandaPickAndPlaceDense-v0", render_mode="rgb_array", backend="mujoco", max_steps=2)
+    except FileNotFoundError as exc:
+        pytest.skip(str(exc))
+    try:
+        env.reset(seed=4500)
+        frame = env.render()
+    finally:
+        env.close()
+
+    assert isinstance(frame, np.ndarray)
+    assert frame.dtype == np.uint8
+    assert frame.ndim == 3
+    assert frame.shape == (480, 720, 3)
+    assert float(np.std(frame)) > 0.0
+
+
+def test_panda_mjwarp_real_sampled_policy_trajectory_captures_frames_when_assets_are_installed() -> None:
+    torch = pytest.importorskip("torch")
+    pytest.importorskip("mujoco")
+    pytest.importorskip("robot_descriptions")
+    from autoresearch_gym.tasks.panda_pick_and_place_mjwarp_v0.seed_trainable import (
+        Agent,
+        RewardRecipeWrapper,
+        _sample_policy_trajectory,
+    )
+
+    def env_factory(control_type=None, reward_recipe=None):
+        del control_type
+        return RewardRecipeWrapper(
+            gym.make("AutoresearchMujocoPandaPickAndPlaceDense-v0", render_mode="rgb_array", backend="mujoco", max_steps=3),
+            reward_recipe,
+        )
+
+    try:
+        probe_env = env_factory()
+    except FileNotFoundError as exc:
+        pytest.skip(str(exc))
+    obs_dim = int(np.prod(probe_env.observation_space.shape))
+    action_dim = int(np.prod(probe_env.action_space.shape))
+    probe_env.close()
+
+    agent = Agent(obs_dim, action_dim).to(torch.device("cpu"))
+    sampled = _sample_policy_trajectory(
+        agent,
+        env_factory,
+        types.SimpleNamespace(max_steps=2, eval_seed_start=4500, train_seed=1),
+        {"episode": 1, "sample_index": 1, "frame_stride": 1, "playback_fps": 20.0},
+    )
+
+    assert sampled["source"] == "policy_eval_rollout"
+    assert sampled["frames"]
+    assert all(isinstance(frame, np.ndarray) for frame in sampled["frames"])
+    assert all(frame.shape == (480, 720, 3) for frame in sampled["frames"])
+    assert any(float(np.std(frame)) > 0.0 for frame in sampled["frames"])

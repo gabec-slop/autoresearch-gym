@@ -7,10 +7,16 @@ import shutil
 import subprocess
 import sys
 from dataclasses import dataclass
+from importlib.util import find_spec
 from pathlib import Path
 from typing import Any
 
-from check_trainable_contract import validate_records, validate_summary
+from PIL import Image, ImageStat
+
+try:
+    from check_trainable_contract import validate_records, validate_summary
+except ModuleNotFoundError:  # pragma: no cover - used when imported as scripts.smoke_seed_artifacts.
+    from scripts.check_trainable_contract import validate_records, validate_summary
 
 
 @dataclass(frozen=True)
@@ -19,6 +25,8 @@ class SeedCase:
     benchmark: str
     seed: str
     visual_artifact_smoke: bool = True
+    required_modules: tuple[str, ...] = ()
+    benchmark_overrides: dict[str, Any] | None = None
 
 
 SEED_CASES: tuple[SeedCase, ...] = (
@@ -58,6 +66,16 @@ SEED_CASES: tuple[SeedCase, ...] = (
         "autoresearch_gym/tasks/panda_pick_and_place_v0/seed_trainable_her.py",
     ),
     SeedCase(
+        "panda-mjwarp",
+        "autoresearch_gym/tasks/panda_pick_and_place_mjwarp_v0/benchmark.json",
+        "autoresearch_gym/tasks/panda_pick_and_place_mjwarp_v0/seed_trainable.py",
+        required_modules=("mujoco", "robot_descriptions"),
+        benchmark_overrides={
+            "max_steps": 4,
+            "env_kwargs": {"backend": "mujoco", "max_steps": 4, "num_envs": 1, "steps_per_env_per_iteration": 4},
+        },
+    ),
+    SeedCase(
         "bat-to-goal",
         "autoresearch_gym/tasks/bat_to_goal_v0/benchmark.json",
         "autoresearch_gym/tasks/bat_to_goal_v0/seed_trainable.py",
@@ -66,6 +84,54 @@ SEED_CASES: tuple[SeedCase, ...] = (
         "bat-to-goal-vector",
         "autoresearch_gym/tasks/bat_to_goal_v0/benchmark_vectorized_wall_clock.json",
         "autoresearch_gym/tasks/bat_to_goal_v0/seed_trainable_vectorized.py",
+    ),
+    SeedCase(
+        "unitree-g1-mjlab",
+        "autoresearch_gym/tasks/unitree_g1_motion_mirror_v0/benchmark.json",
+        "autoresearch_gym/tasks/unitree_g1_motion_mirror_v0/seed_trainable.py",
+        benchmark_overrides={
+            "max_steps": 8,
+            "env_kwargs": {"dry_run": True},
+            "execution_backend": {"dry_run": True},
+        },
+    ),
+    SeedCase(
+        "unitree-g1-lower-level",
+        "autoresearch_gym/tasks/unitree_g1_motion_mirror_v0/benchmark_lower_level.json",
+        "autoresearch_gym/tasks/unitree_g1_motion_mirror_v0/seed_trainable_lower_level_cleanrl.py",
+        benchmark_overrides={
+            "max_steps": 8,
+            "env_kwargs": {"num_envs": 2, "steps_per_env_per_iteration": 4},
+        },
+    ),
+    SeedCase(
+        "unitree-go2-mjlab",
+        "autoresearch_gym/tasks/unitree_go2_rough_locomotion_v0/benchmark.json",
+        "autoresearch_gym/tasks/unitree_go2_rough_locomotion_v0/seed_trainable.py",
+        benchmark_overrides={
+            "max_steps": 8,
+            "env_kwargs": {"dry_run": True},
+            "execution_backend": {"dry_run": True},
+        },
+    ),
+    SeedCase(
+        "unitree-go2-mjlab-staged",
+        "autoresearch_gym/tasks/unitree_go2_rough_locomotion_v0/benchmark.json",
+        "autoresearch_gym/tasks/unitree_go2_rough_locomotion_v0/seed_trainable_staged_curriculum.py",
+        benchmark_overrides={
+            "max_steps": 8,
+            "env_kwargs": {"dry_run": True},
+            "execution_backend": {"dry_run": True},
+        },
+    ),
+    SeedCase(
+        "unitree-go2-lower-level",
+        "autoresearch_gym/tasks/unitree_go2_rough_locomotion_v0/benchmark_lower_level.json",
+        "autoresearch_gym/tasks/unitree_go2_rough_locomotion_v0/seed_trainable_lower_level_cleanrl.py",
+        benchmark_overrides={
+            "max_steps": 8,
+            "env_kwargs": {"num_envs": 2, "steps_per_env_per_iteration": 4},
+        },
     ),
 )
 
@@ -88,6 +154,8 @@ def write_control(session_dir: Path, mode: str) -> None:
         "visual_mode": mode,
         "control_poll_seconds": 0.0,
         "jpeg_quality": 70,
+        "render_width": 720,
+        "render_height": 480,
     }
     if mode == "live_frame":
         payload["live_frame_interval_seconds"] = 0.0
@@ -96,6 +164,33 @@ def write_control(session_dir: Path, mode: str) -> None:
         payload["trajectory_frame_stride"] = 1
         payload["trajectory_playback_fps"] = 20.0
     (live_dir / "control.json").write_text(json.dumps(payload, indent=2), encoding="utf-8")
+
+
+def deep_update(payload: dict[str, Any], overrides: dict[str, Any]) -> dict[str, Any]:
+    merged = dict(payload)
+    for key, value in overrides.items():
+        if isinstance(value, dict) and isinstance(merged.get(key), dict):
+            merged[key] = deep_update(merged[key], value)
+        else:
+            merged[key] = value
+    return merged
+
+
+def benchmark_for_session(repo_root: Path, session_dir: Path, case: SeedCase) -> Path:
+    source = repo_root / case.benchmark
+    if not case.benchmark_overrides:
+        return source
+    benchmark_dir = session_dir / "benchmark"
+    benchmark_dir.mkdir(parents=True, exist_ok=True)
+    payload = deep_update(read_json(source), case.benchmark_overrides)
+    eval_case_bank = payload.get("eval_case_bank")
+    if eval_case_bank:
+        source_eval_cases = source.parent / str(eval_case_bank)
+        if source_eval_cases.exists():
+            shutil.copy2(source_eval_cases, benchmark_dir / str(eval_case_bank))
+    target = benchmark_dir / source.name
+    target.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    return target
 
 
 def candidate_for_session(repo_root: Path, session_dir: Path, seed: str) -> Path:
@@ -116,20 +211,53 @@ def visual_artifact_smoke_enabled(case: SeedCase) -> bool:
     return sys.platform != "darwin"
 
 
+def missing_required_modules(case: SeedCase) -> list[str]:
+    return [module for module in case.required_modules if find_spec(module) is None]
+
+
+def validate_image_file(path: Path, label: str, expected_size: tuple[int, int] | None = None) -> list[str]:
+    errors: list[str] = []
+    try:
+        with Image.open(path) as image:
+            width, height = image.size
+            if width <= 1 or height <= 1:
+                errors.append(f"{label} image is too small: {width}x{height}")
+                return errors
+            if expected_size is not None and (width, height) != expected_size:
+                errors.append(f"{label} image has wrong size: {width}x{height}, expected {expected_size[0]}x{expected_size[1]}")
+            stat = ImageStat.Stat(image.convert("RGB"))
+            if sum(float(value) for value in stat.var) <= 0.0:
+                errors.append(f"{label} image is blank/uniform: {path}")
+    except Exception as exc:
+        errors.append(f"{label} image is unreadable: {path}: {exc}")
+    return errors
+
+
 def run_case(repo_root: Path, case: SeedCase, mode: str, output_root: Path, timeout: float) -> dict[str, Any]:
     session_dir = output_root / "sessions" / f"{case.name}-{mode}"
     if session_dir.exists():
         shutil.rmtree(session_dir)
     session_dir.mkdir(parents=True)
+    missing_modules = missing_required_modules(case)
+    if missing_modules:
+        return {
+            "case": case.name,
+            "mode": mode,
+            "session_dir": str(session_dir),
+            "returncode": None,
+            "skipped": f"missing optional modules: {', '.join(missing_modules)}",
+            "errors": [],
+        }
     write_control(session_dir, mode)
     candidate = candidate_for_session(repo_root, session_dir, case.seed)
+    benchmark = benchmark_for_session(repo_root, session_dir, case)
     cmd = [
         sys.executable,
         "-m",
         "autoresearch_gym.cli",
         "run",
         "--benchmark",
-        case.benchmark,
+        str(benchmark),
         "--seed-candidate",
         case.seed,
         "--session-dir",
@@ -220,12 +348,18 @@ def run_case(repo_root: Path, case: SeedCase, mode: str, output_root: Path, time
         frame_path = repo_path(repo_root, visual.get("live_frame_path"))
         if frame_path is None or not frame_path.exists() or frame_path.stat().st_size <= 0:
             result["errors"].append("missing or empty live frame")
+        else:
+            result["errors"].extend(validate_image_file(frame_path, "live frame", expected_size=(720, 480)))
     elif mode == "sampled_trajectory":
         manifest_path = repo_path(repo_root, visual.get("trajectory_manifest_path"))
         if manifest_path is None or not manifest_path.exists():
             result["errors"].append("missing sampled trajectory manifest")
         else:
             manifest = read_json(manifest_path)
+            if manifest.get("width") != 720 or manifest.get("height") != 480:
+                result["errors"].append(
+                    f"sampled trajectory manifest has wrong size: {manifest.get('width')}x{manifest.get('height')}"
+                )
             frame_count = int(manifest.get("frame_count") or 0)
             if frame_count < 2:
                 result["errors"].append(f"sampled trajectory has too few frames: {frame_count}")
@@ -233,6 +367,10 @@ def run_case(repo_root: Path, case: SeedCase, mode: str, output_root: Path, time
                 frame_path = repo_path(repo_root, frame)
                 if frame_path is None or not frame_path.exists() or frame_path.stat().st_size <= 0:
                     result["errors"].append(f"missing or empty sampled frame: {frame}")
+                    break
+                image_errors = validate_image_file(frame_path, f"sampled frame {frame}", expected_size=(720, 480))
+                if image_errors:
+                    result["errors"].extend(image_errors)
                     break
 
     return result
@@ -258,8 +396,10 @@ def main() -> int:
         for mode in selected_modes:
             result = run_case(repo_root, case, mode, args.output_root, args.timeout)
             results.append(result)
-            status = "ok" if not result["errors"] else "FAIL"
+            status = "SKIP" if result.get("skipped") else "ok" if not result["errors"] else "FAIL"
             print(f"{case.name} {mode}: {status}", flush=True)
+            if result.get("skipped"):
+                print(f"  - {result['skipped']}", flush=True)
             for error in result["errors"]:
                 print(f"  - {error}", flush=True)
 
