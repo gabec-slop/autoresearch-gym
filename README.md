@@ -26,6 +26,7 @@ Useful extras:
 
 ```bash
 uv sync --extra mujoco  # Hopper, InvertedPendulum, FetchPush
+uv sync --extra mujoco-warp  # Menagerie Panda MuJoCo/MJWarp task
 uv sync --extra panda   # Panda/PyBullet and PandaGym tasks
 uv sync --extra dev     # tests and development tools
 ```
@@ -61,6 +62,7 @@ Bundled tasks:
 | InvertedPendulum | `autoresearch_gym/tasks/inverted_pendulum_v5/benchmark.json` | `autoresearch_gym/tasks/inverted_pendulum_v5/seed_trainable.py` |
 | FetchPushDense | `autoresearch_gym/tasks/fetch_push_dense_v0/benchmark.json` | `autoresearch_gym/tasks/fetch_push_dense_v0/seed_trainable.py` or `seed_trainable_her.py` |
 | Panda pick-and-place | `autoresearch_gym/tasks/panda_pick_and_place_v0/benchmark.json` | `autoresearch_gym/tasks/panda_pick_and_place_v0/seed_trainable.py` or `seed_trainable_her.py` |
+| Panda pick-and-place MuJoCo/MJWarp | `autoresearch_gym/tasks/panda_pick_and_place_mjwarp_v0/benchmark_wall_clock.json` | `autoresearch_gym/tasks/panda_pick_and_place_mjwarp_v0/seed_trainable.py` |
 | Panda bat-to-goal | `autoresearch_gym/tasks/bat_to_goal_v0/benchmark.json` | `autoresearch_gym/tasks/bat_to_goal_v0/seed_trainable.py` |
 | Panda bat-to-goal vectorized wall-clock | `autoresearch_gym/tasks/bat_to_goal_v0/benchmark_vectorized_wall_clock.json` | `autoresearch_gym/tasks/bat_to_goal_v0/seed_trainable_vectorized.py` |
 | Unitree G1 motion mirror external | `autoresearch_gym/tasks/unitree_g1_motion_mirror_v0/benchmark.json` | `autoresearch_gym/tasks/unitree_g1_motion_mirror_v0/seed_trainable.py` |
@@ -125,6 +127,31 @@ uv run autoresearch-gym run \
 Private SSH settings belong in ignored target config, not in benchmark files or
 seeds. The public example uses `artifact_sync = "scp"`, which is the supported
 SSH artifact sync mode.
+
+The same `--execution-target` switch also works for ordinary in-process
+Gymnasium benchmarks when the remote checkout can import the benchmark and seed
+dependencies. In that mode the local process still owns the autoresearch
+session, candidate selection, final `results.jsonl`, and dashboard path; the
+runner stages the selected benchmark/candidate files, runs
+`autoresearch-gym run` on the SSH target, periodically mirrors live dashboard
+artifacts back into the local session, then fetches the final run directory.
+Use this for GPU-native simulators such as MuJoCo Warp:
+
+```bash
+uv run autoresearch-gym run \
+  --benchmark autoresearch_gym/tasks/panda_pick_and_place_mjwarp_v0/benchmark_wall_clock.json \
+  --session-dir autoresearch_runs/sessions/<session-id> \
+  --candidate autoresearch_runs/sessions/<session-id>/candidates/pass01_baseline.py \
+  --tag pass01-baseline \
+  --execution-target windows_gpu \
+  --compact-status \
+  --compact-status-file autoresearch_runs/sessions/<session-id>/live/status.log
+```
+
+Before launching a remote in-process run, sync or verify the remote checkout is
+current with the local intended code. The target runner stages the benchmark,
+eval-case bank, and active candidate file, but it does not copy arbitrary local
+package edits or simulator dependencies.
 
 The lower-level CleanRL variants use:
 

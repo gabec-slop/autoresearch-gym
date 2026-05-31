@@ -18,6 +18,12 @@ MuJoCo locomotion, control, and manipulation tasks:
 uv sync --extra mujoco
 ```
 
+MuJoCo Warp tasks using MuJoCo Menagerie assets:
+
+```bash
+uv sync --extra mujoco-warp
+```
+
 Panda/PyBullet and PandaGym tasks:
 
 ```bash
@@ -59,6 +65,12 @@ MuJoCo tasks:
 
 ```powershell
 uv sync --extra mujoco
+```
+
+MuJoCo Warp tasks using MuJoCo Menagerie assets:
+
+```powershell
+uv sync --extra mujoco-warp
 ```
 
 Panda/PyBullet and PandaGym tasks:
@@ -181,6 +193,26 @@ uv run autoresearch-gym run \
 The same seed and benchmark are used in local and remote mode. The runner and
 external backend handle target resolution, path style, command launch, and
 artifact fetch. For SSH targets, the implemented artifact sync mode is `scp`.
+
+The same SSH target config can also run ordinary in-process Gymnasium
+benchmarks on the remote machine:
+
+```bash
+uv run autoresearch-gym run \
+  --benchmark autoresearch_gym/tasks/panda_pick_and_place_mjwarp_v0/benchmark_wall_clock.json \
+  --session-dir autoresearch_runs/sessions/<session-id> \
+  --candidate autoresearch_runs/sessions/<session-id>/candidates/pass01_baseline.py \
+  --tag panda-mjwarp-remote \
+  --execution-target windows_gpu \
+  --compact-status \
+  --compact-status-file autoresearch_runs/sessions/<session-id>/live/status.log
+```
+
+For in-process remote benchmarks, the local runner stages the benchmark,
+eval-case bank, and selected candidate file, mirrors live dashboard artifacts
+back into the local session, and appends the final result locally. Keep the
+remote checkout and simulator dependencies current before launching; package
+code changes outside those staged files must already exist on the remote.
 
 The lower-level CleanRL Unitree benchmarks do not require the MJLab bridge
 scripts, but they still exercise the external artifact contract and should be

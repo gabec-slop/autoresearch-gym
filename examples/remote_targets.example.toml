@@ -8,6 +8,9 @@ remote_root = "C:/code/autoresearch-gym"
 path_style = "windows"
 python = ".venv/Scripts/python.exe"
 artifact_sync = "scp"
+# Optional for long remote in-process or external runs.
+# live_sync_interval_seconds = 10
+# in_process_timeout_padding_seconds = 1800
 
 [targets.local]
 kind = "local"
