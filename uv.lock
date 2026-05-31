@@ -31,6 +31,12 @@ mujoco = [
     { name = "gymnasium-robotics" },
     { name = "torch" },
 ]
+mujoco-warp = [
+    { name = "gymnasium", extra = ["mujoco"] },
+    { name = "mujoco-warp" },
+    { name = "robot-descriptions" },
+    { name = "torch" },
+]
 panda = [
     { name = "panda-gym", marker = "platform_machine != 'arm64' or sys_platform != 'darwin'" },
     { name = "pybullet", marker = "platform_machine != 'arm64' or sys_platform != 'darwin'" },
@@ -44,18 +50,22 @@ requires-dist = [
     { name = "build", marker = "extra == 'dev'" },
     { name = "gymnasium", specifier = ">=0.29" },
     { name = "gymnasium", extras = ["mujoco"], marker = "extra == 'mujoco'", specifier = ">=0.29" },
+    { name = "gymnasium", extras = ["mujoco"], marker = "extra == 'mujoco-warp'", specifier = ">=0.29" },
     { name = "gymnasium-robotics", marker = "extra == 'mujoco'", specifier = ">=1.3" },
+    { name = "mujoco-warp", marker = "extra == 'mujoco-warp'" },
     { name = "numpy", specifier = "<2" },
     { name = "panda-gym", marker = "(platform_machine != 'arm64' and extra == 'panda') or (sys_platform != 'darwin' and extra == 'panda')", specifier = "==3.0.7" },
     { name = "pillow" },
     { name = "pybullet", marker = "(platform_machine != 'arm64' and extra == 'panda') or (sys_platform != 'darwin' and extra == 'panda')" },
     { name = "pybullet-arm64", marker = "platform_machine == 'arm64' and sys_platform == 'darwin' and extra == 'panda'" },
     { name = "pytest", marker = "extra == 'dev'" },
+    { name = "robot-descriptions", marker = "extra == 'mujoco-warp'" },
     { name = "scipy", marker = "extra == 'panda'" },
     { name = "torch", marker = "extra == 'mujoco'" },
+    { name = "torch", marker = "extra == 'mujoco-warp'" },
     { name = "torch", marker = "extra == 'panda'" },
 ]
-provides-extras = ["dev", "mujoco", "panda"]
+provides-extras = ["dev", "mujoco", "mujoco-warp", "panda"]
 
 [[package]]
 name = "build"
@@ -208,6 +218,30 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/d5/8d/1c51c094345df128ca4a990d633fe1a0ff28726c9e6b3c41ba65087bba1d/fsspec-2026.4.0.tar.gz", hash = "sha256:301d8ac70ae90ef3ad05dcf94d6c3754a097f9b5fe4667d2787aa359ec7df7e4", size = 312760, upload-time = "2026-04-29T20:42:38.635Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/d5/0c/043d5e551459da400957a1395e0febbf771446ff34291afcbe3d8be2a279/fsspec-2026.4.0-py3-none-any.whl", hash = "sha256:11ef7bb35dab8a394fde6e608221d5cf3e8499401c249bebaeaad760a1a8dec2", size = 203402, upload-time = "2026-04-29T20:42:36.842Z" },
+]
+
+[[package]]
+name = "gitdb"
+version = "4.0.12"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "smmap" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/72/94/63b0fc47eb32792c7ba1fe1b694daec9a63620db1e313033d18140c2320a/gitdb-4.0.12.tar.gz", hash = "sha256:5ef71f855d191a3326fcfbc0d5da835f26b13fbcba60c32c21091c349ffdb571", size = 394684, upload-time = "2025-01-02T07:20:46.413Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/a0/61/5c78b91c3143ed5c14207f463aecfc8f9dbb5092fb2869baf37c273b2705/gitdb-4.0.12-py3-none-any.whl", hash = "sha256:67073e15955400952c6565cc3e707c554a4eea2e428946f7a4c162fab9bd9bcf", size = 62794, upload-time = "2025-01-02T07:20:43.624Z" },
+]
+
+[[package]]
+name = "gitpython"
+version = "3.1.50"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "gitdb" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/33/f6/354ae6491228b5eb40e10d89c4d13c651fe1cf7556e35ebdded50cff57ce/gitpython-3.1.50.tar.gz", hash = "sha256:80da2d12504d52e1f998772dc5baf6e553f8d2fcfe1fcc226c9d9a2ee3372dcc", size = 219798, upload-time = "2026-05-06T04:01:26.571Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/20/7a/1c6e3562dfd8950adbb11ffbc65d21e7c89d01a6e4f137fa981056de25c5/gitpython-3.1.50-py3-none-any.whl", hash = "sha256:d352abe2908d07355014abdd21ddf798c2a961469239afec4962e9da884858f9", size = 212507, upload-time = "2026-05-06T04:01:23.799Z" },
 ]
 
 [[package]]
@@ -384,6 +418,22 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/98/a2/1cce351c3544b698046f244e70601a84c576ff6985271add8e899a7f037e/mujoco-3.8.1-cp310-cp310-manylinux_2_27_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:9865049b44cf2b648ddf88987dd7bc7d805625036b8a8768cc700262a4a7da2d", size = 6730806, upload-time = "2026-05-11T13:43:13.58Z" },
     { url = "https://files.pythonhosted.org/packages/ec/96/021bd603d56cf24f088be15a4f250f0980f1cd9b1a207ea8bcfbf094b345/mujoco-3.8.1-cp310-cp310-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:9c2d779d9c47cf53da8399493ca9059e068ccabb60bc4e5dc0c924ade8da6c65", size = 7226603, upload-time = "2026-05-11T13:43:15.976Z" },
     { url = "https://files.pythonhosted.org/packages/84/52/9d710c0b51b549bcbe92976811c17e0383c7c903a6103052863d1015cc23/mujoco-3.8.1-cp310-cp310-win_amd64.whl", hash = "sha256:a42287b7f819888c1963337618c3612390e340e12269969a6274e283116aef30", size = 5799544, upload-time = "2026-05-11T13:43:17.859Z" },
+]
+
+[[package]]
+name = "mujoco-warp"
+version = "3.9.0.1"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "absl-py" },
+    { name = "etils", extra = ["epath"] },
+    { name = "mujoco" },
+    { name = "numpy" },
+    { name = "warp-lang" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/da/df/713e655aae5498e60fc92f6cad868f9cb5f24f7e7e67ebd88fbcdaded72c/mujoco_warp-3.9.0.1.tar.gz", hash = "sha256:f6efacb2ac23041d34cee5208c6c95b4b34a071c8b5df5e223aa7a48a7aac431", size = 1981867, upload-time = "2026-05-27T16:10:19.096Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/38/9a/15fd259527550066b9f9a296fc24ac8c53019dcdcf817a3f89671da0c381/mujoco_warp-3.9.0.1-py3-none-any.whl", hash = "sha256:0ca40c4b4a8de11a7c2d293b049db73e0b2060a8787a37a81351324e60a55856", size = 2062165, upload-time = "2026-05-27T16:10:17.124Z" },
 ]
 
 [[package]]
@@ -689,6 +739,19 @@ wheels = [
 ]
 
 [[package]]
+name = "robot-descriptions"
+version = "2.0.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "gitpython" },
+    { name = "tqdm" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/8c/f7/347f284511de1f0e3d19a3313a52b12dfc6e73a1ffe52ef06b60fa10b89c/robot_descriptions-2.0.0.tar.gz", hash = "sha256:ff6c2dd8929064e16351a372b925ca8cd70c180f4264bc6942333bae377ebaf6", size = 251156, upload-time = "2026-05-05T09:18:37.497Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/07/98/8c2e60b168f5ff521518e0831752a4c4d31cbb55ba0f1c6344432ac08577/robot_descriptions-2.0.0-py3-none-any.whl", hash = "sha256:70775f12d489cb1c7e10deb93bbee920b242205bd2f08ce4f79fdc70ea662cde", size = 137152, upload-time = "2026-05-05T09:18:33.71Z" },
+]
+
+[[package]]
 name = "scipy"
 version = "1.15.3"
 source = { registry = "https://pypi.org/simple" }
@@ -715,6 +778,15 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/0d/1c/73e719955c59b8e424d015ab450f51c0af856ae46ea2da83eba51cc88de1/setuptools-81.0.0.tar.gz", hash = "sha256:487b53915f52501f0a79ccfd0c02c165ffe06631443a886740b91af4b7a5845a", size = 1198299, upload-time = "2026-02-06T21:10:39.601Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/e1/e3/c164c88b2e5ce7b24d667b9bd83589cf4f3520d97cad01534cd3c4f55fdb/setuptools-81.0.0-py3-none-any.whl", hash = "sha256:fdd925d5c5d9f62e4b74b30d6dd7828ce236fd6ed998a08d81de62ce5a6310d6", size = 1062021, upload-time = "2026-02-06T21:10:37.175Z" },
+]
+
+[[package]]
+name = "smmap"
+version = "5.0.3"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/1f/ea/49c993d6dfdd7338c9b1000a0f36817ed7ec84577ae2e52f890d1a4ff909/smmap-5.0.3.tar.gz", hash = "sha256:4d9debb8b99007ae47165abc08670bd74cb74b5227dda7f643eccc4e9eb5642c", size = 22506, upload-time = "2026-03-09T03:43:26.1Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/c1/d4/59e74daffcb57a07668852eeeb6035af9f32cbfd7a1d2511f17d2fe6a738/smmap-5.0.3-py3-none-any.whl", hash = "sha256:c106e05d5a61449cf6ba9a1e650227ecfb141590d2a98412103ff35d89fc7b2f", size = 24390, upload-time = "2026-03-09T03:43:24.361Z" },
 ]
 
 [[package]]
@@ -766,6 +838,18 @@ wheels = [
 ]
 
 [[package]]
+name = "tqdm"
+version = "4.67.3"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "colorama", marker = "sys_platform == 'win32'" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/09/a9/6ba95a270c6f1fbcd8dac228323f2777d886cb206987444e4bce66338dd4/tqdm-4.67.3.tar.gz", hash = "sha256:7d825f03f89244ef73f1d4ce193cb1774a8179fd96f31d7e1dcde62092b960bb", size = 169598, upload-time = "2026-02-03T17:35:53.048Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/16/e1/3079a9ff9b8e11b846c6ac5c8b5bfb7ff225eee721825310c91b3b50304f/tqdm-4.67.3-py3-none-any.whl", hash = "sha256:ee1e4c0e59148062281c49d80b25b67771a127c85fc9676d3be5f243206826bf", size = 78374, upload-time = "2026-02-03T17:35:50.982Z" },
+]
+
+[[package]]
 name = "triton"
 version = "3.6.0"
 source = { registry = "https://pypi.org/simple" }
@@ -781,6 +865,20 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/72/94/1a15dd82efb362ac84269196e94cf00f187f7ed21c242792a923cdb1c61f/typing_extensions-4.15.0.tar.gz", hash = "sha256:0cea48d173cc12fa28ecabc3b837ea3cf6f38c6d1136f85cbaaf598984861466", size = 109391, upload-time = "2025-08-25T13:49:26.313Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/18/67/36e9267722cc04a6b9f15c7f3441c2363321a3ea07da7ae0c0707beb2a9c/typing_extensions-4.15.0-py3-none-any.whl", hash = "sha256:f0fa19c6845758ab08074a0cfa8b7aecb71c999ca73d62883bc25cc018c4e548", size = 44614, upload-time = "2025-08-25T13:49:24.86Z" },
+]
+
+[[package]]
+name = "warp-lang"
+version = "1.13.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "numpy" },
+]
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/94/be/b79000cb5b551803416bc10c4fa43a37d31b48062683662a6c134d7452bc/warp_lang-1.13.0-py3-none-macosx_11_0_arm64.whl", hash = "sha256:4375f572301991fe0fbf0af29fc84d76cd27d531432d6df8452b25088c21ea5a", size = 24584304, upload-time = "2026-05-04T04:30:03.621Z" },
+    { url = "https://files.pythonhosted.org/packages/58/8e/b42f0ddeaca25251e5bbf7db6a89351a0722432ce075ebcdece9118e955a/warp_lang-1.13.0-py3-none-manylinux_2_28_x86_64.whl", hash = "sha256:ac2479c70ad410d58deb088c2a64168792be588efc1bec22dc51f92238e8c8c3", size = 138337580, upload-time = "2026-05-04T04:30:36.286Z" },
+    { url = "https://files.pythonhosted.org/packages/53/19/87b3a3a1a5e07ad34a3886ec38e96b6865359fd17a2511e78e5430c6bace/warp_lang-1.13.0-py3-none-manylinux_2_34_aarch64.whl", hash = "sha256:476b54f0dcf6767f23305a328660a9a74d01e371b6b7c3d77e03e18b4a1bb1a5", size = 139812627, upload-time = "2026-05-04T04:31:03.731Z" },
+    { url = "https://files.pythonhosted.org/packages/1e/79/e4117177b88df67d7967c993a2234a3888d0e388076652e1f2a50551f95a/warp_lang-1.13.0-py3-none-win_amd64.whl", hash = "sha256:47975ea07252d45a4d09d2d1a6cffc55002fa7fbde771c8dceb1baf4b32d4fb8", size = 121601324, upload-time = "2026-05-04T04:31:37.814Z" },
 ]
 
 [[package]]
