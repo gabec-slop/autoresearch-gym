@@ -542,11 +542,14 @@ def write_json_atomic(path: Path, payload: dict[str, Any]) -> None:
     raise last_error if last_error is not None else RuntimeError(f"failed to write {path}")
 
 
-def write_frame_atomic(path: Path, frame: np.ndarray, quality: int = 75) -> None:
+def write_frame_atomic(path: Path, frame: np.ndarray, quality: int = 75, size: tuple[int, int] | None = None) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     image = np.ascontiguousarray(frame[:, :, :3], dtype=np.uint8)
     tmp_path = path.with_suffix(path.suffix + f".{os.getpid()}.{time.time_ns()}.tmp")
-    Image.fromarray(image).save(tmp_path, format="JPEG", quality=quality, optimize=False)
+    pil_image = Image.fromarray(image)
+    if size is not None and pil_image.size != size:
+        pil_image = pil_image.resize(size, Image.Resampling.BILINEAR)
+    pil_image.save(tmp_path, format="JPEG", quality=quality, optimize=False)
     last_error: PermissionError | None = None
     for _ in range(100):
         try:
@@ -574,6 +577,8 @@ DEFAULT_VISUAL_CONTROL: dict[str, Any] = {
     "trajectory_frame_stride": 2,
     "trajectory_playback_fps": 20.0,
     "jpeg_quality": 70,
+    "render_width": 720,
+    "render_height": 480,
     "control_poll_seconds": 0.0,
 }
 
@@ -629,6 +634,8 @@ def normalize_visual_control(payload: dict[str, Any] | None) -> dict[str, Any]:
         60.0,
     )
     control["jpeg_quality"] = _bounded_int(payload.get("jpeg_quality"), int(control["jpeg_quality"]), 20, 95)
+    control["render_width"] = _bounded_int(payload.get("render_width"), int(control["render_width"]), 64, 4096)
+    control["render_height"] = _bounded_int(payload.get("render_height"), int(control["render_height"]), 64, 4096)
     control["control_poll_seconds"] = _bounded_float(
         payload.get("control_poll_seconds"),
         float(control["control_poll_seconds"]),
@@ -701,7 +708,7 @@ def make_live_writer(
     visual_episode = 0
     visual_sampling_eligible = False
     visual_env_ids: set[int] = set()
-    mujoco_renderers: dict[int, Any] = {}
+    mujoco_renderers: dict[tuple[int, int, int], Any] = {}
     effective_budget_mode = budget_mode or ("time" if benchmark.train_seconds is not None else "episodes")
     effective_sample_trajectory_source = str(sample_trajectory_source or sampled_trajectory_source(candidate))
     custom_sample_trajectory = effective_sample_trajectory_source not in {"", "fallback", "default"}
@@ -711,9 +718,17 @@ def make_live_writer(
     if visual_disabled_reason is not None or not control_path.exists():
         write_json_atomic(control_path, visual_control)
 
+    def render_size(control: dict[str, Any] | None = None) -> tuple[int, int]:
+        payload = control or visual_control
+        return (
+            int(payload.get("render_width", DEFAULT_VISUAL_CONTROL["render_width"])),
+            int(payload.get("render_height", DEFAULT_VISUAL_CONTROL["render_height"])),
+        )
+
     def render_live_frame(env: gym.Env[np.ndarray, np.ndarray]) -> np.ndarray | None:
         render_env = getattr(env, "unwrapped", env)
-        kinematic_frame = render_mujoco_kinematic_frame(render_env, height=360, width=480)
+        width, height = render_size()
+        kinematic_frame = render_mujoco_kinematic_frame(render_env, height=height, width=width)
         if kinematic_frame is not None:
             return kinematic_frame
         model = getattr(render_env, "model", None)
@@ -722,10 +737,10 @@ def make_live_writer(
             try:
                 import mujoco
 
-                renderer_key = id(render_env)
+                renderer_key = (id(render_env), width, height)
                 renderer = mujoco_renderers.get(renderer_key)
                 if renderer is None:
-                    renderer = mujoco.Renderer(model, height=360, width=480)
+                    renderer = mujoco.Renderer(model, height=height, width=width)
                     mujoco_renderers[renderer_key] = renderer
                 mujoco.mj_forward(model, data)
                 renderer.update_scene(data)
@@ -734,7 +749,7 @@ def make_live_writer(
                 pass
 
         try:
-            return render_env.render(width=720, height=480)
+            return render_env.render(width=width, height=height)
         except TypeError:
             try:
                 return render_env.render()
@@ -778,6 +793,8 @@ def make_live_writer(
             "playback_fps": float(visual_control.get("trajectory_playback_fps", 20.0)),
             "frame_stride": int(visual_control.get("trajectory_frame_stride", 2)),
             "sample_rate": float(visual_control.get("trajectory_sample_rate", 0.05)),
+            "width": int(visual_control.get("render_width", DEFAULT_VISUAL_CONTROL["render_width"])),
+            "height": int(visual_control.get("render_height", DEFAULT_VISUAL_CONTROL["render_height"])),
         }
         write_json_atomic(sampled_manifest_path, payload)
 
@@ -822,7 +839,13 @@ def make_live_writer(
             write_sampled_manifest("render_unavailable", sampled_episode, "renderer returned no frame")
             return
         frame_path = sampled_manifest_path.parent / f"frame_{len(sampled_frames):04d}.jpg"
-        write_frame_atomic(frame_path, frame, quality=int(visual_control.get("jpeg_quality", 70)))
+        width, height = render_size(visual_control)
+        write_frame_atomic(
+            frame_path,
+            frame,
+            quality=int(visual_control.get("jpeg_quality", 70)),
+            size=(width, height),
+        )
         sampled_frames.append(repo_relative(frame_path))
         sampled_last_step = int(episode_length)
         latest_trajectory_manifest_path = sampled_manifest_path
@@ -847,10 +870,12 @@ def make_live_writer(
         for idx, raw_frame in enumerate(frames):
             frame_path = sampled_dir / f"frame_{idx:04d}.jpg"
             if isinstance(raw_frame, np.ndarray):
+                width, height = render_size(visual_control)
                 write_frame_atomic(
                     frame_path,
                     raw_frame,
                     quality=int(visual_control.get("jpeg_quality", 70)),
+                    size=(width, height),
                 )
             else:
                 source_path = Path(str(raw_frame))
@@ -859,7 +884,11 @@ def make_live_writer(
                 frame_path.parent.mkdir(parents=True, exist_ok=True)
                 try:
                     image = Image.open(source_path)
-                    image.convert("RGB").save(
+                    width, height = render_size(visual_control)
+                    image = image.convert("RGB")
+                    if image.size != (width, height):
+                        image = image.resize((width, height), Image.Resampling.BILINEAR)
+                    image.save(
                         frame_path,
                         format="JPEG",
                         quality=int(visual_control.get("jpeg_quality", 70)),
@@ -890,6 +919,8 @@ def make_live_writer(
             ),
             "frame_stride": int(payload.get("frame_stride") or visual_control.get("trajectory_frame_stride", 2)),
             "sample_rate": float(visual_control.get("trajectory_sample_rate", 0.05)),
+            "width": int(visual_control.get("render_width", DEFAULT_VISUAL_CONTROL["render_width"])),
+            "height": int(visual_control.get("render_height", DEFAULT_VISUAL_CONTROL["render_height"])),
             "metadata": payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {},
         }
         write_json_atomic(manifest_path, manifest_payload)
@@ -1098,7 +1129,13 @@ def make_live_writer(
             if status in {"starting", "finished"} or now - last_frame_at >= frame_interval:
                 frame = render_live_frame(env)
                 if frame is not None:
-                    write_frame_atomic(frame_path, frame, quality=int(control.get("jpeg_quality", 70)))
+                    width, height = render_size(control)
+                    write_frame_atomic(
+                        frame_path,
+                        frame,
+                        quality=int(control.get("jpeg_quality", 70)),
+                        size=(width, height),
+                    )
                     last_frame_at = now
                     write_metrics()
         custom_request: dict[str, Any] | None = None
@@ -1590,6 +1627,32 @@ def run_experiment(
             session_dir=session_dir,
             evolution_metadata=evolution_metadata,
             compact_status_file=compact_status_file,
+            execution_target_override=execution_target_override,
+            target_config_path=target_config_path,
+        )
+    if execution_target_override and execution_target_override not in {"local", "default"}:
+        from autoresearch_gym.external.in_process import run_remote_in_process_experiment
+
+        return run_remote_in_process_experiment(
+            benchmark=benchmark,
+            benchmark_path=benchmark_path,
+            candidate_path=candidate_path,
+            tag=tag,
+            out_dir=out_dir,
+            results_path=results_path,
+            train_episodes_override=train_episodes_override,
+            train_seconds_override=train_seconds_override,
+            eval_episodes_override=eval_episodes_override,
+            init_checkpoint=init_checkpoint,
+            session_dir=session_dir,
+            evolution_metadata=evolution_metadata,
+            headless_env=headless_env,
+            status_interval_seconds=status_interval_seconds,
+            compact_status=compact_status,
+            compact_status_file=compact_status_file,
+            train_probe_enabled=train_probe_enabled,
+            train_probe_interval_seconds=train_probe_interval_seconds,
+            train_probe_episodes=train_probe_episodes,
             execution_target_override=execution_target_override,
             target_config_path=target_config_path,
         )

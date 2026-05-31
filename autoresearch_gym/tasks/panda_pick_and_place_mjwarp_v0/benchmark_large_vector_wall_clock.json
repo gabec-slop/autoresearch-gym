@@ -1,0 +1,36 @@
+{
+  "name": "panda_pick_and_place_mjwarp_dense_v0_large_vector_wall_clock",
+  "description": "MuJoCo/MJWarp Menagerie Panda pick-and-place benchmark with a fixed large-vector wall-clock training window.",
+  "env_id": "AutoresearchMujocoPandaPickAndPlaceDense-v0",
+  "env_kwargs": {
+    "render_mode": "rgb_array",
+    "backend": "mujoco_warp",
+    "reward_type": "dense",
+    "num_envs": 1024,
+    "steps_per_env_per_iteration": 32,
+    "warp_nconmax": 128,
+    "warp_njmax": 512
+  },
+  "train_episodes": 1000000,
+  "train_seconds": 600,
+  "eval_episodes": 25,
+  "max_steps": 50,
+  "render_mode": "rgb_array",
+  "primary_metric": "eval_success_rate",
+  "primary_metric_mode": "maximize",
+  "train_seed": 47,
+  "eval_seed_start": 4500,
+  "device": "cuda",
+  "eval_case_bank": "eval_cases.json",
+  "train_probe": {
+    "enabled": true,
+    "interval_seconds": 20.0,
+    "episodes": 3,
+    "seed_start": 900000
+  },
+  "notes": [
+    "Use on an NVIDIA/CUDA host with mujoco_warp installed.",
+    "The normal Gymnasium eval path stays CPU MuJoCo for deterministic parity while training collection can use the MJWarp vector backend.",
+    "Fixed eval success requires lift-before-place, so sliding the cube to the target does not solve the task."
+  ]
+}

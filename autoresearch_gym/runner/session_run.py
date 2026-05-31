@@ -267,7 +267,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--execution-target",
         type=str,
         default=None,
-        help="Override the logical execution target for external benchmarks.",
+        help=(
+            "Override the logical execution target. External benchmarks use their backend adapter; "
+            "ordinary in-process benchmarks run the same autoresearch-gym CLI on the SSH target."
+        ),
     )
     parser.add_argument(
         "--target-config",

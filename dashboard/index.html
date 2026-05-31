@@ -2446,12 +2446,8 @@
         const metrics = run?.train?.last_metrics || run?.last_metrics || run?.current?.info_metrics || {};
         const metricNumEnv = Number(metrics.num_envs ?? metrics.mjlab_num_envs);
         if (Number.isFinite(metricNumEnv) && metricNumEnv > 0) return metricNumEnv;
-        const liveObserved = Number(run?.observed_env_count || run?.visual?.observed_env_count);
-        if (Number.isFinite(liveObserved) && liveObserved > 0) return liveObserved;
-        const episodeEnvIndices = (Array.isArray(run?.episodes) ? run.episodes : [])
-          .map((episode) => Number(episode?.env_index))
-          .filter((envIndex) => Number.isInteger(envIndex) && envIndex >= 0);
-        if (episodeEnvIndices.length) return Math.max(...episodeEnvIndices) + 1;
+        const benchmarkNumEnv = Number(run?.benchmark?.env_kwargs?.num_envs || run?.env_kwargs?.num_envs);
+        if (Number.isFinite(benchmarkNumEnv) && benchmarkNumEnv > 0) return benchmarkNumEnv;
         const trainNumEnv = Number(run?.train?.num_envs);
         if (Number.isFinite(trainNumEnv) && trainNumEnv > 0) return trainNumEnv;
         const curriculumNumEnv = Number(run?.train?.curriculum?.num_envs || run?.curriculum?.num_envs);
@@ -2460,6 +2456,22 @@
         if (Number.isFinite(candidateValue) && candidateValue > 0) return candidateValue;
         const trainValue = Number(run?.train?.vector_envs || run?.vector_envs);
         if (Number.isFinite(trainValue) && trainValue > 0) return trainValue;
+        const inferredFromWindows = (Array.isArray(run?.episodes) ? run.episodes : [])
+          .map((episode) => {
+            const envSteps = Number(episode?.env_steps_in_window);
+            const length = Number(episode?.length);
+            if (!Number.isFinite(envSteps) || !Number.isFinite(length) || length <= 0) return null;
+            const count = Math.round(envSteps / length);
+            return count > 0 ? count : null;
+          })
+          .filter((count) => Number.isFinite(count) && count > 0);
+        if (inferredFromWindows.length) return Math.max(...inferredFromWindows);
+        const episodeEnvIndices = (Array.isArray(run?.episodes) ? run.episodes : [])
+          .map((episode) => Number(episode?.env_index))
+          .filter((envIndex) => Number.isInteger(envIndex) && envIndex >= 0);
+        if (episodeEnvIndices.length) return Math.max(...episodeEnvIndices) + 1;
+        const liveObserved = Number(run?.observed_env_count || run?.visual?.observed_env_count);
+        if (Number.isFinite(liveObserved) && liveObserved > 0) return liveObserved;
         return 1;
       }
 

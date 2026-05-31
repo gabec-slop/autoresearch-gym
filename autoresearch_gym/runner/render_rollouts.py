@@ -58,8 +58,22 @@ def make_env(env_id: str, max_episode_steps: int | None, trainable: Any) -> gym.
     return trainable.RewardRecipeWrapper(env, getattr(trainable, "REWARD_RECIPE", None))
 
 
+def make_agent(env: gym.Env[Any, Any], trainable: Any, device: Any) -> Any:
+    try:
+        obs_space = env.observation_space
+        obs_dim = int(np.prod(getattr(obs_space, "shape", ()) or (0,)))
+        action_dim = int(np.prod(getattr(env.action_space, "shape", ()) or (0,)))
+        return trainable.Agent(obs_dim, action_dim)
+    except TypeError:
+        return trainable.Agent(env, device)
+
+
 def render_frame(env: gym.Env[Any, Any], renderer: Any, camera: str | int | None) -> np.ndarray:
     render_env = getattr(env, "unwrapped", env)
+    if isinstance(camera, str) and camera.isdigit():
+        camera = int(camera)
+    if camera is None and hasattr(render_env, "make_render_camera"):
+        camera = render_env.make_render_camera()
     if camera is None:
         renderer.update_scene(render_env.data)
     else:
@@ -144,7 +158,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--device", default="cpu")
     parser.add_argument("--width", type=int, default=480)
     parser.add_argument("--height", type=int, default=360)
-    parser.add_argument("--camera", default="track")
+    parser.add_argument("--camera", default=None)
     return parser.parse_args(argv)
 
 
@@ -160,7 +174,7 @@ def main(argv: list[str] | None = None) -> None:
     max_episode_steps = benchmark.get("max_steps")
 
     env = make_env(env_id, max_episode_steps, trainable)
-    agent = trainable.Agent(env, torch.device(args.device))
+    agent = make_agent(env, trainable, torch.device(args.device))
     trainable.load_agent_checkpoint(agent, run_dir / "agent_checkpoint.pt")
     render_env = getattr(env, "unwrapped", env)
     renderer = mujoco.Renderer(render_env.model, height=args.height, width=args.width)

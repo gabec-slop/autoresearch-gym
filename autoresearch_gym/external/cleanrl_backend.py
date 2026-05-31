@@ -13,9 +13,15 @@ from typing import Any, Callable
 import gymnasium as gym
 import imageio.v2 as imageio
 import numpy as np
+from PIL import Image
 
 from autoresearch_gym.external.base import ArtifactSet, CommandSpec, RunBundle
 from autoresearch_gym.runner.experiment import BenchmarkSpec, TrainProbeSpec, candidate_metadata
+
+DASHBOARD_FRAME_WIDTH = 720
+DASHBOARD_FRAME_HEIGHT = 480
+DASHBOARD_FRAME_SIZE = (DASHBOARD_FRAME_WIDTH, DASHBOARD_FRAME_HEIGHT)
+DEFAULT_TRAJECTORY_PLAYBACK_FPS = 20.0
 
 
 class CleanRlExternalBackend:
@@ -218,6 +224,54 @@ def _load_agent(module: ModuleType, checkpoint: Path, benchmark: BenchmarkSpec) 
         return module.load_agent_checkpoint(checkpoint)
 
 
+def _normalize_dashboard_frame(path: Path) -> Path:
+    with Image.open(path) as image:
+        image = image.convert("RGB")
+        if image.size != DASHBOARD_FRAME_SIZE:
+            image = image.resize(DASHBOARD_FRAME_SIZE, Image.Resampling.BILINEAR)
+        image.save(path, format="JPEG", quality=90)
+    return path
+
+
+def _normalize_media_artifacts(payload: dict[str, Any], out_dir: Path) -> dict[str, Any]:
+    normalized = dict(payload)
+    visual = dict(normalized.get("visual") or {})
+    manifest_path = Path(str(normalized.get("trajectory_manifest_path") or visual.get("trajectory_manifest_path") or ""))
+    if not manifest_path.is_absolute():
+        manifest_path = out_dir / manifest_path
+    frames: list[str] = []
+    if manifest_path.exists():
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        for raw_frame in manifest.get("frames", []):
+            frame_path = Path(str(raw_frame))
+            if not frame_path.is_absolute():
+                frame_path = out_dir / frame_path
+            if frame_path.exists():
+                frames.append(str(_normalize_dashboard_frame(frame_path)))
+        manifest["frames"] = frames
+        manifest["latest_frame_path"] = frames[-1] if frames else None
+        manifest["frame_count"] = len(frames)
+        manifest["playback_fps"] = DEFAULT_TRAJECTORY_PLAYBACK_FPS
+        manifest["frame_stride"] = int(manifest.get("frame_stride") or 1)
+        manifest["sample_rate"] = float(manifest.get("sample_rate") or 1.0)
+        manifest["width"] = DASHBOARD_FRAME_WIDTH
+        manifest["height"] = DASHBOARD_FRAME_HEIGHT
+        manifest_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+    live_frame = out_dir / "current_run_frame.jpg"
+    if frames:
+        shutil.copy2(frames[-1], live_frame)
+        normalized["live_frame_path"] = str(live_frame)
+        normalized["trajectory_latest_frame_path"] = frames[-1]
+        visual["live_frame_path"] = str(live_frame)
+        visual["trajectory_latest_frame_path"] = frames[-1]
+    normalized["trajectory_manifest_path"] = str(manifest_path)
+    visual["trajectory_manifest_path"] = str(manifest_path)
+    visual.setdefault("sampled_status", "completed" if frames else "empty")
+    visual.setdefault("latest_sample_index", 1 if frames else None)
+    normalized["visual"] = visual
+    return normalized
+
+
 def _evaluate_agent(module: ModuleType, agent: Any, benchmark: BenchmarkSpec, eval_cases: list[dict[str, Any]]) -> dict[str, Any]:
     if hasattr(module, "evaluate_agent"):
         return module.evaluate_agent(agent, benchmark, eval_cases=eval_cases)
@@ -269,7 +323,7 @@ def _evaluate_agent(module: ModuleType, agent: Any, benchmark: BenchmarkSpec, ev
 
 def _render_media(module: ModuleType, agent: Any, benchmark: BenchmarkSpec, out_dir: Path) -> dict[str, Any]:
     if hasattr(module, "render_policy"):
-        return module.render_policy(agent, benchmark, out_dir=out_dir)
+        return _normalize_media_artifacts(module.render_policy(agent, benchmark, out_dir=out_dir), out_dir)
     frame_dir = out_dir / "trajectories" / "sample_000001"
     frame_dir.mkdir(parents=True, exist_ok=True)
     env = _make_env_factory(module, benchmark)()
@@ -280,12 +334,24 @@ def _render_media(module: ModuleType, agent: Any, benchmark: BenchmarkSpec, out_
         if frame is not None:
             frame_path = frame_dir / f"frame_{idx:04d}.jpg"
             imageio.imwrite(frame_path, np.asarray(frame, dtype=np.uint8))
+            _normalize_dashboard_frame(frame_path)
             frames.append(str(frame_path))
         obs, _, terminated, truncated, _ = env.step(_agent_action(agent, obs, deterministic=True))
         if terminated or truncated:
             break
     env.close()
-    manifest = {"status": "completed", "sample_index": 1, "frames": frames, "frame_count": len(frames)}
+    manifest = {
+        "status": "completed",
+        "sample_index": 1,
+        "frames": frames,
+        "frame_count": len(frames),
+        "latest_frame_path": frames[-1] if frames else None,
+        "playback_fps": DEFAULT_TRAJECTORY_PLAYBACK_FPS,
+        "frame_stride": 1,
+        "sample_rate": 1.0,
+        "width": DASHBOARD_FRAME_WIDTH,
+        "height": DASHBOARD_FRAME_HEIGHT,
+    }
     _write_json(frame_dir / "manifest.json", manifest)
     latest = frames[-1] if frames else None
     if latest:

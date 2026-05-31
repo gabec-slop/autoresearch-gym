@@ -250,6 +250,59 @@ class SshTarget:
     def _remote_display_path(self, path: str) -> str:
         return path.replace("\\", "/") if self.config.path_style == "windows" else path
 
+    def remote_repo_path(self, local_path: Path, repo_root: Path | None = None) -> str:
+        repo = (repo_root or Path.cwd()).resolve()
+        resolved = local_path.resolve()
+        try:
+            relative = resolved.relative_to(repo)
+        except ValueError as exc:
+            raise ValueError(f"remote SSH target can only stage repo-local paths, got {resolved}") from exc
+        return self._remote_join(self.config.remote_root or ".", *relative.parts)
+
+    def remote_session_path(self, session_dir: Path, repo_root: Path | None = None) -> str:
+        return self.remote_repo_path(session_dir, repo_root=repo_root)
+
+    def ensure_remote_dir(self, remote_dir: str) -> None:
+        if self.config.path_style == "windows":
+            command = (
+                "powershell.exe -NoProfile -Command "
+                f"\"New-Item -ItemType Directory -Force {self._quote_remote(remote_dir)} | Out-Null\""
+            )
+        else:
+            command = f"mkdir -p {self._quote_remote(remote_dir)}"
+        result = self._ssh(command)
+        if not result.ok:
+            raise RuntimeError(f"failed to create remote dir {remote_dir}: {result.stderr[-1000:]}")
+
+    def scp_local_file(self, local_file: Path, remote_file: str, *, timeout: float = 30.0) -> bool:
+        self.ensure_remote_dir(str(Path(remote_file).parent) if self.config.path_style != "windows" else remote_file.rsplit("\\", 1)[0])
+        completed = subprocess.run(
+            [*self._scp_base_args(), str(local_file), f"{self.config.host}:{self._remote_display_path(remote_file)}"],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=timeout,
+        )
+        return completed.returncode == 0
+
+    def fetch_remote_file(self, remote_file: str, local_file: Path, *, timeout: float = 30.0) -> bool:
+        return self._scp_remote_file(remote_file, local_file, timeout=timeout)
+
+    def fetch_remote_dir_contents(self, remote_dir: str, local_dir: Path, *, timeout: float = 60.0) -> bool:
+        return self._scp_remote_dir_contents(remote_dir, local_dir, timeout=timeout)
+
+    def fetch_remote_dir_archive(self, remote_dir: str, local_dir: Path, *, timeout: float = 60.0) -> bool:
+        return self._fetch_remote_dir_archive(remote_dir, local_dir, timeout=timeout)
+
+    def ssh_base_args(self) -> list[str]:
+        return self._ssh_base_args()
+
+    def quote_remote(self, value: str) -> str:
+        return self._quote_remote(value)
+
+    def remote_join(self, *parts: str) -> str:
+        return self._remote_join(*parts)
+
     def _scp_base_args(self) -> list[str]:
         return [
             "scp",

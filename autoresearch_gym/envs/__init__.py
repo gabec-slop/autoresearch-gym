@@ -15,6 +15,12 @@ def register_envs() -> None:
             entry_point="autoresearch_gym.envs.panda_pick_and_place:AutoresearchPandaPickAndPlaceEnv",
             max_episode_steps=50,
         )
+    if "AutoresearchMujocoPandaPickAndPlaceDense-v0" not in registry:
+        register(
+            id="AutoresearchMujocoPandaPickAndPlaceDense-v0",
+            entry_point="autoresearch_gym.envs.mujoco_panda_pick_and_place:AutoresearchMujocoPandaPickAndPlaceEnv",
+            max_episode_steps=50,
+        )
 
 
 def __getattr__(name: str):
@@ -26,7 +32,11 @@ def __getattr__(name: str):
         from autoresearch_gym.envs.panda_pick_and_place import AutoresearchPandaPickAndPlaceEnv
 
         return AutoresearchPandaPickAndPlaceEnv
+    if name == "AutoresearchMujocoPandaPickAndPlaceEnv":
+        from autoresearch_gym.envs.mujoco_panda_pick_and_place import AutoresearchMujocoPandaPickAndPlaceEnv
+
+        return AutoresearchMujocoPandaPickAndPlaceEnv
     raise AttributeError(name)
 
 
-__all__ = ["AutoresearchPandaPickAndPlaceEnv", "BatToGoalEnv", "register_envs"]
+__all__ = ["AutoresearchMujocoPandaPickAndPlaceEnv", "AutoresearchPandaPickAndPlaceEnv", "BatToGoalEnv", "register_envs"]

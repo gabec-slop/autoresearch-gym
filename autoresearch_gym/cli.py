@@ -107,7 +107,11 @@ class DashboardHandler(SimpleHTTPRequestHandler):
         return session_dir / "live" / "control.json"
 
     def _repo_relative(self, path: Path) -> str:
-        return path.resolve().relative_to(self.dashboard_root).as_posix()
+        resolved = path.resolve()
+        try:
+            return resolved.relative_to(self.dashboard_root).as_posix()
+        except ValueError:
+            return str(resolved)
 
     def _read_live_session_path(self) -> str | None:
         pointer_path = self.dashboard_root / "autoresearch_runs" / "live_session.json"

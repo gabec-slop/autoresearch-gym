@@ -18,6 +18,11 @@ from PIL import Image, ImageDraw
 from autoresearch_gym.external.base import ArtifactSet, CommandSpec, RunBundle
 from autoresearch_gym.runner.curves import make_train_episode_record
 
+DASHBOARD_FRAME_WIDTH = 720
+DASHBOARD_FRAME_HEIGHT = 480
+DASHBOARD_FRAME_SIZE = (DASHBOARD_FRAME_WIDTH, DASHBOARD_FRAME_HEIGHT)
+DEFAULT_TRAJECTORY_PLAYBACK_FPS = 20.0
+
 
 MJLAB_ROLLOUT_SCRIPT = r'''
 from __future__ import annotations
@@ -893,7 +898,7 @@ def _latest_live_visual(out_dir):
 
 def _write_live_sample_manifest(out_dir, *, run_id, tag, sample_index, checkpoint_index, step, frame_paths, source="mjlab_live_probe"):
     out_dir = Path(out_dir)
-    frames = [str(Path(path)) for path in frame_paths]
+    frames = [str(_normalize_dashboard_frame(Path(path))) for path in frame_paths]
     if not frames:
         return None
     manifest = {
@@ -908,9 +913,11 @@ def _write_live_sample_manifest(out_dir, *, run_id, tag, sample_index, checkpoin
         "frame_count": len(frames),
         "frames": frames,
         "latest_frame_path": frames[-1],
-        "playback_fps": 12.0,
+        "playback_fps": DEFAULT_TRAJECTORY_PLAYBACK_FPS,
         "frame_stride": 1,
         "sample_rate": 1.0,
+        "width": DASHBOARD_FRAME_WIDTH,
+        "height": DASHBOARD_FRAME_HEIGHT,
         "source": str(source),
     }
     manifest_path = out_dir / "trajectories" / f"sample_{int(sample_index):06d}" / "manifest.json"
@@ -2397,6 +2404,15 @@ def _draw_go2_rough_frame(draw: ImageDraw.ImageDraw, frame_index: int) -> None:
     draw.polygon(((360, 58), (346, 50), (346, 66)), fill=(84, 210, 255))
 
 
+def _normalize_dashboard_frame(path: Path) -> Path:
+    with Image.open(path) as image:
+        image = image.convert("RGB")
+        if image.size != DASHBOARD_FRAME_SIZE:
+            image = image.resize(DASHBOARD_FRAME_SIZE, Image.Resampling.BILINEAR)
+        image.save(path, format="JPEG", quality=90)
+    return path
+
+
 def _write_frame(path: Path, task_family: str, frame_index: int = 0) -> None:
     image = Image.new("RGB", (420, 260), (13, 18, 26))
     draw = ImageDraw.Draw(image)
@@ -2407,6 +2423,7 @@ def _write_frame(path: Path, task_family: str, frame_index: int = 0) -> None:
         _draw_g1_motion_frame(draw, frame_index)
     else:
         _draw_go2_rough_frame(draw, frame_index)
+    image = image.resize(DASHBOARD_FRAME_SIZE, Image.Resampling.BILINEAR)
     image.save(path, format="JPEG", quality=90)
 
 
@@ -2429,9 +2446,11 @@ def _write_sampled_trajectory(out_dir: Path, bundle: dict[str, Any]) -> Path:
         "frame_count": len(frames),
         "frames": frames,
         "latest_frame_path": frames[-1],
-        "playback_fps": 3.0,
+        "playback_fps": DEFAULT_TRAJECTORY_PLAYBACK_FPS,
         "frame_stride": 1,
         "sample_rate": 1.0,
+        "width": DASHBOARD_FRAME_WIDTH,
+        "height": DASHBOARD_FRAME_HEIGHT,
     }
     manifest_path = trajectory_dir / "manifest.json"
     _write_json(manifest_path, manifest)
@@ -2448,7 +2467,7 @@ def _run_media(bundle: dict[str, Any], out_dir: Path) -> None:
         trajectory_dir = out_dir / "trajectories" / "sample_000001"
         trajectory_dir.mkdir(parents=True, exist_ok=True)
         rollout = _run_mjlab_rollout(bundle, out_dir, checkpoint, mode="media", frame_dir=trajectory_dir)
-        frames = [Path(path) for path in rollout.get("frames", [])]
+        frames = [_normalize_dashboard_frame(Path(path)) for path in rollout.get("frames", [])]
         if not frames:
             raise RuntimeError("MJLab media rollout completed but did not write any frames")
         shutil.copy2(frames[-1], frame_path)
@@ -2462,9 +2481,11 @@ def _run_media(bundle: dict[str, Any], out_dir: Path) -> None:
             "frame_count": len(frames),
             "frames": [str(path) for path in frames],
             "latest_frame_path": str(frames[-1]),
-            "playback_fps": 12.0,
+            "playback_fps": DEFAULT_TRAJECTORY_PLAYBACK_FPS,
             "frame_stride": 1,
             "sample_rate": 1.0,
+            "width": DASHBOARD_FRAME_WIDTH,
+            "height": DASHBOARD_FRAME_HEIGHT,
             "source": "mjlab",
             "task_id": _task_id(bundle),
         }
@@ -2531,9 +2552,11 @@ def _run_media(bundle: dict[str, Any], out_dir: Path) -> None:
                 "frame_count": len(live_frames),
                 "frames": live_frames,
                 "latest_frame_path": live_frames[-1],
-                "playback_fps": 3.0,
+                "playback_fps": DEFAULT_TRAJECTORY_PLAYBACK_FPS,
                 "frame_stride": 1,
                 "sample_rate": 1.0,
+                "width": DASHBOARD_FRAME_WIDTH,
+                "height": DASHBOARD_FRAME_HEIGHT,
             },
         )
         _write_json(

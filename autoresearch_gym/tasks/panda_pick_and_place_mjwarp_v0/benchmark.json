@@ -1,0 +1,30 @@
+{
+  "name": "panda_pick_and_place_mjwarp_dense_v0",
+  "description": "MuJoCo Menagerie Franka Panda pick-and-place benchmark with fixed-seed dense eval.",
+  "env_id": "AutoresearchMujocoPandaPickAndPlaceDense-v0",
+  "env_kwargs": {
+    "render_mode": "rgb_array",
+    "backend": "mujoco",
+    "reward_type": "dense"
+  },
+  "train_episodes": 200,
+  "eval_episodes": 25,
+  "max_steps": 50,
+  "render_mode": "rgb_array",
+  "primary_metric": "eval_success_rate",
+  "primary_metric_mode": "maximize",
+  "train_seed": 47,
+  "eval_seed_start": 4500,
+  "device": "auto",
+  "eval_case_bank": "eval_cases.json",
+  "train_probe": {
+    "enabled": true,
+    "interval_seconds": 20.0,
+    "episodes": 3,
+    "seed_start": 900000
+  },
+  "notes": [
+    "The robot model is resolved from MuJoCo Menagerie through robot_descriptions, AUTORESEARCH_PANDA_MJCF, MUJOCO_MENAGERIE_PATH, or .external/mujoco_menagerie.",
+    "Fixed eval success requires lift-before-place, so sliding the cube to the target does not solve the task; train-only subskill shaping belongs in the seed trainable."
+  ]
+}

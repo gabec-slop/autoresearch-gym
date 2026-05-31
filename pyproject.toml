@@ -22,6 +22,12 @@ mujoco = [
   "gymnasium-robotics>=1.3",
   "torch",
 ]
+mujoco-warp = [
+  "gymnasium[mujoco]>=0.29",
+  "mujoco-warp",
+  "robot-descriptions",
+  "torch",
+]
 panda = [
   "panda-gym==3.0.7; platform_system != 'Darwin' or platform_machine != 'arm64'",
   "scipy",
