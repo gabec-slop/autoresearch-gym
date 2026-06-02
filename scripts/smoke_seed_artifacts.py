@@ -76,6 +76,22 @@ SEED_CASES: tuple[SeedCase, ...] = (
         },
     ),
     SeedCase(
+        "panda-mjwarp-tqc-her-ee",
+        "autoresearch_gym/tasks/panda_pick_and_place_mjwarp_v0/benchmark.json",
+        "autoresearch_gym/tasks/panda_pick_and_place_mjwarp_v0/seed_trainable_tqc_her_ee.py",
+        visual_artifact_smoke=False,
+        required_modules=("mujoco", "mujoco_warp", "robot_descriptions"),
+        benchmark_overrides={
+            "max_steps": 4,
+            "env_kwargs": {
+                "backend": "mujoco_warp",
+                "max_steps": 4,
+                "num_envs": 512,
+                "steps_per_env_per_iteration": 20,
+            },
+        },
+    ),
+    SeedCase(
         "bat-to-goal",
         "autoresearch_gym/tasks/bat_to_goal_v0/benchmark.json",
         "autoresearch_gym/tasks/bat_to_goal_v0/seed_trainable.py",

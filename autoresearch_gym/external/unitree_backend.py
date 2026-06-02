@@ -1350,7 +1350,7 @@ def _monitor_live_training(stop_event, *, cfg, out_dir, log_dir, run_id, tag, ta
                         if int(sample_rollout_frame_count) > 0:
                             frame_dir = out_dir / "trajectories" / f"sample_{sample_index:06d}"
                             frame_dir.mkdir(parents=True, exist_ok=True)
-                        if str(sample_trajectory_source) == "train_context":
+                        if str(sample_trajectory_source) == "candidate_provided":
                             rollout = _run_train_context_probe_subprocess(
                                 train_script=Path(__file__).resolve(),
                                 task_id=task_id,
@@ -1531,7 +1531,7 @@ def main() -> None:
     parser.add_argument("--probe-frame-dir", default=None)
     parser.add_argument("--probe-frame-count", type=int, default=0)
     parser.add_argument("--sample-rollout-frame-count", type=int, default=24)
-    parser.add_argument("--sample-trajectory-source", choices=["fallback", "train_context"], default="fallback")
+    parser.add_argument("--sample-trajectory-source", choices=["runner_eval", "candidate_provided"], default="runner_eval")
     args = parser.parse_args()
 
     os.environ["CUDA_VISIBLE_DEVICES"] = str(args.gpu_id)
@@ -2146,7 +2146,7 @@ def _run_mjlab_train(bundle: dict[str, Any], out_dir: Path) -> None:
         "--sample-rollout-frame-count",
         str(int(_recipe_section(recipe, "runner").get("sample_rollout_frame_count") or 24)),
         "--sample-trajectory-source",
-        str(_recipe_section(recipe, "runner").get("sample_trajectory_source") or "fallback"),
+        str(_recipe_section(recipe, "runner").get("sample_trajectory_source") or "runner_eval"),
     ]
     if bundle["benchmark"].get("train_seconds") is not None:
         argv.extend(["--train-seconds", str(bundle["benchmark"].get("train_seconds"))])

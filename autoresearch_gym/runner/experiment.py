@@ -29,6 +29,15 @@ from autoresearch_gym.runner.curves import (
     validate_train_curve_contract,
 )
 
+SAMPLE_TRAJECTORY_SOURCE_RUNNER_EVAL = "runner_eval"
+SAMPLE_TRAJECTORY_SOURCE_CANDIDATE_PROVIDED = "candidate_provided"
+SAMPLE_TRAJECTORY_SOURCE_VALUES = frozenset(
+    {
+        SAMPLE_TRAJECTORY_SOURCE_RUNNER_EVAL,
+        SAMPLE_TRAJECTORY_SOURCE_CANDIDATE_PROVIDED,
+    }
+)
+
 try:
     import pybullet
 
@@ -659,12 +668,30 @@ def sampled_trajectory_source(candidate: Any) -> str:
     metadata = candidate_metadata(candidate)
     recipe = metadata.get("recipe")
     if not isinstance(recipe, dict):
-        return "fallback"
+        return SAMPLE_TRAJECTORY_SOURCE_RUNNER_EVAL
     runner = recipe.get("runner")
     if not isinstance(runner, dict):
-        return "fallback"
+        return SAMPLE_TRAJECTORY_SOURCE_RUNNER_EVAL
     source = runner.get("sample_trajectory_source")
-    return str(source) if source else "fallback"
+    if source is None or source == "":
+        return SAMPLE_TRAJECTORY_SOURCE_RUNNER_EVAL
+    source_name = str(source)
+    if source_name not in SAMPLE_TRAJECTORY_SOURCE_VALUES:
+        allowed = ", ".join(sorted(SAMPLE_TRAJECTORY_SOURCE_VALUES))
+        raise ValueError(f"Unknown sample_trajectory_source {source_name!r}; expected one of: {allowed}")
+    return source_name
+
+
+def validate_sample_trajectory_source_contract(candidate: Any, trainable_module: ModuleType | None = None) -> str:
+    source = sampled_trajectory_source(candidate)
+    if source == SAMPLE_TRAJECTORY_SOURCE_CANDIDATE_PROVIDED and trainable_module is not None:
+        if not callable(getattr(trainable_module, "_answer_sampled_trajectory_request", None)):
+            raise ValueError(
+                "sample_trajectory_source='candidate_provided' requires the trainable module "
+                "to expose _answer_sampled_trajectory_request(...). Use "
+                "sample_trajectory_source='runner_eval' for runner-owned sampling."
+            )
+    return source
 
 
 def make_live_writer(
@@ -711,7 +738,12 @@ def make_live_writer(
     mujoco_renderers: dict[tuple[int, int, int], Any] = {}
     effective_budget_mode = budget_mode or ("time" if benchmark.train_seconds is not None else "episodes")
     effective_sample_trajectory_source = str(sample_trajectory_source or sampled_trajectory_source(candidate))
-    custom_sample_trajectory = effective_sample_trajectory_source not in {"", "fallback", "default"}
+    if effective_sample_trajectory_source not in SAMPLE_TRAJECTORY_SOURCE_VALUES:
+        allowed = ", ".join(sorted(SAMPLE_TRAJECTORY_SOURCE_VALUES))
+        raise ValueError(
+            f"Unknown sample_trajectory_source {effective_sample_trajectory_source!r}; expected one of: {allowed}"
+        )
+    custom_sample_trajectory = effective_sample_trajectory_source == SAMPLE_TRAJECTORY_SOURCE_CANDIDATE_PROVIDED
     custom_sample_request_indices: dict[int, int] = {}
     custom_sample_completed_episodes: set[int] = set()
 
@@ -1595,6 +1627,7 @@ def run_experiment(
     benchmark = load_benchmark(benchmark_path)
     trainable_module = load_trainable_module(candidate_path)
     candidate = trainable_module.get_candidate()
+    sampled_trajectory_source(candidate)
     headless_env_state = {
         "requested": bool(headless_env),
         "effective": False,
@@ -1630,6 +1663,7 @@ def run_experiment(
             execution_target_override=execution_target_override,
             target_config_path=target_config_path,
         )
+    validate_sample_trajectory_source_contract(candidate, trainable_module)
     if execution_target_override and execution_target_override not in {"local", "default"}:
         from autoresearch_gym.external.in_process import run_remote_in_process_experiment
 

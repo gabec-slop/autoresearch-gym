@@ -32,7 +32,7 @@ RECIPE = {
     "algorithm": ALGORITHM,
     "reward_recipe": REWARD_RECIPE,
     "runner": {
-        "sample_trajectory_source": "policy_eval_rollout",
+        "sample_trajectory_source": "candidate_provided",
     },
 }
 DIAGNOSTIC_SERIES = {

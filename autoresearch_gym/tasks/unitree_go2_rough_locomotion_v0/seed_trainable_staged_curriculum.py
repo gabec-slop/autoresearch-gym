@@ -73,7 +73,7 @@ RECIPE = {
         "clip_actions": None,
         "obs_groups": None,
         "run_name_suffix": "staged_curriculum",
-        "sample_trajectory_source": "train_context",
+        "sample_trajectory_source": "candidate_provided",
         "sample_rollout_frame_count": 24,
     },
     "actor": {

@@ -21,6 +21,9 @@ from autoresearch_gym import cli
 from autoresearch_gym.external.base import ArtifactSet, RunBundle
 from autoresearch_gym.runner.experiment import (
     BenchmarkSpec,
+    SAMPLE_TRAJECTORY_SOURCE_CANDIDATE_PROVIDED,
+    SAMPLE_TRAJECTORY_SOURCE_RUNNER_EVAL,
+    SAMPLE_TRAJECTORY_SOURCE_VALUES,
     TrainProbeSpec,
     apply_headless_env_override,
     candidate_metadata,
@@ -31,7 +34,9 @@ from autoresearch_gym.runner.experiment import (
     normalize_train_summary_curve,
     normalize_run_tag,
     render_mujoco_kinematic_frame,
+    sampled_trajectory_source,
     utilization_flags,
+    validate_sample_trajectory_source_contract,
     validate_train_curve_contract,
 )
 from autoresearch_gym.external.targets import load_target_config
@@ -363,7 +368,7 @@ def test_unitree_cleanrl_style_seeds_expose_mjlab_levers() -> None:
     assert go2_staged_recipe["single_pass_curriculum"] is True
     assert go2_staged_recipe["diagnostic_series"] == go2_diagnostic
     assert go2_staged_recipe["terrain"]["max_init_terrain_level"] == 5
-    assert go2_staged_recipe["runner"]["sample_trajectory_source"] == "train_context"
+    assert go2_staged_recipe["runner"]["sample_trajectory_source"] == SAMPLE_TRAJECTORY_SOURCE_CANDIDATE_PROVIDED
     assert go2_staged_recipe["event_overrides"]["push_robot"]["enabled"] is False
     assert go2_staged_recipe["twist_command"]["ranges"]["lin_vel_x"][1] >= 1.0
     assert go2_staged_recipe["curriculum_plan"][0]["name"] == "stand_and_creep"
@@ -656,7 +661,7 @@ def test_custom_trajectory_sampling_task_recipes_use_generic_live_writer_contrac
         runner = recipe.get("runner")
         assert isinstance(runner, dict)
         source_name = runner.get("sample_trajectory_source")
-        if source_name and source_name != "fallback":
+        if source_name and source_name != SAMPLE_TRAJECTORY_SOURCE_RUNNER_EVAL:
             custom_seed_recipes.append((seed_path, recipe))
 
     assert custom_seed_recipes, "expected at least one task seed to exercise custom trajectory sampling"
@@ -743,6 +748,63 @@ def test_custom_trajectory_sampling_task_recipes_use_generic_live_writer_contrac
             first_frame = Path.cwd() / first_frame
         with Image.open(first_frame) as image:
             assert image.size == (720, 480)
+
+
+def test_sample_trajectory_source_schema_rejects_unknown_values() -> None:
+    candidate = {"recipe": {"runner": {"sample_trajectory_source": "policy_eval_rollout"}}}
+
+    with pytest.raises(ValueError, match="Unknown sample_trajectory_source"):
+        sampled_trajectory_source(candidate)
+
+    with pytest.raises(ValueError, match="_answer_sampled_trajectory_request"):
+        validate_sample_trajectory_source_contract(
+            {"recipe": {"runner": {"sample_trajectory_source": SAMPLE_TRAJECTORY_SOURCE_CANDIDATE_PROVIDED}}},
+            types.SimpleNamespace(),
+        )
+
+
+def test_bundled_seed_sample_trajectory_sources_match_schema() -> None:
+    for seed_path in Path("autoresearch_gym/tasks").glob("*/seed_trainable*.py"):
+        source = seed_path.read_text(encoding="utf-8")
+        if "sample_trajectory_source" not in source:
+            continue
+        module_ast = ast.parse(source, filename=str(seed_path))
+        constants: dict[str, object] = {}
+        for node in module_ast.body:
+            if isinstance(node, ast.ImportFrom) and node.module:
+                imported = __import__(node.module, fromlist=[alias.name for alias in node.names])
+                for alias in node.names:
+                    constants[alias.asname or alias.name] = getattr(imported, alias.name)
+                continue
+            if not isinstance(node, ast.Assign) or len(node.targets) != 1:
+                continue
+            target = node.targets[0]
+            if not isinstance(target, ast.Name) or target.id == "RECIPE":
+                continue
+            try:
+                constants[target.id] = ast.literal_eval(node.value)
+            except (SyntaxError, ValueError):
+                continue
+
+        recipe: dict[str, object] | None = None
+        for node in module_ast.body:
+            if isinstance(node, ast.Assign) and any(
+                isinstance(target, ast.Name) and target.id == "RECIPE" for target in node.targets
+            ):
+                value = _literal_eval_with_module_constants(node.value, constants)
+                if isinstance(value, dict):
+                    recipe = value
+                break
+
+        assert recipe is not None, f"{seed_path} declares sample_trajectory_source without a literal RECIPE"
+        runner = recipe.get("runner")
+        assert isinstance(runner, dict), f"{seed_path} sample_trajectory_source must live under RECIPE['runner']"
+        source_name = runner.get("sample_trajectory_source")
+        assert source_name in SAMPLE_TRAJECTORY_SOURCE_VALUES, f"{seed_path} uses unknown source {source_name!r}"
+        if source_name == SAMPLE_TRAJECTORY_SOURCE_CANDIDATE_PROVIDED:
+            assert (
+                "_answer_sampled_trajectory_request" in source or "must run through execution_backend" in source
+            ), f"{seed_path} declares candidate_provided without an in-process or external producer"
 
 
 def test_panda_mjwarp_benchmarks_keep_train_probes_enabled() -> None:
@@ -874,7 +936,7 @@ def test_panda_mjwarp_vectorized_seed_answers_sampled_trajectory_requests(tmp_pa
     assert summary["num_envs"] == 2
     assert summary["vector_envs"] == 2
     assert summary["last_metrics"]["num_envs"] == 2.0
-    assert manifest["source"] == "policy_eval_rollout"
+    assert manifest["source"] == SAMPLE_TRAJECTORY_SOURCE_CANDIDATE_PROVIDED
     assert manifest["status"] == "completed"
     assert manifest["frame_count"] >= 2
 
@@ -2852,7 +2914,7 @@ def test_panda_mjwarp_real_sampled_policy_trajectory_captures_frames_when_assets
         {"episode": 1, "sample_index": 1, "frame_stride": 1, "playback_fps": 20.0},
     )
 
-    assert sampled["source"] == "policy_eval_rollout"
+    assert sampled["source"] == SAMPLE_TRAJECTORY_SOURCE_CANDIDATE_PROVIDED
     assert sampled["frames"]
     assert all(isinstance(frame, np.ndarray) for frame in sampled["frames"])
     assert all(frame.shape == (480, 720, 3) for frame in sampled["frames"])
