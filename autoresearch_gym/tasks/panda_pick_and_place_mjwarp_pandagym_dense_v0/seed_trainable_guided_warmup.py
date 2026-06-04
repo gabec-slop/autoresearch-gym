@@ -747,6 +747,7 @@ def train_agent(
             global_step=global_step,
             last_metrics=callback_metrics,
             elapsed_seconds=elapsed_seconds_since(start_time),
+            scripted_active=scripted_active,
         )
 
     vector_env.close()
@@ -990,11 +991,18 @@ def _policy_tool_action(agent: Agent, obs: Any) -> np.ndarray:
     return mean.squeeze(0).cpu().numpy().astype(np.float32)
 
 
+def _scripted_tool_action(state: ScriptedE2EWarmupState, obs: Any) -> np.ndarray:
+    flat = flatten_observation(obs)
+    return state.actions(flat.reshape(1, -1), noise_scale=0.0)[0].astype(np.float32)
+
+
 def _sample_policy_trajectory(
     agent: Agent,
     env_factory: Any,
     benchmark: Any,
     request: dict[str, Any],
+    *,
+    scripted: bool = False,
 ) -> dict[str, Any]:
     env = env_factory(CONTROL_TYPE, REWARD_RECIPE)
     frames: list[np.ndarray] = []
@@ -1003,6 +1011,8 @@ def _sample_policy_trajectory(
     stride = max(1, int(request.get("frame_stride") or 2))
     max_steps = int(getattr(benchmark, "max_steps", 50))
     seed = int(getattr(benchmark, "eval_seed_start", getattr(benchmark, "train_seed", 0))) + max(sample_index - 1, 0)
+    scripted_state = ScriptedE2EWarmupState(1) if scripted else None
+    playback_source = "guided_warmup" if scripted else "policy"
     try:
         obs, _info = env.reset(seed=seed)
         for step in range(max_steps + 1):
@@ -1012,8 +1022,18 @@ def _sample_policy_trajectory(
                     frames.append(frame)
             if step >= max_steps:
                 break
-            tool_action = _policy_tool_action(agent, obs)
-            obs, _reward, terminated, truncated, _info = env.step(tool_action)
+            tool_action = (
+                _scripted_tool_action(scripted_state, obs)
+                if scripted_state is not None
+                else _policy_tool_action(agent, obs)
+            )
+            obs, _reward, terminated, truncated, info = env.step(tool_action)
+            if scripted_state is not None:
+                scripted_state.advance(
+                    flatten_observation(obs).reshape(1, -1),
+                    np.asarray([terminated or truncated], dtype=bool),
+                    dict(info),
+                )
             if bool(terminated or truncated):
                 frame = _render_policy_frame(env)
                 if frame is not None:
@@ -1031,7 +1051,7 @@ def _sample_policy_trajectory(
         "frames": frames,
         "playback_fps": float(request.get("playback_fps") or 20.0),
         "frame_stride": stride,
-        "metadata": {"seed": seed, "max_steps": max_steps},
+        "metadata": {"seed": seed, "max_steps": max_steps, "playback_source": playback_source},
     }
 
 
@@ -1046,11 +1066,12 @@ def _answer_sampled_trajectory_request(
     global_step: int,
     last_metrics: dict[str, float] | None,
     elapsed_seconds: float,
+    scripted_active: bool = False,
 ) -> None:
     request = response.get("sampled_trajectory_request") if isinstance(response, dict) else None
     if not isinstance(request, dict) or not request.get("requested"):
         return
-    sampled_trajectory = _sample_policy_trajectory(agent, env_factory, benchmark, request)
+    sampled_trajectory = _sample_policy_trajectory(agent, env_factory, benchmark, request, scripted=scripted_active)
     _live_callback(
         live_callback,
         status="running",

@@ -3199,6 +3199,61 @@ def test_mujoco_pandagym_dense_guided_warmup_seed_exposes_scripted_controller() 
     assert gripper.tolist() == pytest.approx([-1.0, 1.0])
 
 
+def test_mujoco_pandagym_dense_guided_warmup_sampling_uses_scripted_actions() -> None:
+    from autoresearch_gym.tasks.panda_pick_and_place_mjwarp_pandagym_dense_v0 import seed_trainable_guided_warmup
+
+    class FailingActor:
+        def get_action(self, obs):
+            raise AssertionError("policy actor should not be used for scripted warmup sampling")
+
+    class FakeGuidedEnv(gym.Env):
+        def __init__(self) -> None:
+            self.observation_space = gym.spaces.Box(low=-1.0, high=1.0, shape=(43,), dtype=np.float32)
+            self.action_space = gym.spaces.Box(low=-1.0, high=1.0, shape=(4,), dtype=np.float32)
+            self.actions: list[np.ndarray] = []
+            self.steps = 0
+
+        def reset(self, *, seed=None, options=None):
+            del seed, options
+            self.steps = 0
+            return self._obs(), {}
+
+        def step(self, action):
+            action = np.asarray(action, dtype=np.float32)
+            assert action.shape == (4,)
+            self.actions.append(action.copy())
+            self.steps += 1
+            return self._obs(), -1.0, self.steps >= 2, False, {"lifted_ever": False}
+
+        def render(self):
+            return np.full((8, 8, 3), self.steps, dtype=np.uint8)
+
+        def _obs(self) -> np.ndarray:
+            obs = np.zeros(43, dtype=np.float32)
+            obs[0:3] = np.asarray([0.0, 0.0, 0.10], dtype=np.float32)
+            obs[3:6] = np.asarray([0.05, -0.02, 0.02], dtype=np.float32)
+            obs[6:9] = np.asarray([0.10, 0.04, 0.02], dtype=np.float32)
+            return obs
+
+    env = FakeGuidedEnv()
+
+    sampled = seed_trainable_guided_warmup._sample_policy_trajectory(
+        types.SimpleNamespace(device="cpu", actor=FailingActor()),
+        lambda control_type=None, reward_recipe=None: env,
+        types.SimpleNamespace(max_steps=3, eval_seed_start=4500, train_seed=1),
+        {"episode": 1, "sample_index": 1, "frame_stride": 1, "playback_fps": 20.0},
+        scripted=True,
+    )
+
+    assert sampled["metadata"]["playback_source"] == "guided_warmup"
+    assert sampled["frames"]
+    assert env.actions, "scripted warmup sampling did not step the fake env"
+    assert env.actions[0][3] == pytest.approx(-1.0)
+    assert env.actions[0][:3].tolist() == pytest.approx(
+        seed_trainable_guided_warmup.ScriptedE2EWarmupState(1).actions(env._obs().reshape(1, -1))[0][:3].tolist()
+    )
+
+
 def test_mujoco_panda_pick_and_place_seed_task_resets_and_steps_when_assets_are_installed() -> None:
     pytest.importorskip("mujoco")
     pytest.importorskip("robot_descriptions")
