@@ -807,6 +807,95 @@ def test_bundled_seed_sample_trajectory_sources_match_schema() -> None:
             ), f"{seed_path} declares candidate_provided without an in-process or external producer"
 
 
+def test_tqc_her_ee_seed_owns_sampled_trajectory_generation() -> None:
+    from autoresearch_gym.tasks.panda_pick_and_place_mjwarp_v0 import seed_trainable_tqc_her_ee
+
+    candidate = seed_trainable_tqc_her_ee.get_candidate()
+    assert sampled_trajectory_source(candidate) == SAMPLE_TRAJECTORY_SOURCE_CANDIDATE_PROVIDED
+    assert callable(getattr(seed_trainable_tqc_her_ee, "_answer_sampled_trajectory_request", None))
+
+
+def test_tqc_her_ee_sampled_trajectory_steps_tool_actions(tmp_path: Path) -> None:
+    torch = pytest.importorskip("torch")
+    from autoresearch_gym.tasks.panda_pick_and_place_mjwarp_v0 import seed_trainable_tqc_her_ee
+
+    class FakeToolEnv(gym.Env):
+        def __init__(self) -> None:
+            self.observation_space = gym.spaces.Box(low=-1.0, high=1.0, shape=(43,), dtype=np.float32)
+            self.action_space = gym.spaces.Box(low=-1.0, high=1.0, shape=(4,), dtype=np.float32)
+            self.steps = 0
+            self.actions: list[np.ndarray] = []
+
+        def reset(self, *, seed=None, options=None):
+            self.steps = 0
+            return np.zeros(43, dtype=np.float32), {}
+
+        def step(self, action):
+            action = np.asarray(action, dtype=np.float32)
+            assert action.shape == (4,)
+            self.actions.append(action.copy())
+            self.steps += 1
+            return np.zeros(43, dtype=np.float32), -1.0, self.steps >= 3, False, {}
+
+        def render(self):
+            return np.full((8, 8, 3), self.steps, dtype=np.uint8)
+
+    env = FakeToolEnv()
+
+    def env_factory(control_type=None, reward_recipe=None):
+        return env
+
+    benchmark = BenchmarkSpec(
+        name="tqc-sampled-trajectory",
+        env_id="FakeTool-v0",
+        env_kwargs={"render_mode": "rgb_array"},
+        train_episodes=1,
+        train_seconds=None,
+        eval_episodes=1,
+        max_steps=4,
+        reward_type=None,
+        render_mode="rgb_array",
+        primary_metric="eval_avg_return",
+        primary_metric_mode="maximize",
+        train_seed=1,
+        eval_seed_start=100,
+        device="cpu",
+        eval_case_bank=None,
+        train_probe=TrainProbeSpec(enabled=False),
+    )
+    candidate = seed_trainable_tqc_her_ee.get_candidate()
+    writer = make_live_writer(tmp_path / "session", "run-tqc", "tag-tqc", benchmark, candidate)
+    assert writer is not None
+    response = writer(
+        status="running",
+        episode_records=[],
+        total_steps=0,
+        last_metrics={},
+        current_episode=1,
+    )
+    agent = seed_trainable_tqc_her_ee.Agent(43, torch.device("cpu"))
+    seed_trainable_tqc_her_ee._answer_sampled_trajectory_request(
+        response,
+        live_callback=writer,
+        agent=agent,
+        env_factory=env_factory,
+        benchmark=benchmark,
+        records=[],
+        global_step=0,
+        last_metrics={},
+        elapsed_seconds=0.0,
+    )
+    assert env.actions, "sampled trajectory did not step the fake env"
+    metrics = json.loads((tmp_path / "session" / "live" / "current_run_metrics.json").read_text(encoding="utf-8"))
+    manifest_path = Path(metrics["visual"]["trajectory_manifest_path"])
+    if not manifest_path.is_absolute():
+        manifest_path = Path.cwd() / manifest_path
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    assert manifest["source"] == SAMPLE_TRAJECTORY_SOURCE_CANDIDATE_PROVIDED
+    assert manifest["status"] == "completed"
+    assert manifest["frame_count"] >= 2
+
+
 def test_panda_mjwarp_benchmarks_keep_train_probes_enabled() -> None:
     task_dir = Path("autoresearch_gym/tasks/panda_pick_and_place_mjwarp_v0")
     for benchmark_path in task_dir.glob("benchmark*.json"):
@@ -2827,11 +2916,287 @@ def test_mujoco_panda_fixed_eval_cases_use_work_surface_coordinates() -> None:
     assert all(float(case["goal_pos"][2]) == pytest.approx(0.02) for case in cases)
 
 
+def test_mujoco_panda_tqc_her_buffer_samples_same_env_episode_future_goals() -> None:
+    from autoresearch_gym.tasks.panda_pick_and_place_mjwarp_v0.seed_trainable_tqc_her_ee import HerReplayBuffer
+
+    rb = HerReplayBuffer(obs_dim=18, act_dim=4, capacity=8, relabel_fraction=1.0)
+    obs = np.zeros((4, 18), dtype=np.float32)
+    next_obs = np.zeros((4, 18), dtype=np.float32)
+    next_obs[:, 3:6] = np.asarray(
+        [
+            [1.0, 0.0, 0.0],
+            [2.0, 0.0, 0.0],
+            [10.0, 0.0, 0.0],
+            [20.0, 0.0, 0.0],
+        ],
+        dtype=np.float32,
+    )
+    rb.add_batch(
+        obs,
+        next_obs,
+        np.zeros((4, 4), dtype=np.float32),
+        np.full(4, -1.0, dtype=np.float32),
+        np.asarray([False, True, True, True], dtype=bool),
+        env_ids=np.asarray([0, 0, 1, 0], dtype=np.int32),
+        episode_ids=np.asarray([0, 0, 0, 1], dtype=np.int64),
+        episode_steps=np.asarray([0, 1, 0, 0], dtype=np.int32),
+        next_lifted_ever=np.zeros(4, dtype=bool),
+    )
+
+    for _ in range(50):
+        future = rb._sample_future_indices(np.asarray([0, 1, 2, 3], dtype=np.int64))
+        assert future[0] in {0, 1}
+        assert future[1] == 1
+        assert future[2] == 2
+        assert future[3] == 3
+        for source, sampled in zip([0, 1, 2, 3], future):
+            assert rb.env_ids[sampled] == rb.env_ids[source]
+            assert rb.episode_ids[sampled] == rb.episode_ids[source]
+            assert rb.episode_steps[sampled] >= rb.episode_steps[source]
+
+
+def test_mujoco_panda_tqc_her_buffer_samples_only_completed_episodes_and_purges_overwritten_episodes() -> None:
+    from autoresearch_gym.tasks.panda_pick_and_place_mjwarp_v0.seed_trainable_tqc_her_ee import HerReplayBuffer
+
+    rb = HerReplayBuffer(obs_dim=18, act_dim=4, capacity=3, relabel_fraction=1.0)
+    obs = np.zeros((1, 18), dtype=np.float32)
+    action = np.zeros((1, 4), dtype=np.float32)
+    reward = np.full(1, -1.0, dtype=np.float32)
+    lifted = np.zeros(1, dtype=bool)
+
+    for step in range(2):
+        next_obs = np.zeros((1, 18), dtype=np.float32)
+        next_obs[:, 3] = float(step + 1)
+        rb.add_batch(
+            obs,
+            next_obs,
+            action,
+            reward,
+            np.asarray([step == 1], dtype=bool),
+            env_ids=np.asarray([0], dtype=np.int32),
+            episode_ids=np.asarray([0], dtype=np.int64),
+            episode_steps=np.asarray([step], dtype=np.int32),
+            next_lifted_ever=lifted,
+        )
+
+    assert rb.sample_size == 2
+    assert rb._sample_future_indices(np.asarray([0, 1], dtype=np.int64))[0] in {0, 1}
+
+    rb.add_batch(
+        obs,
+        np.zeros((1, 18), dtype=np.float32),
+        action,
+        reward,
+        np.asarray([False], dtype=bool),
+        env_ids=np.asarray([0], dtype=np.int32),
+        episode_ids=np.asarray([1], dtype=np.int64),
+        episode_steps=np.asarray([0], dtype=np.int32),
+        next_lifted_ever=lifted,
+    )
+    rb.add_batch(
+        obs,
+        np.zeros((1, 18), dtype=np.float32),
+        action,
+        reward,
+        np.asarray([False], dtype=bool),
+        env_ids=np.asarray([0], dtype=np.int32),
+        episode_ids=np.asarray([1], dtype=np.int64),
+        episode_steps=np.asarray([1], dtype=np.int32),
+        next_lifted_ever=lifted,
+    )
+
+    assert rb.sample_size == 0
+    with pytest.raises(RuntimeError, match="no completed episodes"):
+        rb.sample(1, __import__("torch").device("cpu"))
+
+
+def test_mujoco_panda_tqc_her_sample_recomputes_relabel_reward_with_lift_gate() -> None:
+    import torch
+
+    from autoresearch_gym.tasks.panda_pick_and_place_mjwarp_v0.seed_trainable_tqc_her_ee import HerReplayBuffer
+
+    def sampled_reward(lifted: bool) -> float:
+        rb = HerReplayBuffer(obs_dim=18, act_dim=4, capacity=4, relabel_fraction=1.0)
+        obs = np.zeros((1, 18), dtype=np.float32)
+        next_obs = np.zeros((1, 18), dtype=np.float32)
+        next_obs[:, 3:6] = np.asarray([0.12, 0.0, 0.0], dtype=np.float32)
+        rb.add_batch(
+            obs,
+            next_obs,
+            np.zeros((1, 4), dtype=np.float32),
+            np.asarray([-1.0], dtype=np.float32),
+            np.asarray([True], dtype=bool),
+            env_ids=np.asarray([0], dtype=np.int32),
+            episode_ids=np.asarray([0], dtype=np.int64),
+            episode_steps=np.asarray([0], dtype=np.int32),
+            next_lifted_ever=np.asarray([lifted], dtype=bool),
+        )
+        _obs, _next_obs, _actions, rewards, _dones = rb.sample(1, torch.device("cpu"))
+        sampled_next = _next_obs.cpu().numpy()[0]
+        assert sampled_next[6:9] == pytest.approx(sampled_next[3:6])
+        return float(rewards.cpu().numpy()[0, 0])
+
+    assert sampled_reward(False) == pytest.approx(-1.0)
+    assert sampled_reward(True) == pytest.approx(0.0)
+
+
+def test_mujoco_panda_tqc_seed_reward_requires_lift_gate() -> None:
+    from autoresearch_gym.tasks.panda_pick_and_place_mjwarp_v0.seed_trainable_tqc_her_ee import _goal_reward
+
+    next_obs = np.zeros((4, 18), dtype=np.float32)
+    next_obs[:, 6:9] = 0.0
+    next_obs[0, 3:6] = 0.0
+    next_obs[1, 3:6] = 0.0
+    next_obs[2, 3:6] = np.asarray([0.1, 0.0, 0.0], dtype=np.float32)
+    next_obs[3, 3:6] = np.asarray([0.1, 0.0, 0.0], dtype=np.float32)
+
+    rewards = _goal_reward(next_obs, np.asarray([False, True, False, True]))
+
+    assert rewards[0] == pytest.approx(-1.0)
+    assert rewards[1] == pytest.approx(0.0)
+    assert rewards[2] == pytest.approx(-1.0)
+    assert rewards[3] == pytest.approx(-0.1)
+    assert _goal_reward(next_obs[:1])[0] == pytest.approx(-1.0)
+
+
+def test_mujoco_panda_actuated_arm_indices_exclude_tendon_gripper_when_assets_are_installed() -> None:
+    pytest.importorskip("mujoco")
+    pytest.importorskip("robot_descriptions")
+    from autoresearch_gym.envs import mujoco_panda_pick_and_place as panda_env
+
+    try:
+        env = gym.make("AutoresearchMujocoPandaPickAndPlaceDense-v0", backend="mujoco", max_steps=2)
+    except FileNotFoundError as exc:
+        pytest.skip(str(exc))
+    try:
+        obs, info = env.reset(seed=4500)
+        unwrapped = env.unwrapped
+
+        assert unwrapped.robot_qpos_adrs.tolist() == list(range(7))
+        assert unwrapped.robot_qvel_adrs.tolist() == list(range(7))
+        assert unwrapped.finger_qpos_adrs.tolist() == [7, 8]
+        assert panda_env._finger_width(unwrapped.data, unwrapped.finger_qpos_adrs) == pytest.approx(0.08)
+        assert unwrapped.last_action[7] == pytest.approx(1.0)
+        assert obs["observation"].shape == (37,)
+        assert not bool(info["gripper_closed_near_cube"])
+    finally:
+        env.close()
+
+
+def test_mujoco_panda_tqc_ee_tool_uses_positive_close_convention_when_assets_are_installed() -> None:
+    pytest.importorskip("mujoco")
+    pytest.importorskip("robot_descriptions")
+    from autoresearch_gym.tasks.panda_pick_and_place_mjwarp_v0.seed_trainable_tqc_her_ee import (
+        EndEffectorDeltaTool,
+        flatten_observation,
+    )
+
+    try:
+        env = gym.make("AutoresearchMujocoPandaPickAndPlaceDense-v0", backend="mujoco", max_steps=2)
+    except FileNotFoundError as exc:
+        pytest.skip(str(exc))
+    try:
+        obs, _ = env.reset(seed=4500)
+        tool = EndEffectorDeltaTool.from_env(env.unwrapped)
+        raw_close = tool.single_action(flatten_observation(obs), np.asarray([0.0, 0.0, 0.0, 1.0], dtype=np.float32))
+        raw_open = tool.single_action(flatten_observation(obs), np.asarray([0.0, 0.0, 0.0, -1.0], dtype=np.float32))
+
+        assert raw_close[7] == pytest.approx(-1.0)
+        assert raw_open[7] == pytest.approx(1.0)
+    finally:
+        env.close()
+
+
 def test_mujoco_panda_benchmarks_select_lift_gated_success_metric() -> None:
     for name in ["benchmark.json", "benchmark_wall_clock.json", "benchmark_large_vector_wall_clock.json"]:
         payload = json.loads(Path("autoresearch_gym/tasks/panda_pick_and_place_mjwarp_v0", name).read_text(encoding="utf-8"))
         assert payload["primary_metric"] == "eval_success_rate"
         assert payload["primary_metric_mode"] == "maximize"
+
+
+def test_mujoco_pandagym_dense_port_benchmarks_use_pandagym_contract() -> None:
+    task_dir = Path("autoresearch_gym/tasks/panda_pick_and_place_mjwarp_pandagym_dense_v0")
+    for name in ["benchmark.json", "benchmark_wall_clock.json"]:
+        payload = json.loads((task_dir / name).read_text(encoding="utf-8"))
+        kwargs = payload["env_kwargs"]
+        assert payload["env_id"] == "AutoresearchMujocoPandaGymPickAndPlaceDense-v0"
+        assert payload["primary_metric"] == "eval_success_rate"
+        assert kwargs["reward_type"] == "dense"
+        assert kwargs["success_requires_lift"] is False
+        assert kwargs["goal_xy_range"] == pytest.approx(0.30)
+        assert kwargs["goal_z_range"] == pytest.approx(0.20)
+        assert kwargs["obj_xy_range"] == pytest.approx(0.30)
+        assert kwargs["tabletop_goal_probability"] == pytest.approx(0.30)
+
+
+def test_mujoco_pandagym_dense_port_reward_is_distance_only_when_assets_are_installed() -> None:
+    pytest.importorskip("mujoco")
+    pytest.importorskip("robot_descriptions")
+
+    try:
+        env = gym.make("AutoresearchMujocoPandaGymPickAndPlaceDense-v0", backend="mujoco", max_steps=2)
+    except FileNotFoundError as exc:
+        pytest.skip(str(exc))
+    try:
+        unwrapped = env.unwrapped
+        achieved = np.asarray([[0.0, 0.0, 0.02], [0.0, 0.0, 0.02]], dtype=np.float32)
+        desired = np.asarray([[0.03, 0.0, 0.02], [0.12, 0.0, 0.02]], dtype=np.float32)
+        reward = unwrapped.compute_reward(achieved, desired, {"lifted_ever": np.asarray([False, False])})
+        assert np.asarray(reward).tolist() == pytest.approx([-0.03, -0.12])
+
+        unwrapped.goal = desired[0].astype(np.float32)
+        obs = {"achieved_goal": achieved[0], "desired_goal": desired[0], "observation": np.zeros(37, dtype=np.float32)}
+        info = unwrapped._info(obs)
+        assert info["cube_at_goal"] is True
+        assert info["is_success"] is True
+        assert info["placed_success"] is True
+        assert info["lifted_ever"] is False
+    finally:
+        env.close()
+
+
+def test_mujoco_pandagym_dense_port_seed_recomputes_pandagym_her_reward() -> None:
+    from autoresearch_gym.tasks.panda_pick_and_place_mjwarp_pandagym_dense_v0 import seed_trainable_tqc_her_ee
+
+    obs = np.zeros((2, 43), dtype=np.float32)
+    obs[:, 3:6] = np.asarray([[0.0, 0.0, 0.02], [0.0, 0.0, 0.02]], dtype=np.float32)
+    obs[:, 6:9] = np.asarray([[0.03, 0.0, 0.02], [0.12, 0.0, 0.02]], dtype=np.float32)
+    reward = seed_trainable_tqc_her_ee._goal_reward(obs, np.asarray([False, False]))
+    assert reward.tolist() == pytest.approx([-0.03, -0.12])
+
+
+def test_mujoco_pandagym_dense_guided_warmup_seed_exposes_scripted_controller() -> None:
+    from autoresearch_gym.tasks.panda_pick_and_place_mjwarp_pandagym_dense_v0 import seed_trainable_guided_warmup
+
+    candidate = seed_trainable_guided_warmup.get_candidate()
+    recipe = candidate["recipe"]
+
+    assert recipe["runner"]["sample_trajectory_source"] == SAMPLE_TRAJECTORY_SOURCE_CANDIDATE_PROVIDED
+    assert seed_trainable_guided_warmup.SCRIPTED_WARMUP_FRACTION == pytest.approx(0.30)
+    assert seed_trainable_guided_warmup.SCRIPTED_WARMUP_STEPS == 200_000
+    assert seed_trainable_guided_warmup.SCRIPTED_PHASES == (
+        "hover_cube",
+        "descend_cube",
+        "close",
+        "lift",
+        "hover_goal",
+        "descend_goal",
+        "open",
+    )
+
+    obs = np.zeros((2, 43), dtype=np.float32)
+    obs[:, 3:6] = np.asarray([[0.05, -0.02, 0.02], [0.05, -0.02, 0.02]], dtype=np.float32)
+    obs[:, 6:9] = np.asarray([[0.10, 0.04, 0.02], [0.10, 0.04, 0.10]], dtype=np.float32)
+    phases = np.asarray([0, 2], dtype=np.int32)
+    phase_steps = np.zeros(2, dtype=np.int32)
+
+    target, gripper = seed_trainable_guided_warmup._scripted_targets(obs, phases, phase_steps)
+
+    assert target[0, :2].tolist() == pytest.approx(obs[0, 3:5].tolist())
+    assert target[0, 2] == pytest.approx(seed_trainable_guided_warmup.SCRIPTED_CONFIG["hover_z"])
+    assert target[1, :2].tolist() == pytest.approx(obs[1, 3:5].tolist())
+    assert target[1, 2] == pytest.approx(seed_trainable_guided_warmup.SCRIPTED_CONFIG["grasp_z"])
+    assert gripper.tolist() == pytest.approx([-1.0, 1.0])
 
 
 def test_mujoco_panda_pick_and_place_seed_task_resets_and_steps_when_assets_are_installed() -> None:

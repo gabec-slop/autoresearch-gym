@@ -92,6 +92,54 @@ SEED_CASES: tuple[SeedCase, ...] = (
         },
     ),
     SeedCase(
+        "panda-mjwarp-pandagym-dense",
+        "autoresearch_gym/tasks/panda_pick_and_place_mjwarp_pandagym_dense_v0/benchmark.json",
+        "autoresearch_gym/tasks/panda_pick_and_place_mjwarp_pandagym_dense_v0/seed_trainable.py",
+        visual_artifact_smoke=False,
+        required_modules=("mujoco", "mujoco_warp", "robot_descriptions"),
+        benchmark_overrides={
+            "max_steps": 4,
+            "env_kwargs": {
+                "backend": "mujoco_warp",
+                "max_steps": 4,
+                "num_envs": 128,
+                "steps_per_env_per_iteration": 8,
+            },
+        },
+    ),
+    SeedCase(
+        "panda-mjwarp-pandagym-dense-tqc-her-ee",
+        "autoresearch_gym/tasks/panda_pick_and_place_mjwarp_pandagym_dense_v0/benchmark.json",
+        "autoresearch_gym/tasks/panda_pick_and_place_mjwarp_pandagym_dense_v0/seed_trainable_tqc_her_ee.py",
+        visual_artifact_smoke=False,
+        required_modules=("mujoco", "mujoco_warp", "robot_descriptions"),
+        benchmark_overrides={
+            "max_steps": 4,
+            "env_kwargs": {
+                "backend": "mujoco_warp",
+                "max_steps": 4,
+                "num_envs": 128,
+                "steps_per_env_per_iteration": 8,
+            },
+        },
+    ),
+    SeedCase(
+        "panda-mjwarp-pandagym-dense-guided-warmup",
+        "autoresearch_gym/tasks/panda_pick_and_place_mjwarp_pandagym_dense_v0/benchmark.json",
+        "autoresearch_gym/tasks/panda_pick_and_place_mjwarp_pandagym_dense_v0/seed_trainable_guided_warmup.py",
+        visual_artifact_smoke=False,
+        required_modules=("mujoco", "mujoco_warp", "robot_descriptions"),
+        benchmark_overrides={
+            "max_steps": 4,
+            "env_kwargs": {
+                "backend": "mujoco_warp",
+                "max_steps": 4,
+                "num_envs": 128,
+                "steps_per_env_per_iteration": 8,
+            },
+        },
+    ),
+    SeedCase(
         "bat-to-goal",
         "autoresearch_gym/tasks/bat_to_goal_v0/benchmark.json",
         "autoresearch_gym/tasks/bat_to_goal_v0/seed_trainable.py",

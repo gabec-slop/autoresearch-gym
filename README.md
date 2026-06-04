@@ -63,6 +63,7 @@ Bundled tasks:
 | FetchPushDense | `autoresearch_gym/tasks/fetch_push_dense_v0/benchmark.json` | `autoresearch_gym/tasks/fetch_push_dense_v0/seed_trainable.py` or `seed_trainable_her.py` |
 | Panda pick-and-place | `autoresearch_gym/tasks/panda_pick_and_place_v0/benchmark.json` | `autoresearch_gym/tasks/panda_pick_and_place_v0/seed_trainable.py` or `seed_trainable_her.py` |
 | Panda pick-and-place MuJoCo/MJWarp | `autoresearch_gym/tasks/panda_pick_and_place_mjwarp_v0/benchmark_wall_clock.json` | `autoresearch_gym/tasks/panda_pick_and_place_mjwarp_v0/seed_trainable.py` or `seed_trainable_tqc_her_ee.py` |
+| Panda-gym dense pick-and-place MuJoCo/MJWarp | `autoresearch_gym/tasks/panda_pick_and_place_mjwarp_pandagym_dense_v0/benchmark_wall_clock.json` | `autoresearch_gym/tasks/panda_pick_and_place_mjwarp_pandagym_dense_v0/seed_trainable_tqc_her_ee.py` or `seed_trainable_guided_warmup.py` |
 | Panda bat-to-goal | `autoresearch_gym/tasks/bat_to_goal_v0/benchmark.json` | `autoresearch_gym/tasks/bat_to_goal_v0/seed_trainable.py` |
 | Panda bat-to-goal vectorized wall-clock | `autoresearch_gym/tasks/bat_to_goal_v0/benchmark_vectorized_wall_clock.json` | `autoresearch_gym/tasks/bat_to_goal_v0/seed_trainable_vectorized.py` |
 | Unitree G1 motion mirror external | `autoresearch_gym/tasks/unitree_g1_motion_mirror_v0/benchmark.json` | `autoresearch_gym/tasks/unitree_g1_motion_mirror_v0/seed_trainable.py` |

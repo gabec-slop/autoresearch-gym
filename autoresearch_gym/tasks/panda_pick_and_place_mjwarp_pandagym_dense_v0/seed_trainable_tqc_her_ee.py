@@ -17,12 +17,14 @@ from torch.distributions import Normal
 from autoresearch_gym.runner.curves import elapsed_seconds_since, make_train_collection_window_record
 
 
-# SB3/RL-Zoo-inspired Panda pick-and-place recipe, but kept on this repo's
-# MuJoCo/MJWarp Menagerie task instead of switching to PandaGym.
-EXP_NAME = "panda_pick_and_place_mjwarp_tqc_her_ee_seed"
+# SB3/RL-Zoo PandaPickAndPlace recipe ported to this repo's MuJoCo/MJWarp
+# Menagerie Panda task. The task contract intentionally follows panda-gym:
+# dense reward is -distance(achieved_goal, desired_goal), and success is
+# distance < 0.05 with no lift gate.
+EXP_NAME = "panda_gym_dense_pick_and_place_mjwarp_tqc_her_ee_seed"
 ALGORITHM = "tqc_her"
 CONTROL_TYPE = None
-REWARD_RECIPE = "mjwarp_tqc_her_ee"
+REWARD_RECIPE = "panda_gym_dense_tqc_her_ee"
 RECIPE = {
     "algorithm": ALGORITHM,
     "reward_recipe": REWARD_RECIPE,
@@ -38,7 +40,7 @@ RECIPE = {
         "her_goal_selection_strategy": "future",
         "n_sampled_goal": 4,
         "future_scope": "same_env_same_episode",
-        "reward_contract": "lift_gated",
+        "reward_contract": "panda_gym_dense_distance",
     },
     "runner": {
         "sample_trajectory_source": "candidate_provided",
@@ -61,9 +63,10 @@ LOG_STD_MIN = -5.0
 LOG_STD_MAX = 2.0
 HER_RELABEL_FRACTION = 0.8
 SUCCESS_THRESHOLD = 0.05
-EE_ACTION_SCALE = 0.055
+EE_ACTION_SCALE = 0.05
 IK_DAMPING = 1.0e-4
 GRIPPER_CLOSE_SIGN = -1.0
+GRIPPER_WIDTH_DELTA_SCALE = 0.2
 
 
 DIAGNOSTIC_SERIES = {
@@ -82,12 +85,12 @@ DIAGNOSTIC_SERIES = {
 def get_candidate() -> dict[str, Any]:
     return {
         "description": (
-            "MJWarp Menagerie Panda seed based on the successful SB3/RL-Zoo "
-            "PandaPickAndPlace TQC+HER recipe: 3x512 actor/critics, two quantile "
-            "critics, 1e6 replay, batch 2048, future HER relabeling with n_sampled_goal=4. "
-            "Training stays on the MuJoCo/MJWarp vector collector and exposes a 4D "
-            "end-effector delta tool action that is mapped to Menagerie joint/tendon "
-            "actuator controls by damped Jacobian IK before stepping MJWarp."
+            "Panda-gym PandaPickAndPlace dense task ported to MuJoCo/MJWarp: "
+            "object/goal sampling, dense -distance reward, and distance-only "
+            "success follow panda-gym, while training uses the RL-Zoo TQC+HER "
+            "recipe (3x512, 2 critics, 1e6 replay, batch 2048, future HER with "
+            "n_sampled_goal=4). The 4D panda-gym-style EE action is mapped to "
+            "Menagerie joint/tendon controls by damped Jacobian IK."
         ),
         "recipe": RECIPE,
     }
@@ -238,7 +241,10 @@ class EndEffectorDeltaTool:
             high = float(self.ctrl_high[i])
             raw[i] = np.clip(2.0 * (float(q) - low) / max(high - low, 1e-6) - 1.0, -1.0, 1.0)
         if raw.shape[0] > 7:
-            raw[7] = float(np.clip(GRIPPER_CLOSE_SIGN * action[3], -1.0, 1.0))
+            # Panda-gym applies action[-1] * 0.2 to the current finger width.
+            # Menagerie's tendon actuator is normalized and has the opposite
+            # close sign, so keep the small delta but adapt the sign.
+            raw[7] = float(np.clip(GRIPPER_CLOSE_SIGN * GRIPPER_WIDTH_DELTA_SCALE * action[3], -1.0, 1.0))
         return raw
 
 
@@ -359,7 +365,7 @@ class HerReplayBuffer:
             if observations.shape[1] >= 6:
                 observations[valid_positions, -3:] = relabel_goals
                 next_observations[valid_positions, -3:] = relabel_goals
-            rewards[valid_positions, 0] = _goal_reward(next_observations[valid_positions], self.next_lifted_ever[batch_inds[valid_positions]])
+            rewards[valid_positions, 0] = _goal_reward(next_observations[valid_positions])
         return (
             torch.as_tensor(observations, dtype=torch.float32, device=device),
             torch.as_tensor(next_observations, dtype=torch.float32, device=device),
@@ -549,8 +555,8 @@ def train_agent(
             raw_actions = tool.batch_actions(obs, tool_actions)
             next_obs, _raw_rewards, dones, infos = vector_env.step(raw_actions)
             next_obs = next_obs.astype(np.float32)
+            rewards = _goal_reward(next_obs)
             next_lifted_ever = _info_bool_array(infos, "lifted_ever", num_envs)
-            rewards = _goal_reward(next_obs, next_lifted_ever)
             rb.add_batch(
                 obs,
                 next_obs,
@@ -682,12 +688,11 @@ def _quantile_huber_loss(current: torch.Tensor, target: torch.Tensor) -> torch.T
 
 
 def _goal_reward(next_obs: np.ndarray, lifted_ever: np.ndarray | None = None) -> np.ndarray:
+    del lifted_ever
     achieved = np.asarray(next_obs[:, 3:6], dtype=np.float32)
     desired = np.asarray(next_obs[:, 6:9], dtype=np.float32)
     distance = np.linalg.norm(achieved - desired, axis=1)
-    lifted = np.zeros(distance.shape, dtype=bool) if lifted_ever is None else np.asarray(lifted_ever, dtype=bool)
-    success = (distance < SUCCESS_THRESHOLD) & lifted
-    return np.where(success, 0.0, np.where(lifted, -distance, -1.0)).astype(np.float32)
+    return -distance.astype(np.float32)
 
 
 def _render_policy_frame(env: gym.Env[Any, Any]) -> np.ndarray | None:
@@ -855,9 +860,11 @@ def _summary(
             "ee_action_scale": EE_ACTION_SCALE,
             "ik_damping": IK_DAMPING,
             "gripper_close_sign": GRIPPER_CLOSE_SIGN,
+            "gripper_width_delta_scale": GRIPPER_WIDTH_DELTA_SCALE,
             "her_relabel_fraction": HER_RELABEL_FRACTION,
             "her_goal_selection_strategy": "same_env_same_episode_future",
-            "reward_contract": "lift_gated_dense",
+            "reward_contract": "panda_gym_dense_distance",
+            "success_contract": "distance_less_than_0.05",
         },
         "diagnostic_series": _diagnostic_series(),
         "physics_backend": "mujoco_warp_vectorized",

@@ -1,0 +1,33 @@
+{
+  "name": "panda_gym_pick_and_place_mjwarp_dense_v0",
+  "description": "MuJoCo/MJWarp Menagerie Panda task ported from panda-gym PickAndPlace dense semantics.",
+  "env_id": "AutoresearchMujocoPandaGymPickAndPlaceDense-v0",
+  "env_kwargs": {
+    "render_mode": "rgb_array",
+    "backend": "mujoco_warp",
+    "reward_type": "dense",
+    "success_requires_lift": false,
+    "goal_xy_range": 0.3,
+    "goal_z_range": 0.2,
+    "obj_xy_range": 0.3,
+    "tabletop_goal_probability": 0.3,
+    "reject_initial_success": false,
+    "num_envs": 64,
+    "steps_per_env_per_iteration": 8
+  },
+  "train_episodes": 100,
+  "eval_episodes": 25,
+  "max_steps": 50,
+  "render_mode": "rgb_array",
+  "primary_metric": "eval_success_rate",
+  "primary_metric_mode": "maximize",
+  "train_seed": 47,
+  "eval_seed_start": 4500,
+  "device": "auto",
+  "eval_case_bank": "eval_cases.json",
+  "notes": [
+    "This task intentionally follows panda-gym PickAndPlace dense reward and success: reward=-||achieved_goal-desired_goal||, success=distance<0.05, no lift gate.",
+    "Use this as the semantic parity bridge before returning to lift-gated pick-and-place.",
+    "Training collection uses MJWarp vectorization; eval remains CPU MuJoCo through the runner."
+  ]
+}

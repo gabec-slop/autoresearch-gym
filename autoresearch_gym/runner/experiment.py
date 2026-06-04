@@ -215,6 +215,8 @@ def env_kwargs_for_candidate(benchmark: BenchmarkSpec, control_type: str | None 
     env_kwargs = dict(benchmark.env_kwargs)
     if control_type is not None:
         env_kwargs.setdefault("control_type", control_type)
+    if benchmark.max_steps > 0:
+        env_kwargs.setdefault("max_episode_steps", int(benchmark.max_steps))
     return env_kwargs
 
 
