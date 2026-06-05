@@ -331,9 +331,11 @@ or dashboard behavior:
 - while iterating, prefer `.venv/bin/python scripts/pre_commit_checks.py
   --affected` to run a path-sensitive validation subset for the files changed
   since `HEAD`; use `--dry-run` first when you want to inspect the selected
-  checks
-- before committing code, run `.venv/bin/python scripts/pre_commit_checks.py`; this is the
-  repo-level gate for unit smoke tests plus seed logging/visual artifact smoke
+  checks. The git pre-commit hook runs the same affected plan against staged
+  paths only.
+- before promotion, release, or broad runner/task changes, run
+  `.venv/bin/python scripts/pre_commit_checks.py`; this is the repo-level gate
+  for unit smoke tests plus seed logging/visual artifact smoke
 - run focused unit or smoke tests for the changed surface
 - run the relevant optional-extra smoke when simulator dependencies are involved
 - run a one-episode `autoresearch-gym run` smoke for any new seed
@@ -354,8 +356,8 @@ or dashboard behavior:
   ensure/reuse, guarded teardown, stale pointer handling, and `--no-dashboard`
   preserving the existing session pointer
 - for trainable, runner, dashboard, benchmark, or task changes, do not use
-  `scripts/pre_commit_checks.py --skip-artifact-smoke`; the full artifact smoke
-  must pass before commit
+  `scripts/pre_commit_checks.py --skip-artifact-smoke` for the full gate; the
+  full artifact smoke must pass before promotion
 - on macOS, if MuJoCo/PyBullet visual smoke fails inside a restricted sandbox,
   rerun the same pre-commit command from a normal GUI-permitted shell before
   changing render code

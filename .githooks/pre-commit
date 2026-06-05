@@ -10,4 +10,8 @@ else
   py="python3"
 fi
 
-exec "$py" scripts/pre_commit_checks.py
+if [ "${AUTORESEARCH_PRE_COMMIT_FULL:-0}" = "1" ]; then
+  exec "$py" scripts/pre_commit_checks.py
+fi
+
+exec "$py" scripts/pre_commit_checks.py --affected --staged
