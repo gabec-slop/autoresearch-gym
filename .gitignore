@@ -42,6 +42,10 @@ lightning_logs/
 
 # Codex-local artifacts and agent scratch state
 .codex/
+!.codex/
+!.codex/config.toml
+!.codex/rules/
+!.codex/rules/*.rules
 .codex-*/
 .codex-artifacts/
 .codex-session-exports/

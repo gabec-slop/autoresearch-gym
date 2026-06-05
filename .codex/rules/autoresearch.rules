@@ -1,0 +1,32 @@
+# These commands need a GUI-permitted/non-sandbox process for real simulator
+# rendering. Keep the prefixes narrow: they cover repo validation entrypoints,
+# not arbitrary Python execution.
+
+prefix_rule(
+    pattern = [".venv/bin/python", "scripts/smoke_seed_artifacts.py"],
+    decision = "allow",
+    justification = "Visual artifact smoke tests must use the real simulator renderer instead of sandbox workarounds.",
+    match = [
+        ".venv/bin/python scripts/smoke_seed_artifacts.py --case inverted-pendulum --mode sampled_trajectory",
+        ".venv/bin/python scripts/smoke_seed_artifacts.py --timeout 180",
+    ],
+    not_match = [
+        ".venv/bin/python -m pytest tests/test_smoke.py",
+        "python scripts/smoke_seed_artifacts.py",
+    ],
+)
+
+prefix_rule(
+    pattern = [".venv/bin/python", "scripts/pre_commit_checks.py"],
+    decision = "allow",
+    justification = "The full repo gate includes simulator visual smoke tests that may require a GUI-permitted process.",
+    match = [
+        ".venv/bin/python scripts/pre_commit_checks.py",
+        ".venv/bin/python scripts/pre_commit_checks.py --affected",
+        ".venv/bin/python scripts/pre_commit_checks.py --artifact-timeout 180",
+    ],
+    not_match = [
+        ".venv/bin/python -m pytest tests/test_smoke.py",
+        "python scripts/pre_commit_checks.py",
+    ],
+)
