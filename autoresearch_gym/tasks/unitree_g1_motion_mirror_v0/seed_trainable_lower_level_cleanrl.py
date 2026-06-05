@@ -47,8 +47,8 @@ HIDDEN_SIZE = 128
 ACTION_STD_INIT = 0.6
 ACTION_SCALE = 0.25
 CONTROL_DECIMATION = 4
-RENDER_WIDTH = 320
-RENDER_HEIGHT = 220
+RENDER_WIDTH = 720
+RENDER_HEIGHT = 480
 
 
 def _repo_root() -> Path:
@@ -447,47 +447,13 @@ class UnitreeG1LowerLevelEnv(gym.Env[np.ndarray, np.ndarray]):
                 self.renderer.update_scene(self.data)
                 return np.asarray(self.renderer.render(), dtype=np.uint8)
             except Exception:
-                return self._render_fallback()
-        return self._render_fallback()
-
-    def _render_fallback(self):
-        width, height = 320, 220
-        frame = np.full((height, width, 3), 245, dtype=np.uint8)
-        center = np.asarray([width // 2, 82], dtype=np.float32)
-        target = self._target()
-        pose = self.qpos
-        limbs = [
-            ((0, 0), (pose[0], 0.6 + pose[1])),
-            ((0, 0), (pose[2], 1.0 + pose[4])),
-            ((0, 0), (pose[3], 1.0 + pose[5])),
-        ]
-        target_limbs = [
-            ((0, 0), (target[0], 0.6 + target[1])),
-            ((0, 0), (target[2], 1.0 + target[4])),
-            ((0, 0), (target[3], 1.0 + target[5])),
-        ]
-        for collection, color in ((target_limbs, (60, 160, 220)), (limbs, (220, 85, 60))):
-            for start, end in collection:
-                p0 = center + 55 * np.asarray([start[0], start[1]], dtype=np.float32)
-                p1 = center + 55 * np.asarray([end[0], end[1]], dtype=np.float32)
-                _draw_line(frame, p0.astype(int), p1.astype(int), color)
-        bar = int(np.clip(260 * (1.0 - self.last_mpkpe), 0, 260))
-        frame[188:198, 30 : 30 + bar] = np.asarray([65, 170, 100], dtype=np.uint8)
-        return frame
+                return None
+        return None
 
     def close(self) -> None:
         if self.renderer is not None:
             self.renderer.close()
             self.renderer = None
-
-
-def _draw_line(frame: np.ndarray, p0: np.ndarray, p1: np.ndarray, color: tuple[int, int, int]) -> None:
-    steps = max(1, int(np.linalg.norm(p1 - p0)))
-    for alpha in np.linspace(0.0, 1.0, steps):
-        point = np.round((1.0 - alpha) * p0 + alpha * p1).astype(int)
-        y, x = int(point[1]), int(point[0])
-        if 1 <= y < frame.shape[0] - 1 and 1 <= x < frame.shape[1] - 1:
-            frame[y - 1 : y + 2, x - 1 : x + 2] = color
 
 
 class RewardRecipeWrapper(gym.Wrapper):
@@ -1008,18 +974,29 @@ def evaluate_agent(agent: Agent, benchmark: Any, eval_cases: list[dict[str, Any]
 
 def render_policy(agent: Agent, benchmark: Any, out_dir: Path) -> dict[str, Any]:
     frame_dir = out_dir / "trajectories" / "sample_000001"
-    frame_dir.mkdir(parents=True, exist_ok=True)
     env = make_external_env(benchmark)
     obs, _ = env.reset(seed=int(benchmark.eval_seed_start))
     frames = []
     for idx in range(min(24, int(benchmark.max_steps))):
+        frame = env.render()
+        if frame is None:
+            break
         frame_path = frame_dir / f"frame_{idx:04d}.jpg"
-        imageio.imwrite(frame_path, env.render())
+        frame_path.parent.mkdir(parents=True, exist_ok=True)
+        imageio.imwrite(frame_path, frame)
         frames.append(str(frame_path))
         obs, _, terminated, truncated, _ = env.step(agent.act(obs, deterministic=True))
         if terminated or truncated:
             break
     env.close()
+    if not frames:
+        return {
+            "media_available": False,
+            "visual": {
+                "sampled_status": "unavailable",
+                "disabled_reason": "real_unitree_renderer_unavailable",
+            },
+        }
     gif_path = frame_dir / "rollout.gif"
     imageio.mimsave(gif_path, [imageio.imread(frame) for frame in frames], duration=0.08)
     manifest = {"status": "completed", "sample_index": 1, "frames": frames, "gif_path": str(gif_path), "frame_count": len(frames)}

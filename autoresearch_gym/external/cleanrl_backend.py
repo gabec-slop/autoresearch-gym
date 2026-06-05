@@ -143,8 +143,9 @@ def _localize_media_payload(payload: dict[str, Any], root: Path) -> dict[str, An
         if localized is not None:
             normalized[key] = localized
             visual[key] = localized
-    manifest_path = Path(str(normalized.get("trajectory_manifest_path", "")))
-    if manifest_path.exists():
+    raw_manifest_path = normalized.get("trajectory_manifest_path") or visual.get("trajectory_manifest_path")
+    manifest_path = Path(str(raw_manifest_path)) if raw_manifest_path else None
+    if manifest_path is not None and manifest_path.is_file():
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
         frames = [_localize_artifact_path(frame, root) or str(frame) for frame in manifest.get("frames", [])]
         manifest["frames"] = frames
@@ -236,11 +237,12 @@ def _normalize_dashboard_frame(path: Path) -> Path:
 def _normalize_media_artifacts(payload: dict[str, Any], out_dir: Path) -> dict[str, Any]:
     normalized = dict(payload)
     visual = dict(normalized.get("visual") or {})
-    manifest_path = Path(str(normalized.get("trajectory_manifest_path") or visual.get("trajectory_manifest_path") or ""))
-    if not manifest_path.is_absolute():
+    raw_manifest_path = normalized.get("trajectory_manifest_path") or visual.get("trajectory_manifest_path")
+    manifest_path = Path(str(raw_manifest_path)) if raw_manifest_path else None
+    if manifest_path is not None and not manifest_path.is_absolute():
         manifest_path = out_dir / manifest_path
     frames: list[str] = []
-    if manifest_path.exists():
+    if manifest_path is not None and manifest_path.is_file():
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
         for raw_frame in manifest.get("frames", []):
             frame_path = Path(str(raw_frame))
@@ -264,9 +266,10 @@ def _normalize_media_artifacts(payload: dict[str, Any], out_dir: Path) -> dict[s
         normalized["trajectory_latest_frame_path"] = frames[-1]
         visual["live_frame_path"] = str(live_frame)
         visual["trajectory_latest_frame_path"] = frames[-1]
-    normalized["trajectory_manifest_path"] = str(manifest_path)
-    visual["trajectory_manifest_path"] = str(manifest_path)
-    visual.setdefault("sampled_status", "completed" if frames else "empty")
+    if manifest_path is not None and manifest_path.is_file():
+        normalized["trajectory_manifest_path"] = str(manifest_path)
+        visual["trajectory_manifest_path"] = str(manifest_path)
+    visual.setdefault("sampled_status", "completed" if frames else "unavailable")
     visual.setdefault("latest_sample_index", 1 if frames else None)
     normalized["visual"] = visual
     return normalized

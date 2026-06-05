@@ -16,9 +16,6 @@ from torch.distributions import Normal
 
 from autoresearch_gym.runner.curves import make_train_collection_window_record
 from autoresearch_gym.tasks.unitree_g1_motion_mirror_v0.seed_trainable_lower_level_cleanrl import (
-    RENDER_HEIGHT,
-    RENDER_WIDTH,
-    _draw_line,
     _maybe_import_mujoco,
     _maybe_import_mujoco_warp,
     _prepare_model_for_mujoco_warp,
@@ -50,6 +47,8 @@ HIDDEN_SIZE = 128
 ACTION_STD_INIT = 0.6
 ACTION_SCALE = 0.25
 CONTROL_DECIMATION = 4
+RENDER_WIDTH = 720
+RENDER_HEIGHT = 480
 
 
 def _go2_xml_path() -> Path:
@@ -365,25 +364,8 @@ class UnitreeGo2LowerLevelEnv(gym.Env[np.ndarray, np.ndarray]):
                 self.renderer.update_scene(self.data)
                 return np.asarray(self.renderer.render(), dtype=np.uint8)
             except Exception:
-                return self._render_fallback()
-        return self._render_fallback()
-
-    def _render_fallback(self):
-        width, height = 320, 220
-        frame = np.full((height, width, 3), 242, dtype=np.uint8)
-        base_velocity = np.asarray(self.data.qvel[:3], dtype=np.float32) if self.data is not None else self.base_velocity
-        body = np.asarray([80 + int(90 * np.clip(base_velocity[0], -0.5, 1.6)), 100 + int(35 * self.height_error)])
-        target = np.asarray([80 + int(90 * np.clip(self.command[0], -0.5, 1.6)), 100])
-        frame[max(0, target[1] - 25) : min(height, target[1] + 25), max(0, target[0] - 2) : min(width, target[0] + 2)] = (70, 150, 220)
-        legs = [(-24, 18), (-8, 20), (8, 20), (24, 18)]
-        for lx, ly in legs:
-            hip = body + np.asarray([lx, 8])
-            foot = body + np.asarray([lx + int(12 * math.sin(0.25 * self.step_count + lx)), 48 + ly])
-            _draw_line(frame, hip, foot, (70, 80, 90))
-        frame[max(0, body[1] - 14) : min(height, body[1] + 14), max(0, body[0] - 34) : min(width, body[0] + 34)] = (220, 100, 70)
-        bar = int(np.clip(260 * (1.0 - self.last_tracking_error), 0, 260))
-        frame[188:198, 30 : 30 + bar] = np.asarray([65, 170, 100], dtype=np.uint8)
-        return frame
+                return None
+        return None
 
     def close(self) -> None:
         if self.renderer is not None:
@@ -909,18 +891,29 @@ def evaluate_agent(agent: Agent, benchmark: Any, eval_cases: list[dict[str, Any]
 
 def render_policy(agent: Agent, benchmark: Any, out_dir: Path) -> dict[str, Any]:
     frame_dir = out_dir / "trajectories" / "sample_000001"
-    frame_dir.mkdir(parents=True, exist_ok=True)
     env = make_external_env(benchmark)
     obs, _ = env.reset(seed=int(benchmark.eval_seed_start))
     frames = []
     for idx in range(min(24, int(benchmark.max_steps))):
+        frame = env.render()
+        if frame is None:
+            break
         frame_path = frame_dir / f"frame_{idx:04d}.jpg"
-        imageio.imwrite(frame_path, env.render())
+        frame_path.parent.mkdir(parents=True, exist_ok=True)
+        imageio.imwrite(frame_path, frame)
         frames.append(str(frame_path))
         obs, _, terminated, truncated, _ = env.step(agent.act(obs, deterministic=True))
         if terminated or truncated:
             break
     env.close()
+    if not frames:
+        return {
+            "media_available": False,
+            "visual": {
+                "sampled_status": "unavailable",
+                "disabled_reason": "real_unitree_renderer_unavailable",
+            },
+        }
     gif_path = frame_dir / "rollout.gif"
     imageio.mimsave(gif_path, [imageio.imread(frame) for frame in frames], duration=0.08)
     manifest = {"status": "completed", "sample_index": 1, "frames": frames, "gif_path": str(gif_path), "frame_count": len(frames)}

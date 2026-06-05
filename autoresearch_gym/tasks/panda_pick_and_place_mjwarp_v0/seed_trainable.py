@@ -353,7 +353,7 @@ def _live_callback(callback: Any | None, **kwargs: Any) -> dict[str, Any]:
 def _render_policy_frame(env: gym.Env[Any, Any]) -> np.ndarray | None:
     render_env = getattr(env, "unwrapped", env)
     try:
-        frame = render_env.render(width=480, height=360)
+        frame = render_env.render(width=720, height=480)
     except TypeError:
         try:
             frame = render_env.render()

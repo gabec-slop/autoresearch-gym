@@ -133,7 +133,7 @@ def _write_eval(bundle: dict[str, Any], out_dir: Path) -> None:
 
 def _write_media(bundle: dict[str, Any], out_dir: Path) -> None:
     frame_path = out_dir / "current_run_frame.jpg"
-    image = Image.new("RGB", (320, 220), (36, 44, 52))
+    image = Image.new("RGB", (720, 480), (36, 44, 52))
     draw = ImageDraw.Draw(image)
     draw.rectangle((28, 40, 292, 180), outline=(118, 205, 180), width=4)
     draw.text((42, 88), f"{bundle['benchmark']['name']} fake external", fill=(245, 245, 245))
