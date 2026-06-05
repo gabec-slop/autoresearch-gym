@@ -40,7 +40,7 @@ RECIPE = {
         "her_goal_selection_strategy": "future",
         "n_sampled_goal": 4,
         "future_scope": "same_env_same_episode",
-        "reward_contract": "panda_gym_dense_distance_plus_training_only_approach_and_guided_warmup",
+        "reward_contract": "panda_gym_dense_distance_plus_training_only_approach_lift_bias_and_guided_warmup",
     },
     "runner": {
         "sample_trajectory_source": "candidate_provided",
@@ -69,6 +69,10 @@ SUCCESS_THRESHOLD = 0.05
 APPROACH_REWARD_WEIGHT = 0.35
 NEAR_CUBE_REWARD = 0.05
 NEAR_CUBE_THRESHOLD = 0.055
+LIFT_REWARD_WEIGHT = 1.50
+LIFTED_EVER_BONUS = 0.08
+UNLIFTED_GOAL_PENALTY = 0.05
+CUBE_REST_Z = 0.020
 EE_ACTION_SCALE = 0.080
 IK_DAMPING = 1.0e-4
 GRIPPER_CLOSE_SIGN = -1.0
@@ -128,8 +132,9 @@ def get_candidate() -> dict[str, Any]:
             "200k env steps for episode-budget runs, collection follows a "
             "scripted hover, descend, close, lift, carry, descend, and release "
             "controller using FK pinch-point feedback. After warmup, TQC+HER "
-            "takes over while the replay buffer retains the contact-rich "
-            "guided transitions."
+            "takes over with a train-only lift bonus and small unlifted-goal "
+            "penalty so replay retention is biased toward pick-and-place "
+            "instead of push-to-goal transitions."
         ),
         "recipe": RECIPE,
     }
@@ -453,7 +458,10 @@ class HerReplayBuffer:
             if observations.shape[1] >= 6:
                 observations[valid_positions, -3:] = relabel_goals
                 next_observations[valid_positions, -3:] = relabel_goals
-            rewards[valid_positions, 0] = _goal_reward(next_observations[valid_positions])
+            rewards[valid_positions, 0] = _goal_reward(
+                next_observations[valid_positions],
+                lifted_ever=self.next_lifted_ever[batch_inds[valid_positions]],
+            )
         return (
             torch.as_tensor(observations, dtype=torch.float32, device=device),
             torch.as_tensor(next_observations, dtype=torch.float32, device=device),
@@ -662,8 +670,8 @@ def train_agent(
             raw_actions = tool.batch_actions(obs, tool_actions)
             next_obs, _raw_rewards, dones, infos = vector_env.step(raw_actions)
             next_obs = next_obs.astype(np.float32)
-            rewards = _goal_reward(next_obs)
             next_lifted_ever = _info_bool_array(infos, "lifted_ever", num_envs)
+            rewards = _goal_reward(next_obs, lifted_ever=next_lifted_ever)
             success_flags = _info_bool_array(infos, "is_success", num_envs)
             near_cube_flags = _info_bool_array(infos, "near_cube", num_envs)
             lifted_flags = _info_bool_array(infos, "lifted_ever", num_envs)
@@ -816,14 +824,25 @@ def _quantile_huber_loss(current: torch.Tensor, target: torch.Tensor) -> torch.T
 
 
 def _goal_reward(next_obs: np.ndarray, lifted_ever: np.ndarray | None = None) -> np.ndarray:
-    del lifted_ever
     ee = np.asarray(next_obs[:, 0:3], dtype=np.float32)
     achieved = np.asarray(next_obs[:, 3:6], dtype=np.float32)
     desired = np.asarray(next_obs[:, 6:9], dtype=np.float32)
     cube_to_goal = np.linalg.norm(achieved - desired, axis=1)
     ee_to_cube = np.linalg.norm(ee - achieved, axis=1)
+    cube_lift_height = np.maximum(0.0, achieved[:, 2] - CUBE_REST_Z).astype(np.float32)
+    if lifted_ever is None:
+        lifted = np.zeros(next_obs.shape[0], dtype=np.float32)
+    else:
+        lifted_value = np.asarray(lifted_ever, dtype=np.float32)
+        lifted = (
+            np.full(next_obs.shape[0], float(lifted_value), dtype=np.float32)
+            if lifted_value.shape == ()
+            else lifted_value.reshape(-1)[: next_obs.shape[0]]
+        )
     near_cube_bonus = (ee_to_cube < NEAR_CUBE_THRESHOLD).astype(np.float32) * NEAR_CUBE_REWARD
-    reward = -cube_to_goal - APPROACH_REWARD_WEIGHT * ee_to_cube + near_cube_bonus
+    lift_bonus = LIFT_REWARD_WEIGHT * cube_lift_height + LIFTED_EVER_BONUS * lifted
+    unlifting_goal_penalty = ((cube_to_goal < SUCCESS_THRESHOLD) & (lifted < 0.5)).astype(np.float32) * UNLIFTED_GOAL_PENALTY
+    reward = -cube_to_goal - APPROACH_REWARD_WEIGHT * ee_to_cube + near_cube_bonus + lift_bonus - unlifting_goal_penalty
     return reward.astype(np.float32)
 
 
@@ -1160,10 +1179,13 @@ def _summary(
             "gripper_width_delta_scale": GRIPPER_WIDTH_DELTA_SCALE,
             "her_relabel_fraction": HER_RELABEL_FRACTION,
             "her_goal_selection_strategy": "same_env_same_episode_future",
-            "reward_contract": "panda_gym_dense_distance_plus_training_only_approach_and_guided_warmup",
+            "reward_contract": "panda_gym_dense_distance_plus_training_only_approach_lift_bias_and_guided_warmup",
             "training_approach_reward_weight": APPROACH_REWARD_WEIGHT,
             "training_near_cube_reward": NEAR_CUBE_REWARD,
             "training_near_cube_threshold": NEAR_CUBE_THRESHOLD,
+            "training_lift_reward_weight": LIFT_REWARD_WEIGHT,
+            "training_lifted_ever_bonus": LIFTED_EVER_BONUS,
+            "training_unlifted_goal_penalty": UNLIFTED_GOAL_PENALTY,
             "scripted_warmup_steps": SCRIPTED_WARMUP_STEPS,
             "scripted_warmup_fraction": SCRIPTED_WARMUP_FRACTION,
             "scripted_warmup_noise": SCRIPTED_WARMUP_NOISE,
