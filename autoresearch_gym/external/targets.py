@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import json
 import os
 import shutil
@@ -226,6 +227,11 @@ class SshTarget:
             return "'" + value.replace("'", "''") + "'"
         return shlex.quote(value)
 
+    def _powershell_command(self, script: str) -> str:
+        script = "$ProgressPreference='SilentlyContinue'; " + script
+        encoded = base64.b64encode(script.encode("utf-16-le")).decode("ascii")
+        return f"powershell.exe -NoProfile -EncodedCommand {encoded}"
+
     def _remote_join(self, *parts: str) -> str:
         sep = "\\" if self.config.path_style == "windows" else "/"
         cleaned = [str(part).strip("\\/") for part in parts if str(part)]
@@ -264,9 +270,8 @@ class SshTarget:
 
     def ensure_remote_dir(self, remote_dir: str) -> None:
         if self.config.path_style == "windows":
-            command = (
-                "powershell.exe -NoProfile -Command "
-                f"\"New-Item -ItemType Directory -Force {self._quote_remote(remote_dir)} | Out-Null\""
+            command = self._powershell_command(
+                f"New-Item -ItemType Directory -Force -Path {self._quote_remote(remote_dir)} | Out-Null"
             )
         else:
             command = f"mkdir -p {self._quote_remote(remote_dir)}"
@@ -294,11 +299,112 @@ class SshTarget:
     def fetch_remote_dir_archive(self, remote_dir: str, local_dir: Path, *, timeout: float = 60.0) -> bool:
         return self._fetch_remote_dir_archive(remote_dir, local_dir, timeout=timeout)
 
+    def remote_path_info(self, remote_path: str, *, timeout: float = 15.0) -> dict[str, Any]:
+        if self.config.path_style == "windows":
+            command = self._powershell_command(
+                "$p="
+                + self._quote_remote(remote_path)
+                + "; $payload = if (Test-Path -LiteralPath $p) { "
+                + "$i=Get-Item -LiteralPath $p; "
+                + "$age=([DateTime]::UtcNow - $i.LastWriteTimeUtc).TotalSeconds; "
+                + "[ordered]@{exists=$true; path=[string]$i.FullName; length=[int64]$i.Length; "
+                + "last_write_utc=[string]$i.LastWriteTimeUtc; age_seconds=[double]$age} "
+                + "} else { [ordered]@{exists=$false; path=$p; length=$null; last_write_utc=$null; age_seconds=$null} } "
+                + "; $payload | ConvertTo-Json -Compress"
+            )
+        else:
+            code = (
+                "import json,os,pathlib,time;"
+                f"p=pathlib.Path({remote_path!r});"
+                "exists=p.exists();"
+                "st=p.stat() if exists else None;"
+                "print(json.dumps({'exists':exists,'path':str(p),'length':(st.st_size if st else None),"
+                "'last_write_utc':(st.st_mtime if st else None),"
+                "'age_seconds':((time.time()-st.st_mtime) if st else None)}))"
+            )
+            command = f"{shlex.quote(self.config.python)} -c {shlex.quote(code)}"
+        result = self._ssh(command, timeout=timeout)
+        if not result.ok:
+            raise RuntimeError(f"failed to inspect remote path {remote_path}: {result.stderr[-1000:]}")
+        for line in reversed(result.stdout.splitlines()):
+            line = line.strip()
+            if not line.startswith("{"):
+                continue
+            try:
+                payload = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(payload, dict):
+                return payload
+        raise RuntimeError(f"remote path inspection did not produce JSON; stdout tail: {result.stdout[-1000:]}")
+
+    def terminate_processes_matching(self, required_terms: list[str], *, timeout: float = 15.0) -> list[dict[str, Any]]:
+        terms = [term for term in required_terms if term]
+        if len(terms) < 2:
+            raise ValueError("refusing to terminate remote processes without at least two match terms")
+        if self.config.path_style == "windows":
+            array_items = ",".join(self._quote_remote(term) for term in terms)
+            command = self._powershell_command(
+                f"$terms=@({array_items}); "
+                + "$matches=@(); "
+                + "Get-CimInstance Win32_Process -Filter \"name = 'python.exe' or name = 'python3.exe'\" | "
+                + "ForEach-Object { $cmd=[string]$_.CommandLine; "
+                + "$ok=$true; foreach ($term in $terms) { if ($cmd -notlike ('*' + $term + '*')) { $ok=$false } }; "
+                + "if ($ok) { $matches += [ordered]@{pid=[int]$_.ProcessId; command=$cmd}; "
+                + "Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue } }; "
+                + "$matches | ConvertTo-Json -Depth 4 -Compress"
+            )
+        else:
+            terms_json = json.dumps(terms)
+            code = (
+                "import json,os,signal,subprocess;"
+                f"terms=json.loads({terms_json!r});"
+                "rows=subprocess.check_output(['ps','-eo','pid=,args='],text=True).splitlines();"
+                "matches=[];"
+                "self_pid=os.getpid();"
+                "\nfor row in rows:\n"
+                "    stripped=row.strip()\n"
+                "    if not stripped: continue\n"
+                "    pid_s, _, cmd = stripped.partition(' ')\n"
+                "    try: pid=int(pid_s)\n"
+                "    except ValueError: continue\n"
+                "    if pid == self_pid: continue\n"
+                "    if all(term in cmd for term in terms):\n"
+                "        matches.append({'pid': pid, 'command': cmd})\n"
+                "        os.kill(pid, signal.SIGTERM)\n"
+                "print(json.dumps(matches))"
+            )
+            command = f"{shlex.quote(self.config.python)} -c {shlex.quote(code)}"
+        result = self._ssh(command, timeout=timeout)
+        if not result.ok:
+            raise RuntimeError(f"failed to terminate remote processes: {result.stderr[-1000:]}")
+        text = result.stdout.strip()
+        if not text:
+            return []
+        try:
+            payload = json.loads(text)
+        except json.JSONDecodeError:
+            for line in reversed(result.stdout.splitlines()):
+                line = line.strip()
+                if line.startswith("[") or line.startswith("{"):
+                    payload = json.loads(line)
+                    break
+            else:
+                raise RuntimeError(f"remote termination did not produce JSON; stdout tail: {result.stdout[-1000:]}")
+        if isinstance(payload, dict):
+            return [payload]
+        if isinstance(payload, list):
+            return [item for item in payload if isinstance(item, dict)]
+        return []
+
     def ssh_base_args(self) -> list[str]:
         return self._ssh_base_args()
 
     def quote_remote(self, value: str) -> str:
         return self._quote_remote(value)
+
+    def powershell_command(self, script: str) -> str:
+        return self._powershell_command(script)
 
     def remote_join(self, *parts: str) -> str:
         return self._remote_join(*parts)
@@ -366,9 +472,8 @@ class SshTarget:
     def _remote_tar_command(self, remote_dir: str) -> str:
         if self.config.path_style == "windows":
             quoted = self._quote_remote(remote_dir)
-            return (
-                "powershell.exe -NoProfile -Command "
-                f"\"if (!(Test-Path {quoted})) {{ exit 2 }}; tar -cf - -C {quoted} .\""
+            return self._powershell_command(
+                f"if (!(Test-Path -LiteralPath {quoted})) {{ exit 2 }}; tar -cf - -C {quoted} ."
             )
         quoted = self._quote_remote(remote_dir)
         return f"test -d {quoted} && tar -cf - -C {quoted} ."
@@ -402,15 +507,15 @@ class SshTarget:
         checks: list[dict[str, Any]] = []
         remote_root = self.config.remote_root or "."
         if self.config.path_style == "windows":
-            command = (
-                "powershell.exe -NoProfile -Command "
-                f"\"$root={self._quote_remote(remote_root)}; "
-                "if (!(Test-Path $root)) { exit 2 }; "
-                "Set-Location $root; "
-                f"{self.config.python} --version; "
+            python_cmd = self.config.python.replace("/", "\\")
+            command = self._powershell_command(
+                f"$root={self._quote_remote(remote_root)}; "
+                "if (!(Test-Path -LiteralPath $root)) { exit 2 }; "
+                "Set-Location -LiteralPath $root; "
+                f"& {self._quote_remote(python_cmd)} --version; "
                 "if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }; "
-                "New-Item -ItemType Directory -Force autoresearch_runs\\external_preflight | Out-Null; "
-                "Write-Output ok\""
+                "New-Item -ItemType Directory -Force -Path 'autoresearch_runs\\external_preflight' | Out-Null; "
+                "Write-Output ok"
             )
         else:
             command = (
@@ -440,9 +545,8 @@ class SshTarget:
         bundle.external_dir.mkdir(parents=True, exist_ok=True)
         remote_external = self._remote_external_dir(bundle)
         if self.config.path_style == "windows":
-            mkdir_command = (
-                "powershell.exe -NoProfile -Command "
-                f"\"New-Item -ItemType Directory -Force {self._quote_remote(remote_external)} | Out-Null\""
+            mkdir_command = self._powershell_command(
+                f"New-Item -ItemType Directory -Force -Path {self._quote_remote(remote_external)} | Out-Null"
             )
         else:
             mkdir_command = f"mkdir -p {self._quote_remote(remote_external)}"
@@ -482,16 +586,15 @@ class SshTarget:
         remote_root = self.config.remote_root or "."
         if self.config.path_style == "windows":
             python_cmd = self.config.python.replace("/", "\\")
-            remote_command = (
-                "powershell.exe -NoProfile -Command "
-                f"\"Set-Location {self._quote_remote(remote_root)}; "
-                f"{python_cmd} -m {module} --mode {mode} "
+            script = (
+                f"Set-Location -LiteralPath {self._quote_remote(remote_root)}; "
+                f"& {self._quote_remote(python_cmd)} -m {self._quote_remote(module)} --mode {self._quote_remote(mode)} "
                 f"--bundle {self._quote_remote(remote_bundle)} "
                 f"--out-dir {self._quote_remote(remote_external)}"
             )
             if "--checkpoint" in argv:
-                remote_command += f" --checkpoint {self._quote_remote(remote_checkpoint)}"
-            remote_command += "\""
+                script += f" --checkpoint {self._quote_remote(remote_checkpoint)}"
+            remote_command = self._powershell_command(script)
         else:
             remote_command = (
                 f"cd {self._quote_remote(remote_root)} && "
@@ -730,7 +833,7 @@ class SshTarget:
         remote_external = self._remote_external_dir(bundle)
         bundle.external_dir.mkdir(parents=True, exist_ok=True)
         timeout = float(os.environ.get("AUTORESEARCH_SSH_FETCH_TIMEOUT_SECONDS", "60"))
-        if self._fetch_remote_dir_archive(remote_external, bundle.external_dir, timeout=timeout):
+        if self.config.path_style != "windows" and self._fetch_remote_dir_archive(remote_external, bundle.external_dir, timeout=timeout):
             self._merge_live_policy_probe_records(bundle)
             self._localize_live_artifacts(bundle)
             return ArtifactSet(root=bundle.external_dir)

@@ -249,6 +249,54 @@ autoresearch session. If a remote run starts before this sync/verification, mark
 that attempt invalidated and restart it after the remote checkout is current;
 do not use its metrics as research evidence.
 
+Remote execution code should stay centralized and script-driven:
+
+- Session init doctor behavior is setup/scaffold behavior, not only a launch
+  gate. When `init-session` or `autoresearch-gym doctor --benchmark ...` reports
+  missing remote prerequisites for the selected benchmark, the agent should
+  repair or scaffold known-safe prerequisites before launching: create required
+  directories, clone documented external repos, install missing packages, restore
+  compatible CUDA/simulator package versions, or copy required source artifacts.
+  Then rerun the doctor for the same benchmark and target. If the needed source,
+  revision, credential, or artifact is unknown, stop and record an explicit
+  blocker. Do not silently switch to a different benchmark just because the
+  doctor failed.
+- Autoresearch agents should launch ordinary remote passes with
+  `scripts/launch_autoresearch_pass.py`. Use
+  `scripts/run_session_remote_pass.py` only for the lower-level case where the
+  outer-loop log entry has already been written.
+- Dashboard lifecycle is session-owned and default-on for sessions. `init-session`
+  and ordinary session passes should start or reuse the session dashboard unless
+  `--no-dashboard` is explicitly passed. Use `autoresearch-gym session-dashboard
+  ensure/status/teardown --session-dir ...` only to recover, inspect, or stop the
+  dashboard for a whole session. `--no-dashboard` must not overwrite
+  `live/dashboard.json` with a disabled pointer.
+- Do not add new ad hoc remote launch scripts that duplicate checkout
+  verification, candidate validation, compact status, dashboard startup, live
+  sync, or final artifact fetch. Put shared behavior in
+  `autoresearch_gym.external.remote_session`, `autoresearch_gym.external.targets`,
+  or the runner.
+- Do not put machine-specific remote paths, SSH hostnames, Windows drive roots,
+  or account names in seeds, benchmarks, or public docs. Those belong in local
+  target config and session logs.
+- Do not build Windows PowerShell command strings by hand. Use the shared
+  `SshTarget.powershell_command(...)` encoded-command helper and
+  `SshTarget.quote_remote(...)` for remote arguments.
+- Do not use inline `.venv/bin/python -c ...` snippets, raw `ssh`/`scp`
+  sequences, or shell process-list probes as the normal way to inspect or
+  recover remote runs. Add or reuse a Python helper in the package/scripts so
+  quoting and timeouts are tested.
+- Remote run health should come from session files and SSH-side metadata, not
+  from local wrapper assumptions. If `live/status.log` becomes older than the
+  configured stale threshold while the remote command is still running, fail the
+  pass and clean up only processes matching run-specific command terms.
+- Final remote fetch should retrieve small, critical correctness artifacts
+  first (`summary.json`, eval/train JSON, benchmark/candidate snapshots, and
+  trainable snapshot), then raise if any critical file is still missing. Large
+  checkpoints, media, trajectory dirs, and archive fetches are optional follow-up
+  artifacts and must not block access to the run result, especially on Windows
+  SSH targets.
+
 `get_candidate()` should describe the seed or candidate in human language. The
 runner surfaces it in summaries and dashboards, but the actual training recipe
 belongs in executable code.
@@ -280,6 +328,10 @@ should be scoped to Darwin plus arm64, not every arm64 platform.
 After adding or changing a task, environment, benchmark, seed, runner behavior,
 or dashboard behavior:
 
+- while iterating, prefer `.venv/bin/python scripts/pre_commit_checks.py
+  --affected` to run a path-sensitive validation subset for the files changed
+  since `HEAD`; use `--dry-run` first when you want to inspect the selected
+  checks
 - before committing code, run `.venv/bin/python scripts/pre_commit_checks.py`; this is the
   repo-level gate for unit smoke tests plus seed logging/visual artifact smoke
 - run focused unit or smoke tests for the changed surface
@@ -293,12 +345,24 @@ or dashboard behavior:
   reporting
 - for remote external runs, sync or verify the remote checkout before launch and
   record that fact in the session log
+- for remote management changes, add or update focused tests for Windows quoting,
+  checkout verification, live sync, stale-status detection/process cleanup, and
+  final artifact fetch ordering. Prefer mock-based tests of command construction
+  and fetch ordering over live SSH tests unless the user explicitly asks for
+  target-machine validation
+- for dashboard lifecycle changes, add or update focused tests for session-level
+  ensure/reuse, guarded teardown, stale pointer handling, and `--no-dashboard`
+  preserving the existing session pointer
 - for trainable, runner, dashboard, benchmark, or task changes, do not use
   `scripts/pre_commit_checks.py --skip-artifact-smoke`; the full artifact smoke
   must pass before commit
 - on macOS, if MuJoCo/PyBullet visual smoke fails inside a restricted sandbox,
   rerun the same pre-commit command from a normal GUI-permitted shell before
   changing render code
+- Codex command rules for the simulator visual smoke entrypoints live in
+  `.codex/rules/autoresearch.rules`. Keep those rules narrow and do not add
+  broad Python prefixes; the intent is to run the real renderer outside the
+  sandbox, not to allow arbitrary unsandboxed Python.
 - if any simulator smoke or pre-commit test hangs, timeouts, or emits
   CoreGraphics/WindowServer/service-connection errors under Codex, rerun the
   exact same command with sandbox escalation / a GUI-permitted shell before

@@ -1,13 +1,17 @@
 from __future__ import annotations
 
 import json
-import os
 import shlex
 import subprocess
 import time
 from pathlib import Path
 from typing import Any
 
+from autoresearch_gym.external.remote_session import (
+    fetch_remote_session_final_artifacts,
+    sync_remote_session_live,
+    verify_remote_environment,
+)
 from autoresearch_gym.external.targets import SshTarget, load_target_config, make_target
 from autoresearch_gym.runner.experiment import (
     BenchmarkSpec,
@@ -59,7 +63,8 @@ def _quote_arg(target: SshTarget, arg: str) -> str:
 
 def _remote_python(target: SshTarget) -> str:
     if target.config.path_style == "windows":
-        return target.config.python.replace("/", "\\")
+        python_cmd = target.config.python.replace("/", "\\")
+        return f"& {target.quote_remote(python_cmd)}"
     return shlex.quote(target.config.python)
 
 
@@ -67,9 +72,8 @@ def _remote_command(target: SshTarget, args: list[str]) -> str:
     remote_root = target.config.remote_root or "."
     if target.config.path_style == "windows":
         rendered = " ".join(_quote_arg(target, arg) for arg in args)
-        return (
-            "powershell.exe -NoProfile -Command "
-            f"\"Set-Location {target.quote_remote(remote_root)}; {_remote_python(target)} {rendered}\""
+        return target.powershell_command(
+            f"Set-Location -LiteralPath {target.quote_remote(remote_root)}; {_remote_python(target)} {rendered}"
         )
     rendered = " ".join(_quote_arg(target, arg) for arg in args)
     return f"cd {target.quote_remote(remote_root)} && {_remote_python(target)} {rendered}"
@@ -94,112 +98,8 @@ def _remote_cli_path(target: SshTarget, local_path: Path, repo_root: Path) -> st
     return target.remote_repo_path(local_path, repo_root=repo_root)
 
 
-def _copy_live_file(target: SshTarget, remote_session: str, session_dir: Path, suffix: str, timeout: float = 15.0) -> None:
-    target.fetch_remote_file(target.remote_join(remote_session, "live", suffix), session_dir / "live" / suffix, timeout=timeout)
-
-
-def _dashboard_path(path: Path) -> str:
-    try:
-        return path.resolve().relative_to(Path.cwd().resolve()).as_posix()
-    except ValueError:
-        return str(path.resolve())
-
-
-def _remote_path_values(payload: Any) -> list[str]:
-    values: list[str] = []
-    if isinstance(payload, dict):
-        for item in payload.values():
-            values.extend(_remote_path_values(item))
-    elif isinstance(payload, list):
-        for item in payload:
-            values.extend(_remote_path_values(item))
-    elif isinstance(payload, str):
-        values.append(payload)
-    return values
-
-
-def _remote_live_suffix(remote_session: str, session_dir: Path, value: Any) -> str | None:
-    if not isinstance(value, str):
-        return None
-    normalized = value.replace("\\", "/")
-    remote_live = (remote_session.replace("\\", "/").rstrip("/") + "/live/")
-    if normalized.startswith(remote_live):
-        return normalized[len(remote_live) :]
-    marker = f"autoresearch_runs/sessions/{session_dir.name}/live/"
-    marker_index = normalized.find(marker)
-    if marker_index >= 0:
-        return normalized[marker_index + len(marker) :]
-    return None
-
-
-def _localize_live_path_value(remote_session: str, session_dir: Path, value: Any) -> Any:
-    suffix = _remote_live_suffix(remote_session, session_dir, value)
-    if suffix is None:
-        return value
-    return _dashboard_path(session_dir / "live" / suffix)
-
-
-def _localize_live_paths(remote_session: str, session_dir: Path, payload: Any) -> Any:
-    if isinstance(payload, dict):
-        return {key: _localize_live_paths(remote_session, session_dir, item) for key, item in payload.items()}
-    if isinstance(payload, list):
-        return [_localize_live_paths(remote_session, session_dir, item) for item in payload]
-    return _localize_live_path_value(remote_session, session_dir, payload)
-
-
-def _localize_live_json_files(remote_session: str, session_dir: Path) -> None:
-    live_dir = session_dir / "live"
-    json_paths = [live_dir / "current_run_metrics.json"]
-    json_paths.extend((live_dir / "trajectories").glob("**/manifest.json"))
-    for path in json_paths:
-        if not path.exists():
-            continue
-        try:
-            payload = json.loads(path.read_text(encoding="utf-8"))
-        except Exception:
-            continue
-        path.write_text(json.dumps(_localize_live_paths(remote_session, session_dir, payload), indent=2), encoding="utf-8")
-
-
-def _sync_live_artifact_refs(target: SshTarget, remote_session: str, session_dir: Path) -> None:
-    metrics_path = session_dir / "live" / "current_run_metrics.json"
-    if not metrics_path.exists():
-        return
-    try:
-        metrics = json.loads(metrics_path.read_text(encoding="utf-8"))
-    except Exception:
-        return
-    suffixes = {
-        suffix
-        for value in _remote_path_values(metrics)
-        if (suffix := _remote_live_suffix(remote_session, session_dir, value)) is not None
-        and (suffix.startswith("trajectories/") or suffix == "current_run_frame.jpg")
-    }
-    for suffix in sorted(suffixes):
-        _copy_live_file(target, remote_session, session_dir, suffix)
-    manifests = [session_dir / "live" / suffix for suffix in suffixes if suffix.endswith("manifest.json")]
-    for manifest_path in manifests:
-        if not manifest_path.exists():
-            continue
-        try:
-            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-        except Exception:
-            continue
-        for value in _remote_path_values(manifest):
-            suffix = _remote_live_suffix(remote_session, session_dir, value)
-            if suffix is None or not suffix.startswith("trajectories/"):
-                continue
-            _copy_live_file(target, remote_session, session_dir, suffix)
-    _localize_live_json_files(remote_session, session_dir)
-
-
 def _sync_remote_session(target: SshTarget, remote_session: str, session_dir: Path | None) -> None:
-    if session_dir is None:
-        return
-    (session_dir / "live").mkdir(parents=True, exist_ok=True)
-    for suffix in ("current_run_metrics.json", "status.log", "control.json"):
-        _copy_live_file(target, remote_session, session_dir, suffix)
-    _sync_live_artifact_refs(target, remote_session, session_dir)
+    sync_remote_session_live(target, remote_session, session_dir)
 
 
 def _fetch_final_artifacts(
@@ -211,15 +111,70 @@ def _fetch_final_artifacts(
     out_dir: Path,
     run_id: str,
 ) -> None:
-    if remote_session is not None and session_dir is not None:
-        target.fetch_remote_dir_contents(target.remote_join(remote_session, "live"), session_dir / "live", timeout=60.0)
-        remote_run_dir = target.remote_join(remote_session, "runs", run_id)
-        local_run_dir = session_dir / "runs" / run_id
-    else:
-        remote_run_dir = target.remote_join(remote_out_dir, run_id)
-        local_run_dir = out_dir / run_id
-    if not target.fetch_remote_dir_archive(remote_run_dir, local_run_dir, timeout=float(os.environ.get("AUTORESEARCH_SSH_FETCH_TIMEOUT_SECONDS", "60"))):
-        target.fetch_remote_dir_contents(remote_run_dir, local_run_dir, timeout=60.0)
+    fetch_remote_session_final_artifacts(
+        target,
+        remote_session=remote_session,
+        session_dir=session_dir,
+        remote_out_dir=remote_out_dir,
+        out_dir=out_dir,
+        run_id=run_id,
+    )
+
+
+def _remote_live_stale_seconds(target: SshTarget, status_interval_seconds: float) -> float:
+    configured = target.config.extra.get("remote_live_stale_seconds")
+    if configured is None:
+        configured = target.config.extra.get("live_stale_timeout_seconds")
+    try:
+        value = float(configured) if configured is not None else 600.0
+    except (TypeError, ValueError):
+        value = 600.0
+    return max(value, float(status_interval_seconds) * 6.0, 60.0)
+
+
+def _remote_status_stale_info(
+    target: SshTarget,
+    remote_status_file: str | None,
+    *,
+    stale_seconds: float,
+) -> dict[str, Any] | None:
+    if remote_status_file is None or stale_seconds <= 0:
+        return None
+    try:
+        info = target.remote_path_info(remote_status_file)
+    except Exception:
+        return None
+    if not info.get("exists"):
+        return None
+    try:
+        age_seconds = float(info.get("age_seconds"))
+    except (TypeError, ValueError):
+        return None
+    if age_seconds <= stale_seconds:
+        return None
+    info["stale_seconds"] = stale_seconds
+    return info
+
+
+def _terminate_stale_remote_run(
+    target: SshTarget,
+    *,
+    remote_session: str | None,
+    tag: str,
+) -> list[dict[str, Any]]:
+    terms = ["autoresearch_gym.cli", "--tag", tag]
+    if remote_session is not None:
+        terms.append(target._remote_display_path(remote_session))
+    return target.terminate_processes_matching(terms)
+
+
+def _localize_fetched_summary_artifacts(summary: dict[str, Any], local_run_dir: Path) -> None:
+    artifacts = summary.setdefault("artifacts", {})
+    if not isinstance(artifacts, dict):
+        return
+    checkpoint = local_run_dir / "agent_checkpoint.pt"
+    if checkpoint.exists():
+        artifacts["checkpoint_path"] = str(checkpoint.resolve())
 
 
 def run_remote_in_process_experiment(
@@ -245,9 +200,16 @@ def run_remote_in_process_experiment(
     train_probe_episodes: int | None,
     execution_target_override: str,
     target_config_path: Path | None,
+    allow_remote_drift: bool = False,
 ) -> dict[str, Any]:
     tag = normalize_run_tag(tag)
     repo_root = Path.cwd().resolve()
+    environment_status = verify_remote_environment(
+        execution_target_override,
+        target_config_path,
+        repo_root=repo_root,
+        allow_remote_drift=allow_remote_drift,
+    )
     target_config = load_target_config(execution_target_override, config_path=target_config_path, repo_root=repo_root)
     target = make_target(target_config)
     if not isinstance(target, SshTarget):
@@ -362,9 +324,12 @@ def run_remote_in_process_experiment(
     if timeout <= 0:
         timeout = float(target.config.extra.get("in_process_timeout_seconds", 3600.0))
     sync_interval = float(target.config.extra.get("live_sync_interval_seconds", 20.0))
+    stale_seconds = _remote_live_stale_seconds(target, status_interval_seconds)
     deadline = started_at + timeout
     next_sync = time.time() + max(1.0, sync_interval)
     timed_out = False
+    stale_remote_status: dict[str, Any] | None = None
+    terminated_remote_processes: list[dict[str, Any]] = []
     while process.poll() is None:
         now = time.time()
         if now >= deadline:
@@ -373,10 +338,34 @@ def run_remote_in_process_experiment(
             break
         if sync_interval > 0 and now >= next_sync:
             _sync_remote_session(target, remote_session, session_dir) if remote_session is not None else None
+            stale_remote_status = _remote_status_stale_info(
+                target,
+                remote_status_file,
+                stale_seconds=stale_seconds,
+            )
+            if stale_remote_status is not None:
+                try:
+                    terminated_remote_processes = _terminate_stale_remote_run(
+                        target,
+                        remote_session=remote_session,
+                        tag=tag,
+                    )
+                except Exception as exc:
+                    stale_remote_status["termination_error"] = str(exc)
+                process.kill()
+                break
             next_sync = now + max(1.0, sync_interval)
         time.sleep(1.0)
     stdout, stderr = process.communicate()
     _sync_remote_session(target, remote_session, session_dir) if remote_session is not None else None
+    if stale_remote_status is not None:
+        raise RuntimeError(
+            "remote in-process live status stopped updating before the run completed\n"
+            f"status: {json.dumps(stale_remote_status, indent=2)}\n"
+            f"terminated_processes: {json.dumps(terminated_remote_processes, indent=2)}\n"
+            f"stdout:\n{stdout[-2000:]}\n"
+            f"stderr:\n{stderr[-2000:]}"
+        )
     if timed_out:
         stderr = (stderr or "") + f"\nremote in-process command timed out after {timeout:.1f} seconds"
         returncode = 124
@@ -397,6 +386,7 @@ def run_remote_in_process_experiment(
             "ok": preflight.ok,
             "checks": preflight.checks,
         },
+        "environment": environment_status,
     }
     run_id = str(summary["run_id"])
     _fetch_final_artifacts(
@@ -409,6 +399,7 @@ def run_remote_in_process_experiment(
     )
     local_run_dir = (session_dir / "runs" / run_id) if session_dir is not None else (out_dir / run_id)
     local_run_dir.mkdir(parents=True, exist_ok=True)
+    _localize_fetched_summary_artifacts(summary, local_run_dir)
     (local_run_dir / "summary.json").write_text(json.dumps(summary, indent=2, default=json_default), encoding="utf-8")
     (local_run_dir / "remote_command.stdout.log").write_text(stdout or "", encoding="utf-8")
     (local_run_dir / "remote_command.stderr.log").write_text(stderr or "", encoding="utf-8")

@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from autoresearch_gym.external.base import ArtifactSet, ExternalBackend, RunBundle
+from autoresearch_gym.external.remote_session import verify_remote_environment
 from autoresearch_gym.external.targets import load_target_config, make_target
 from autoresearch_gym.runner.experiment import (
     BenchmarkSpec,
@@ -131,6 +132,7 @@ def run_external_experiment(
     compact_status_file: Path | None,
     execution_target_override: str | None,
     target_config_path: Path | None,
+    allow_remote_drift: bool = False,
 ) -> dict[str, Any]:
     if benchmark.execution_backend is None:
         raise ValueError("run_external_experiment requires benchmark.execution_backend")
@@ -146,6 +148,14 @@ def run_external_experiment(
     default_target = str(backend_spec.get("execution_target", "local"))
     target_name = execution_target_override or default_target
     target_config = load_target_config(target_name, config_path=target_config_path, repo_root=Path.cwd())
+    environment_status = None
+    if target_config.kind == "ssh":
+        environment_status = verify_remote_environment(
+            target_name,
+            target_config_path,
+            repo_root=Path.cwd(),
+            allow_remote_drift=allow_remote_drift,
+        )
     target = make_target(target_config)
     backend = _load_backend(backend_spec)
     eval_cases = load_eval_cases(benchmark)
@@ -235,6 +245,7 @@ def run_external_experiment(
                 "ok": preflight.ok,
                 "checks": preflight.checks,
             },
+            "environment": environment_status,
         },
         "benchmark": {
             "name": benchmark.name,

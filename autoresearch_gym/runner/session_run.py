@@ -3,13 +3,16 @@ from __future__ import annotations
 import argparse
 import json
 import re
+import subprocess
 import sys
 import time
 from pathlib import Path
 
 try:
+    from .dashboard_server import ensure_session_dashboard, read_dashboard_pointer
     from .experiment import run_experiment
 except ImportError:  # pragma: no cover - supports direct script execution.
+    from dashboard_server import ensure_session_dashboard, read_dashboard_pointer
     from experiment import run_experiment
 
 
@@ -298,6 +301,32 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--parent-kind", type=str, default=None)
     parser.add_argument("--confirmation-source-run-id", type=str, default=None)
     parser.add_argument("--session-dir", type=Path, default=None)
+    parser.set_defaults(dashboard=True)
+    parser.add_argument(
+        "--no-dashboard",
+        action="store_false",
+        dest="dashboard",
+        help="Do not start or reuse a session dashboard for this run.",
+    )
+    parser.add_argument("--dashboard-host", default="127.0.0.1")
+    parser.add_argument("--dashboard-port", type=int, default=4174)
+    parser.add_argument(
+        "--dashboard-port-end",
+        type=int,
+        default=4199,
+        help="Probe dashboard ports through this inclusive end of range.",
+    )
+    parser.add_argument(
+        "--dashboard-ready-timeout",
+        type=float,
+        default=5.0,
+        help="Seconds to wait for the auto-started dashboard to answer before continuing the run.",
+    )
+    parser.add_argument(
+        "--allow-remote-drift",
+        action="store_true",
+        help="Allow SSH remote execution when checkout or environment fingerprints differ.",
+    )
     init_group = parser.add_mutually_exclusive_group()
     init_group.add_argument("--init-checkpoint", type=Path, default=None)
     init_group.add_argument("--init-from-run", type=str, default=None)
@@ -349,9 +378,34 @@ def append_outer_loop_log(session_dir: Path | None, summary: dict) -> None:
     description = candidate.get("description") if isinstance(candidate, dict) else None
     if description:
         lines.extend(["", str(description)])
+    dashboard = summary.get("dashboard") if isinstance(summary.get("dashboard"), dict) else {}
+    if dashboard.get("url"):
+        lines.extend(["", f"- dashboard_url: {dashboard.get('url')}"])
     lines.append("")
     with log_path.open("a", encoding="utf-8") as handle:
         handle.write("\n".join(lines))
+
+
+def start_dashboard(args: argparse.Namespace, session_dir: Path | None) -> dict | None:
+    if not args.dashboard:
+        return read_dashboard_pointer(session_dir) if session_dir is not None else None
+    if session_dir is None:
+        return None
+
+    payload = ensure_session_dashboard(
+        session_dir,
+        host=args.dashboard_host,
+        port=args.dashboard_port,
+        port_end=args.dashboard_port_end,
+        root=Path.cwd(),
+        ready_timeout=args.dashboard_ready_timeout,
+    )
+    status = "ready" if payload.get("ready") else "started"
+    reuse = "reused " if payload.get("reused") else ""
+    print(f"dashboard {reuse}{status}: {payload.get('url')}", file=sys.stderr, flush=True)
+    if not payload.get("ready"):
+        print(f"dashboard log: {payload.get('log_path')}", file=sys.stderr, flush=True)
+    return payload
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -359,6 +413,7 @@ def main(argv: list[str] | None = None) -> None:
     out_dir, results_path, session_dir = resolve_layout(args)
     args.out_dir = out_dir
     args.results_path = results_path if results_path is not None else args.results_path
+    dashboard = start_dashboard(args, session_dir)
     init_checkpoint = resolve_init_checkpoint(args)
     summary = run_experiment(
         benchmark_path=args.benchmark,
@@ -381,7 +436,10 @@ def main(argv: list[str] | None = None) -> None:
         train_probe_episodes=args.probe_episodes,
         execution_target_override=args.execution_target,
         target_config_path=args.target_config,
+        allow_remote_drift=args.allow_remote_drift,
     )
+    if dashboard is not None:
+        summary["dashboard"] = dashboard
     append_outer_loop_log(session_dir, summary)
     print(json.dumps(summary, indent=2))
 

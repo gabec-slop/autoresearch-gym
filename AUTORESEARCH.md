@@ -213,7 +213,41 @@ autoresearch-gym init-session \
 ```
 
 `init-session` records the selected seed path and creates an empty
-`candidates/` directory. It does not create pass files.
+`candidates/` directory. It also starts the session dashboard by default and
+writes the URL/process pointer to `live/dashboard.json`. Use `--no-dashboard`
+only for explicit headless setup. It does not create pass files.
+
+For remote sessions, pass the intended target at session creation so the
+session-level doctor can check the actual run machine before any pass starts:
+
+```bash
+autoresearch-gym init-session \
+  --label <label> \
+  --benchmark autoresearch_gym/tasks/<task_name>/<benchmark>.json \
+  --seed-candidate autoresearch_gym/tasks/<task_name>/<seed_trainable>.py \
+  --execution-target <target-name> \
+  --target-config <ignored-target-config.toml>
+```
+
+`init-session` writes `doctor.json` for the selected benchmark and target. The
+doctor is a setup/scaffold step, not merely a gate. If `doctor.json` is not
+`ok`, do not silently switch to another benchmark or launch a doomed pass.
+Instead:
+
+1. Read the failed checks in `doctor.json`.
+2. Repair or scaffold the missing prerequisite when the fix is known and safe:
+   create required directories, clone documented external repos, install missing
+   packages, restore CUDA-compatible package versions, or copy required source
+   artifacts.
+3. Rerun the doctor for the same benchmark and target.
+4. Launch the requested task only after the doctor passes, or record an explicit
+   blocker in `outer_loop_log.md` if the missing source, revision, credential,
+   or artifact is unknown.
+
+Switching tasks after a doctor failure requires explicit user approval or a
+session-log note explaining why the originally requested task is blocked and why
+the substitute task is acceptable. The agent should never make that substitution
+silently.
 
 For pass 1, create `candidates/pass01_baseline.py` as a verbatim copy of the
 selected seed trainable. Do not edit the copied file.
@@ -230,14 +264,15 @@ autoresearch-gym run \
 ```
 
 Unless the user explicitly asks for headless-only execution, share and verify the
-dashboard URL:
+dashboard URL from `live/dashboard.json`:
 
 ```text
 http://127.0.0.1:4174/dashboard/?session=autoresearch_runs/sessions/<session-id>
 ```
 
-If the dashboard server is not running, start it with `autoresearch-gym
-dashboard` and verify the URL is reachable.
+If the dashboard server is not running, use `autoresearch-gym
+session-dashboard ensure --session-dir autoresearch_runs/sessions/<session-id>`
+and verify the URL is reachable.
 
 For long runs, use compact status output so humans and coding agents can monitor
 progress without parsing the final JSON summary or relying on live stderr
@@ -257,6 +292,119 @@ Tail `autoresearch_runs/sessions/<session-id>/live/status.log` for compact
 progress lines. On wall-clock benchmarks, `pct` tracks elapsed time over
 `train_seconds`; on episode-budget benchmarks, it tracks completed episodes over
 `train_episodes`. Keep stdout reserved for the final JSON summary.
+
+For ordinary session passes, prefer the launch wrapper so the agent writes the
+pre-run hypothesis and mutation summary into the session log before execution,
+while compact status and dashboard startup happen consistently:
+
+```bash
+.venv/bin/python scripts/launch_autoresearch_pass.py \
+  --benchmark autoresearch_gym/tasks/<task_name>/<benchmark>.json \
+  --seed-candidate autoresearch_gym/tasks/<task_name>/<seed_trainable>.py \
+  --session-dir autoresearch_runs/sessions/<session-id> \
+  --candidate autoresearch_runs/sessions/<session-id>/candidates/passNN_<slug>.py \
+  --tag passNN-<slug> \
+  --hypothesis "<why this change should improve the fixed benchmark>" \
+  --mutation-summary "<what changed in the candidate>"
+```
+
+For remote passes, add `--execution-target <target-name>`. The wrapper verifies
+SSH target checkout parity before launch unless explicitly skipped. For fragile
+remote stacks, add `--profile fragile-remote` to apply the no-train-probe
+default.
+
+For remote autoresearch, the preferred path is:
+
+1. Author or copy exactly one candidate under the session's `candidates/`
+   directory.
+2. Launch it with `scripts/launch_autoresearch_pass.py`.
+3. Monitor `live/status.log`, `live/current_run_metrics.json`,
+   `live/dashboard.json`, and the dashboard URL written by the runner.
+4. Use the fetched local session artifacts under `runs/<run-id>/` for analysis.
+
+Dashboard lifecycle is session-scoped and default-on for sessions. Use the
+manual ensure command only to recover a stopped dashboard or to attach a
+dashboard to an older session:
+
+```bash
+.venv/bin/python -m autoresearch_gym.cli session-dashboard ensure \
+  --session-dir autoresearch_runs/sessions/<session-id>
+```
+
+`init-session` performs the same session-level launch at session creation time.
+`live/dashboard.json` is the source of truth for the current session dashboard
+URL and process metadata. Pass wrappers may call the same ensure path, but a
+healthy existing dashboard is reused and the pointer is not rewritten to a
+disabled state when a pass is launched with `--no-dashboard`.
+
+Use these session-level commands for manual lifecycle work:
+
+```bash
+.venv/bin/python -m autoresearch_gym.cli session-dashboard status \
+  --session-dir autoresearch_runs/sessions/<session-id>
+.venv/bin/python -m autoresearch_gym.cli session-dashboard teardown \
+  --session-dir autoresearch_runs/sessions/<session-id>
+```
+
+The remote runner treats stale live status as a run-management failure. If
+`live/status.log` stops updating while the remote process is still alive, do not
+score the pass from partial live metrics; inspect the stale-status error, remote
+process cleanup result, and session live files, then relaunch the pass if the
+hypothesis is still worth testing.
+
+Final artifacts are fail-closed. A remote run is not complete unless the local
+`runs/<run-id>/` directory contains `summary.json`, eval/train JSON, benchmark
+and candidate snapshots, and `trainable_snapshot.py`. Missing critical files
+mean the pass is incomplete, even if live metrics or sampled frames exist.
+
+Use `scripts/run_session_remote_pass.py` only as the lower-level remote runner
+when the outer-loop log entry has already been written. It has the same
+session-local candidate checks and remote defaults, but it does not write the
+agent-authored hypothesis/mutation section.
+
+Remote launches are strict by default: committed `HEAD`, `pyproject.toml`,
+`uv.lock`, and dirty package/environment paths must match the remote target.
+Session-local candidates under `autoresearch_runs/` are allowed because they are
+staged for the pass. Use `--allow-remote-drift` only when deliberately running
+against a known different remote checkout, and record why in the session log.
+
+The wrapper does not create or mutate candidate files. It only writes
+agent-authored outer-loop context, runs an already-authored session candidate,
+and delegates to `autoresearch-gym run`.
+
+Do not manually recreate remote-management behavior with ad hoc shell commands.
+In particular:
+
+- Do not launch remote passes by hand with raw `ssh`, PowerShell, `scp`, or
+  inline `.venv/bin/python -c ...` one-liners. The wrappers and runner own
+  quoting, staging, checkout verification, compact status, dashboard startup,
+  live sync, and final artifact fetch.
+- Do not hand-build Windows PowerShell commands. Remote target code must go
+  through the shared `SshTarget.powershell_command(...)` encoded-command helper.
+- Do not depend on `ps`, `ps aux | rg ...`, or remote process listings as the
+  primary run truth. Prefer session files: `live/status.log`,
+  `live/current_run_metrics.json`, `live/dashboard.json`, and final
+  `runs/<run-id>/summary.json`.
+- Do not treat a still-running remote process with stale `live/status.log` as a
+  healthy run. The wrapper checks remote file age and can terminate matching
+  stale run processes using run-specific command terms.
+- Do not probe dashboard URLs with unquoted shell URLs such as
+  `curl -I http://.../?session=...`; zsh may treat `?` as a glob. Prefer the
+  dashboard JSON pointer, a quoted URL, or `curl --globoff`.
+- Do not start or kill dashboard servers by hand for a session. Use
+  `autoresearch-gym session-dashboard ensure/status/teardown` so stale pointers,
+  port reuse, process metadata, and teardown stay consistent.
+- Do not use remote archive/tar streaming as the first finalization step for
+  Windows targets. The runner fetches critical result files first, then optional
+  checkpoint/media artifacts. If finalization is interrupted, recover from the
+  local `summary.json`, eval/train JSON, and snapshots before trying large
+  checkpoints or trajectory directories.
+- Do not treat a detached launch with an empty log as evidence that the remote
+  run is healthy. Relaunch foreground through the wrapper or inspect the session
+  live files written by the runner.
+- Do not treat a local run directory created by a recovery attempt as evidence
+  that fetch succeeded. The recovery path must raise if critical final artifacts
+  are missing.
 
 ## Experiment Log
 

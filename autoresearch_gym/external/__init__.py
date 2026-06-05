@@ -16,6 +16,18 @@ from autoresearch_gym.external.targets import (
     load_target_config,
     make_target,
 )
+from autoresearch_gym.external.remote_session import (
+    append_cli_option,
+    fetch_remote_session_final_artifacts,
+    has_cli_option,
+    local_environment_fingerprint,
+    remote_environment_fingerprint,
+    remote_session_doctor_command,
+    run_session_doctor,
+    sync_remote_session_live,
+    validate_session_candidate,
+    verify_remote_environment,
+)
 
 __all__ = [
     "ArtifactSet",
@@ -28,6 +40,16 @@ __all__ = [
     "SshTarget",
     "TargetConfig",
     "TargetPreflight",
+    "append_cli_option",
+    "fetch_remote_session_final_artifacts",
+    "has_cli_option",
+    "local_environment_fingerprint",
     "load_target_config",
     "make_target",
+    "remote_environment_fingerprint",
+    "remote_session_doctor_command",
+    "run_session_doctor",
+    "sync_remote_session_live",
+    "validate_session_candidate",
+    "verify_remote_environment",
 ]

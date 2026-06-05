@@ -954,12 +954,18 @@
     <script>
       const params = new URLSearchParams(window.location.search);
       const requestedSession = params.get("session");
+      function cleanSessionPath(value) {
+        const path = String(value || "").trim().replaceAll("\\", "/").replace(/\/+$/, "");
+        if (path.startsWith("/") || /^[A-Za-z]:\//.test(path)) return path;
+        return path.replace(/^\/+/, "");
+      }
+
       let shouldFollowLatestSession = !requestedSession;
-      let session = (requestedSession || "").replace(/\/$/, "");
+      let session = cleanSessionPath(requestedSession || "");
       const explicitMetrics = params.get("metrics");
       const explicitFrame = params.get("frame");
-      let metricsUrl = explicitMetrics || (session ? `/${session}/live/current_run_metrics.json` : "");
-      let frameUrl = explicitFrame || (session ? `/${session}/live/current_run_frame.jpg` : "");
+      let metricsUrl = explicitMetrics || (session ? artifactUrl(`${session}/live/current_run_metrics.json`) : "");
+      let frameUrl = explicitFrame || (session ? artifactUrl(`${session}/live/current_run_frame.jpg`) : "");
       let sessionSource = requestedSession ? "query" : "latest";
       let latestSessionCheckedAt = 0;
 
@@ -978,6 +984,7 @@
       let displayedFrameKind = "sampled_trajectory";
       let trajectoryManifestPath = "";
       let trajectoryFrames = [];
+      let trajectoryFrameSignature = "";
       let trajectoryFrameIndex = 0;
       let trajectoryFrameDelayMs = 1000;
       let trajectorySampleLabel = "";
@@ -1025,6 +1032,7 @@
           }
         }
 
+        if (path.startsWith("/") || /^[A-Za-z]:\//.test(path)) return path;
         return path.replace(/^\/+/, "");
       }
 
@@ -1032,7 +1040,17 @@
         const path = normalizeArtifactPath(rawPath);
         if (!path) return "";
         if (/^https?:\/\//i.test(path) || path.startsWith("data:")) return path;
+        if (path.startsWith("/") || /^[A-Za-z]:\//.test(path)) {
+          const query = new URLSearchParams({ session, path });
+          return `/_autoresearch/artifact?${query.toString()}`;
+        }
         return `/${path}`;
+      }
+
+      function cacheBustedUrl(url) {
+        if (!url) return "";
+        const separator = url.includes("?") ? "&" : "?";
+        return `${url}${separator}t=${Date.now()}`;
       }
 
       async function fetchLiveSessionPath() {
@@ -1042,7 +1060,7 @@
             const payload = await response.json();
             const pointer = payload.session_path || payload.session || payload.path;
             if (pointer) {
-              return String(pointer).replace(/^\//, "").replace(/\/$/, "");
+              return cleanSessionPath(pointer);
             }
           }
         } catch (_) {}
@@ -1050,10 +1068,10 @@
       }
 
       function setSession(nextSession, source) {
-        session = nextSession;
+        session = cleanSessionPath(nextSession);
         sessionSource = source;
-        metricsUrl = explicitMetrics || `/${session}/live/current_run_metrics.json`;
-        frameUrl = explicitFrame || `/${session}/live/current_run_frame.jpg`;
+        metricsUrl = explicitMetrics || artifactUrl(`${session}/live/current_run_metrics.json`);
+        frameUrl = explicitFrame || artifactUrl(`${session}/live/current_run_frame.jpg`);
         latestRun = {};
         latestResults = [];
         latestLogText = "";
@@ -1064,6 +1082,7 @@
         bestGhostLoadToken += 1;
         trajectoryManifestPath = "";
         trajectoryFrames = [];
+        trajectoryFrameSignature = "";
         trajectoryFrameIndex = 0;
         updateText("subtitle", sessionDisplayLabel());
         renderSessionList();
@@ -2325,7 +2344,7 @@
           const nextRunId = record?.run_id || "";
           if (!nextRunId) continue;
           try {
-            const response = await fetch(`/${session}/runs/${encodeURIComponent(nextRunId)}/train_episodes.json?t=${Date.now()}`, {
+            const response = await fetch(cacheBustedUrl(artifactUrl(`${session}/runs/${nextRunId}/train_episodes.json`)), {
               cache: "no-store",
             });
             if (!response.ok) throw new Error(`HTTP ${response.status}`);
@@ -2390,7 +2409,7 @@
       async function refreshResearch() {
         try {
           await refreshLatestSessionPointer();
-          const resultsResponse = await fetch(`/${session}/results.jsonl?t=${Date.now()}`, { cache: "no-store" });
+          const resultsResponse = await fetch(cacheBustedUrl(artifactUrl(`${session}/results.jsonl`)), { cache: "no-store" });
           const records = [];
           if (resultsResponse.ok) {
             const text = await resultsResponse.text();
@@ -2403,7 +2422,7 @@
             }
           }
           let logText = "";
-          const logResponse = await fetch(`/${session}/outer_loop_log.md?t=${Date.now()}`, { cache: "no-store" });
+          const logResponse = await fetch(cacheBustedUrl(artifactUrl(`${session}/outer_loop_log.md`)), { cache: "no-store" });
           if (logResponse.ok) {
             const fullLog = await logResponse.text();
             logText = fullLog.slice(-6000);
@@ -2494,7 +2513,7 @@
       async function refresh() {
         try {
           await refreshLatestSessionPointer();
-          const response = await fetch(`${metricsUrl}?t=${Date.now()}`, { cache: "no-store" });
+          const response = await fetch(cacheBustedUrl(metricsUrl), { cache: "no-store" });
           if (!response.ok) throw new Error(`HTTP ${response.status}`);
           const data = await response.json();
           const episodes = data.episodes ?? [];
@@ -2576,7 +2595,8 @@
 
       async function refreshSampledTrajectoryFrame() {
         const visual = latestRun.visual || {};
-        const manifestPath = normalizeArtifactPath(latestRun.trajectory_manifest_path || visual.trajectory_manifest_path);
+        const rawManifestPath = latestRun.trajectory_manifest_path || visual.trajectory_manifest_path;
+        const manifestPath = normalizeArtifactPath(rawManifestPath);
         if (!manifestPath) {
           const sampledStatus = visual.sampled_status || "waiting";
           const activeSample = visual.active_sample_index ? ` #${visual.active_sample_index}` : "";
@@ -2586,10 +2606,13 @@
           return;
         }
         try {
-          const response = await fetch(`${artifactUrl(manifestPath)}?t=${Date.now()}`, { cache: "no-store" });
+          const response = await fetch(cacheBustedUrl(artifactUrl(rawManifestPath)), { cache: "no-store" });
           if (!response.ok) throw new Error(`HTTP ${response.status}`);
           const manifest = await response.json();
-          const frames = Array.isArray(manifest.frames) ? manifest.frames.map(normalizeArtifactPath).filter(Boolean) : [];
+          const frames = Array.isArray(manifest.frames)
+            ? manifest.frames.map((value) => String(value || "")).filter(Boolean)
+            : [];
+          const frameSignature = frames.map(normalizeArtifactPath).join("\n");
           const sampleLabel = manifest.sample_index ? ` #${manifest.sample_index}` : "";
           const episodeLabel = manifest.episode ? ` rollout ${manifest.episode}` : "";
           trajectorySampleLabel = `${sampleLabel}${episodeLabel}`.trim();
@@ -2599,10 +2622,11 @@
             scheduleFrameRefresh(1000);
             return;
           }
-          if (trajectoryManifestPath !== manifestPath || trajectoryFrames.length !== frames.length) {
+          if (trajectoryManifestPath !== manifestPath || trajectoryFrameSignature !== frameSignature) {
             trajectoryManifestPath = manifestPath;
             trajectoryFrames = frames;
-            trajectoryFrameIndex = Math.min(trajectoryFrameIndex, Math.max(frames.length - 1, 0));
+            trajectoryFrameSignature = frameSignature;
+            trajectoryFrameIndex = 0;
           }
           trajectoryFrameDelayMs = Math.max(50, Math.round(1000 / Number(manifest.playback_fps || 20)));
           displayedFrameKind = "sampled_trajectory";
@@ -2612,7 +2636,7 @@
           const framePath = trajectoryFrames[trajectoryFrameIndex % trajectoryFrames.length];
           trajectoryFrameIndex = (trajectoryFrameIndex + 1) % trajectoryFrames.length;
           frameRefreshActive = true;
-          simFrame.src = `${artifactUrl(framePath)}?t=${Date.now()}`;
+          simFrame.src = cacheBustedUrl(artifactUrl(framePath));
         } catch (error) {
           updateText("frameStatus", "Sampled rollout unavailable");
           showFramePlaceholder("Waiting for a readable sampled rollout manifest.");
@@ -2649,7 +2673,7 @@
         displayedFrameKind = "live_frame";
         simPlaceholder.classList.remove("is-visible");
         simFrame.classList.remove("is-hidden");
-        simFrame.src = `${activeFrameUrl}?t=${Date.now()}`;
+        simFrame.src = cacheBustedUrl(activeFrameUrl);
       }
 
       simFrame.addEventListener("load", () => {

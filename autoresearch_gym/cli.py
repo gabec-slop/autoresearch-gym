@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import shutil
 import subprocess
 import sys
 import time
@@ -12,6 +13,14 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
 from autoresearch_gym.runner import render_rollouts, session_run
+from autoresearch_gym.external.remote_session import run_session_doctor
+from autoresearch_gym.runner.dashboard_server import (
+    dashboard_url,
+    ensure_session_dashboard,
+    find_available_port,
+    session_dashboard_status,
+    terminate_session_dashboard,
+)
 from autoresearch_gym.runner.experiment import DEFAULT_VISUAL_CONTROL, normalize_visual_control, select_device, write_json_atomic
 
 
@@ -21,6 +30,54 @@ def _repo_root() -> Path:
 
 def _slugify(value: str) -> str:
     return session_run._slugify(value)  # type: ignore[attr-defined]
+
+
+def _looks_like_dashboard_session_dir(path: Path) -> bool:
+    return any((path / name).exists() for name in ("live", "session.json", "results.jsonl", "outer_loop_log.md"))
+
+
+def resolve_dashboard_session_dir(dashboard_root: Path, session: object) -> Path:
+    if not isinstance(session, str) or not session.strip():
+        raise ValueError("missing session")
+    root = dashboard_root.resolve()
+    raw_session = session.strip().rstrip("/")
+    session_path = Path(raw_session)
+    if session_path.is_absolute():
+        resolved = session_path.resolve()
+        if not resolved.is_relative_to(root) and not _looks_like_dashboard_session_dir(resolved):
+            raise ValueError("absolute session path is not an autoresearch session")
+        return resolved
+    if ".." in session_path.parts:
+        raise ValueError("invalid session path")
+    resolved = (root / raw_session.lstrip("/")).resolve()
+    if not resolved.is_relative_to(root):
+        raise ValueError("session path escapes dashboard root")
+    return resolved
+
+
+def resolve_dashboard_artifact_path(dashboard_root: Path, session: object, artifact_path: object) -> Path:
+    if not isinstance(artifact_path, str) or not artifact_path.strip():
+        raise ValueError("missing artifact path")
+    raw_path = artifact_path.strip().replace("\\", "/")
+    if raw_path.startswith(("http://", "https://", "data:")):
+        raise ValueError("remote artifact URLs are fetched directly by the browser")
+
+    root = dashboard_root.resolve()
+    session_dir = resolve_dashboard_session_dir(root, session)
+    if Path(raw_path).is_absolute():
+        resolved = Path(raw_path).resolve()
+    else:
+        relative_path = raw_path.lstrip("/")
+        root_candidate = (root / relative_path).resolve()
+        session_candidate = (session_dir / relative_path).resolve()
+        resolved = root_candidate if root_candidate.exists() else session_candidate
+
+    allowed_roots = [root, session_dir]
+    if not any(resolved.is_relative_to(allowed_root) for allowed_root in allowed_roots):
+        raise ValueError("artifact path escapes dashboard root and session")
+    if not resolved.exists() or not resolved.is_file():
+        raise FileNotFoundError(str(resolved))
+    return resolved
 
 
 def cmd_run(argv: list[str]) -> int:
@@ -43,12 +100,39 @@ def cmd_init_session(args: argparse.Namespace) -> int:
         "search_mode": args.search_mode,
         "benchmark_path": str(args.benchmark.resolve()),
         "seed_candidate_path": str(args.seed_candidate.resolve()),
+        "execution_target": args.execution_target,
         "candidates_dir": str(candidates_dir.resolve()),
         "next_candidate_path": str((candidates_dir / "pass01_baseline.py").resolve()),
         "runs_dir": str(runs_dir),
         "results_path": str(session_dir / "results.jsonl"),
         "log_path": str(log_path),
     }
+    doctor = None
+    if not args.skip_doctor:
+        try:
+            doctor = run_session_doctor(
+                args.benchmark,
+                execution_target=args.execution_target,
+                target_config_path=args.target_config,
+                repo_root=Path.cwd(),
+                timeout=args.doctor_timeout,
+            )
+        except Exception as exc:  # noqa: BLE001 - init records doctor failures instead of losing the session.
+            doctor = {
+                "ok": False,
+                "error": f"{type(exc).__name__}: {exc}",
+                "checks": [
+                    {
+                        "name": "session_doctor",
+                        "status": "fail",
+                        "message": str(exc),
+                    }
+                ],
+            }
+        doctor_path = session_dir / "doctor.json"
+        write_json_atomic(doctor_path, doctor)
+        session_meta["doctor_path"] = str(doctor_path)
+        session_meta["doctor_ok"] = bool(doctor.get("ok"))
     (session_dir / "session.json").write_text(json.dumps(session_meta, indent=2), encoding="utf-8")
     pointer = {
         "session_path": session_dir.relative_to(Path.cwd()).as_posix() if session_dir.is_relative_to(Path.cwd()) else str(session_dir),
@@ -60,16 +144,30 @@ def cmd_init_session(args: argparse.Namespace) -> int:
     }
     args.base_dir.mkdir(parents=True, exist_ok=True)
     (args.base_dir / "live_session.json").write_text(json.dumps(pointer, indent=2), encoding="utf-8")
+    dashboard = None
+    if args.dashboard:
+        dashboard = ensure_session_dashboard(
+            session_dir,
+            host=args.dashboard_host,
+            port=args.dashboard_port,
+            port_end=args.dashboard_port_end,
+            root=Path.cwd(),
+            ready_timeout=args.dashboard_ready_timeout,
+        )
     print(
         json.dumps(
             {
                 "session_dir": str(session_dir),
                 "seed_candidate": str(args.seed_candidate.resolve()),
                 "next_candidate": str(candidates_dir / "pass01_baseline.py"),
+                "doctor": doctor,
+                "dashboard": dashboard,
             },
             indent=2,
         )
     )
+    if args.strict_doctor and doctor is not None and not doctor.get("ok"):
+        return 1
     return 0
 
 
@@ -92,15 +190,7 @@ class DashboardHandler(SimpleHTTPRequestHandler):
         self.wfile.write(encoded)
 
     def _resolve_session_dir(self, session: object) -> Path:
-        if not isinstance(session, str) or not session.strip():
-            raise ValueError("missing session")
-        session_path = Path(session.strip().lstrip("/"))
-        if session_path.is_absolute() or ".." in session_path.parts:
-            raise ValueError("invalid session path")
-        resolved = (self.dashboard_root / session_path).resolve()
-        if not resolved.is_relative_to(self.dashboard_root):
-            raise ValueError("session path escapes dashboard root")
-        return resolved
+        return resolve_dashboard_session_dir(self.dashboard_root, session)
 
     def _control_path_for_request(self, session: object) -> Path:
         session_dir = self._resolve_session_dir(session)
@@ -122,7 +212,21 @@ class DashboardHandler(SimpleHTTPRequestHandler):
         except (OSError, json.JSONDecodeError):
             return None
         value = pointer.get("session_path") or pointer.get("session") or pointer.get("path")
-        return str(value).strip("/ ") if value else None
+        if not value:
+            return None
+        raw_value = str(value).strip()
+        return raw_value.rstrip("/") if Path(raw_value).is_absolute() else raw_value.strip("/ ")
+
+    def _send_file(self, path: Path) -> None:
+        stat = path.stat()
+        self.send_response(200)
+        self.send_header("Content-Type", self.guess_type(str(path)))
+        self.send_header("Content-Length", str(stat.st_size))
+        self.send_header("Last-Modified", self.date_time_string(stat.st_mtime))
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        with path.open("rb") as handle:
+            shutil.copyfileobj(handle, self.wfile)
 
     def _session_summary(self, session_dir: Path, current_session: str | None) -> dict[str, object] | None:
         metrics_path = session_dir / "live" / "current_run_metrics.json"
@@ -184,6 +288,20 @@ class DashboardHandler(SimpleHTTPRequestHandler):
         if parsed.path == "/_autoresearch/sessions":
             self._send_json(200, {"ok": True, "current_session": self._read_live_session_path(), "sessions": self._list_sessions()})
             return
+        if parsed.path == "/_autoresearch/artifact":
+            try:
+                params = parse_qs(parsed.query)
+                path = resolve_dashboard_artifact_path(
+                    self.dashboard_root,
+                    params.get("session", [""])[0],
+                    params.get("path", [""])[0],
+                )
+                self._send_file(path)
+            except FileNotFoundError as exc:
+                self._send_json(404, {"ok": False, "error": str(exc)})
+            except (OSError, ValueError) as exc:
+                self._send_json(400, {"ok": False, "error": str(exc)})
+            return
         if parsed.path != "/_autoresearch/control":
             return super().do_GET()
         try:
@@ -222,11 +340,10 @@ class DashboardHandler(SimpleHTTPRequestHandler):
 
 def cmd_dashboard(args: argparse.Namespace) -> int:
     root = args.root.resolve()
+    port = args.port if args.no_port_probe else find_available_port(args.host, args.port, args.port_end)
     handler = partial(DashboardHandler, directory=str(root), dashboard_root=root)
-    server = ThreadingHTTPServer((args.host, args.port), handler)
-    url = f"http://{args.host}:{args.port}/dashboard/"
-    if args.session:
-        url += f"?session={args.session}"
+    server = ThreadingHTTPServer((args.host, port), handler)
+    url = dashboard_url(args.host, port, args.session)
     print(f"Serving {root}")
     print(url)
     if args.open:
@@ -238,6 +355,31 @@ def cmd_dashboard(args: argparse.Namespace) -> int:
     finally:
         server.server_close()
     return 0
+
+
+def cmd_session_dashboard(args: argparse.Namespace) -> int:
+    session_dir = args.session_dir.resolve()
+    if args.action == "ensure":
+        payload = ensure_session_dashboard(
+            session_dir,
+            host=args.host,
+            port=args.port,
+            port_end=args.port_end,
+            root=args.root,
+            ready_timeout=args.ready_timeout,
+            force_restart=args.force_restart,
+        )
+        print(json.dumps({"ok": bool(payload.get("ready")), "action": "ensure", "dashboard": payload}, indent=2))
+        return 0 if payload.get("ready") else 1
+    if args.action == "status":
+        payload = session_dashboard_status(session_dir)
+        print(json.dumps(payload, indent=2))
+        return 0 if payload.get("ok") else 1
+    if args.action == "teardown":
+        payload = terminate_session_dashboard(session_dir, wait_seconds=args.wait_seconds)
+        print(json.dumps(payload, indent=2))
+        return 0 if payload.get("ok") else 1
+    raise ValueError(f"unknown session-dashboard action: {args.action}")
 
 
 def cmd_render_rollouts(argv: list[str]) -> int:
@@ -276,6 +418,23 @@ def _nvidia_smi_gpus() -> list[dict[str, object]]:
 
 
 def cmd_doctor(args: argparse.Namespace) -> int:
+    if getattr(args, "benchmark", None) is not None or getattr(args, "execution_target", None) is not None:
+        benchmark = args.benchmark
+        if benchmark is None:
+            package_dir = Path(__file__).resolve().parent
+            benchmark = package_dir / "tasks" / "hopper_v0" / "benchmark.json"
+        payload = run_session_doctor(
+            benchmark,
+            execution_target=getattr(args, "execution_target", None),
+            target_config_path=getattr(args, "target_config", None),
+            repo_root=Path.cwd(),
+            timeout=getattr(args, "timeout", 60.0),
+        )
+        print(json.dumps(payload, indent=2))
+        if args.strict and not payload["ok"]:
+            return 1
+        return 0
+
     checks: list[dict[str, object]] = []
     torch_info: dict[str, object] = {"installed": False}
     selected_device = "unavailable"
@@ -344,18 +503,80 @@ def build_parser() -> argparse.ArgumentParser:
     init_parser.add_argument("--seed-candidate", type=Path, default=default_task_dir / "seed_trainable.py")
     init_parser.add_argument("--base-dir", type=Path, default=Path.cwd() / "autoresearch_runs")
     init_parser.add_argument("--search-mode", choices=["linear"], default="linear")
+    init_parser.add_argument(
+        "--execution-target",
+        default=None,
+        help="Optional target to doctor at session init. Passes still choose their target explicitly.",
+    )
+    init_parser.add_argument(
+        "--target-config",
+        type=Path,
+        default=None,
+        help="Ignored TOML target config used when --execution-target is provided.",
+    )
+    init_parser.add_argument(
+        "--skip-doctor",
+        action="store_true",
+        help="Create the session without writing a benchmark/target doctor report.",
+    )
+    init_parser.add_argument(
+        "--strict-doctor",
+        action="store_true",
+        help="Exit nonzero after creating the session if the doctor report is not ok.",
+    )
+    init_parser.add_argument("--doctor-timeout", type=float, default=60.0)
+    init_parser.set_defaults(dashboard=True)
+    init_parser.add_argument(
+        "--no-dashboard",
+        action="store_false",
+        dest="dashboard",
+        help="Create the session without starting the session dashboard.",
+    )
+    init_parser.add_argument("--dashboard-host", default="127.0.0.1")
+    init_parser.add_argument("--dashboard-port", type=int, default=4174)
+    init_parser.add_argument("--dashboard-port-end", type=int, default=4199)
+    init_parser.add_argument("--dashboard-ready-timeout", type=float, default=5.0)
 
     dashboard_parser = subparsers.add_parser("dashboard", help="Serve the static dashboard from the current repo.")
     dashboard_parser.add_argument("--host", default="127.0.0.1")
     dashboard_parser.add_argument("--port", type=int, default=4174)
+    dashboard_parser.add_argument("--port-end", type=int, default=4199)
+    dashboard_parser.add_argument("--no-port-probe", action="store_true")
     dashboard_parser.add_argument("--root", type=Path, default=_repo_root())
     dashboard_parser.add_argument("--session", default=None)
     dashboard_parser.add_argument("--open", action="store_true")
+
+    session_dashboard_parser = subparsers.add_parser(
+        "session-dashboard",
+        help="Ensure, inspect, or tear down the dashboard service for one autoresearch session.",
+    )
+    session_dashboard_parser.add_argument("action", choices=["ensure", "status", "teardown"])
+    session_dashboard_parser.add_argument("--session-dir", type=Path, required=True)
+    session_dashboard_parser.add_argument("--host", default="127.0.0.1")
+    session_dashboard_parser.add_argument("--port", type=int, default=4174)
+    session_dashboard_parser.add_argument("--port-end", type=int, default=4199)
+    session_dashboard_parser.add_argument("--root", type=Path, default=_repo_root())
+    session_dashboard_parser.add_argument("--ready-timeout", type=float, default=5.0)
+    session_dashboard_parser.add_argument("--force-restart", action="store_true")
+    session_dashboard_parser.add_argument("--wait-seconds", type=float, default=3.0)
 
     subparsers.add_parser("render-rollouts", help="Render rollout GIFs from a saved MuJoCo checkpoint run.")
 
     doctor_parser = subparsers.add_parser("doctor", help="Check simulator and accelerator installation state.")
     doctor_parser.add_argument("--device", default="auto", choices=["auto", "cpu", "cuda", "mps"])
+    doctor_parser.add_argument(
+        "--benchmark",
+        type=Path,
+        default=None,
+        help="Run the benchmark-aware session doctor instead of the basic accelerator check.",
+    )
+    doctor_parser.add_argument(
+        "--execution-target",
+        default=None,
+        help="Run the benchmark-aware doctor on this SSH target.",
+    )
+    doctor_parser.add_argument("--target-config", type=Path, default=None)
+    doctor_parser.add_argument("--timeout", type=float, default=60.0)
     doctor_parser.add_argument("--strict", action="store_true", help="Exit nonzero when a check reports a warning.")
     return parser
 
@@ -372,6 +593,8 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_init_session(args)
     if args.command == "dashboard":
         return cmd_dashboard(args)
+    if args.command == "session-dashboard":
+        return cmd_session_dashboard(args)
     if args.command == "doctor":
         return cmd_doctor(args)
     parser.error(f"Unknown command: {args.command}")

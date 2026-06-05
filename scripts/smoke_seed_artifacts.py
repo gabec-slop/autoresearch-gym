@@ -153,6 +153,7 @@ SEED_CASES: tuple[SeedCase, ...] = (
         "unitree-g1-mjlab",
         "autoresearch_gym/tasks/unitree_g1_motion_mirror_v0/benchmark.json",
         "autoresearch_gym/tasks/unitree_g1_motion_mirror_v0/seed_trainable.py",
+        visual_artifact_smoke=False,
         benchmark_overrides={
             "max_steps": 8,
             "env_kwargs": {"dry_run": True},
@@ -163,6 +164,7 @@ SEED_CASES: tuple[SeedCase, ...] = (
         "unitree-g1-lower-level",
         "autoresearch_gym/tasks/unitree_g1_motion_mirror_v0/benchmark_lower_level.json",
         "autoresearch_gym/tasks/unitree_g1_motion_mirror_v0/seed_trainable_lower_level_cleanrl.py",
+        visual_artifact_smoke=False,
         benchmark_overrides={
             "max_steps": 8,
             "env_kwargs": {"num_envs": 2, "steps_per_env_per_iteration": 4},
@@ -172,6 +174,7 @@ SEED_CASES: tuple[SeedCase, ...] = (
         "unitree-go2-mjlab",
         "autoresearch_gym/tasks/unitree_go2_rough_locomotion_v0/benchmark.json",
         "autoresearch_gym/tasks/unitree_go2_rough_locomotion_v0/seed_trainable.py",
+        visual_artifact_smoke=False,
         benchmark_overrides={
             "max_steps": 8,
             "env_kwargs": {"dry_run": True},
@@ -182,6 +185,7 @@ SEED_CASES: tuple[SeedCase, ...] = (
         "unitree-go2-mjlab-staged",
         "autoresearch_gym/tasks/unitree_go2_rough_locomotion_v0/benchmark.json",
         "autoresearch_gym/tasks/unitree_go2_rough_locomotion_v0/seed_trainable_staged_curriculum.py",
+        visual_artifact_smoke=False,
         benchmark_overrides={
             "max_steps": 8,
             "env_kwargs": {"dry_run": True},
@@ -192,6 +196,7 @@ SEED_CASES: tuple[SeedCase, ...] = (
         "unitree-go2-lower-level",
         "autoresearch_gym/tasks/unitree_go2_rough_locomotion_v0/benchmark_lower_level.json",
         "autoresearch_gym/tasks/unitree_go2_rough_locomotion_v0/seed_trainable_lower_level_cleanrl.py",
+        visual_artifact_smoke=False,
         benchmark_overrides={
             "max_steps": 8,
             "env_kwargs": {"num_envs": 2, "steps_per_env_per_iteration": 4},
@@ -270,8 +275,6 @@ def visual_artifact_smoke_enabled(case: SeedCase) -> bool:
         return False
     if os.environ.get("AUTORESEARCH_SMOKE_VISUALS") == "1":
         return True
-    if sys.platform == "darwin" and case.name == "inverted-pendulum":
-        return True
     return sys.platform != "darwin"
 
 
@@ -334,6 +337,7 @@ def run_case(repo_root: Path, case: SeedCase, mode: str, output_root: Path, time
         "1",
         "--eval-episodes",
         "1",
+        "--no-dashboard",
         "--no-train-probe",
         "--compact-status-file",
         str(session_dir / "live" / "status.log"),
