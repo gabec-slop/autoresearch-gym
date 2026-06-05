@@ -12,12 +12,13 @@
     "obj_xy_range": 0.3,
     "tabletop_goal_probability": 0.3,
     "reject_initial_success": false,
+    "max_steps": 400,
     "num_envs": 256,
     "steps_per_env_per_iteration": 32
   },
   "train_episodes": 100000,
   "eval_episodes": 25,
-  "max_steps": 50,
+  "max_steps": 400,
   "render_mode": "rgb_array",
   "primary_metric": "eval_success_rate",
   "primary_metric_mode": "maximize",
@@ -27,6 +28,7 @@
   "eval_case_bank": "eval_cases.json",
   "notes": [
     "This task intentionally follows panda-gym PickAndPlace dense reward and success: reward=-||achieved_goal-desired_goal||, success=distance<0.05, no lift gate.",
+    "The episode horizon is extended to 400 steps so guided warmup trajectories are not truncated during hover, descend, grasp, lift, carry, and release.",
     "Use this as the semantic parity bridge before returning to lift-gated pick-and-place.",
     "Training collection uses MJWarp vectorization; eval remains CPU MuJoCo through the runner."
   ],

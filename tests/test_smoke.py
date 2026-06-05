@@ -3121,8 +3121,10 @@ def test_mujoco_pandagym_dense_port_benchmarks_use_pandagym_contract() -> None:
         kwargs = payload["env_kwargs"]
         assert payload["env_id"] == "AutoresearchMujocoPandaGymPickAndPlaceDense-v0"
         assert payload["primary_metric"] == "eval_success_rate"
+        assert payload["max_steps"] == 400
         assert kwargs["reward_type"] == "dense"
         assert kwargs["success_requires_lift"] is False
+        assert kwargs["max_steps"] == 400
         assert kwargs["goal_xy_range"] == pytest.approx(0.30)
         assert kwargs["goal_z_range"] == pytest.approx(0.20)
         assert kwargs["obj_xy_range"] == pytest.approx(0.30)
