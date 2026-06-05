@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import ast
+import base64
 import importlib.util
 import io
 import json
@@ -33,7 +34,6 @@ from autoresearch_gym.runner.experiment import (
     make_policy_probe_callback,
     normalize_train_summary_curve,
     normalize_run_tag,
-    render_mujoco_kinematic_frame,
     sampled_trajectory_source,
     utilization_flags,
     validate_sample_trajectory_source_contract,
@@ -47,6 +47,25 @@ from autoresearch_gym.runner.curves import (
 )
 from autoresearch_gym.runner.session_run import parse_args, write_live_session_pointer
 from scripts.check_trainable_contract import validate_records, validate_summary
+
+
+def _mjlab_train_bridge_source() -> str:
+    from autoresearch_gym.external import unitree_backend
+
+    return unitree_backend._bridge_source_text(unitree_backend.MJLAB_TRAIN_BRIDGE)
+
+
+def _mjlab_rollout_bridge_source() -> str:
+    from autoresearch_gym.external import unitree_backend
+
+    return unitree_backend._bridge_source_text(unitree_backend.MJLAB_ROLLOUT_BRIDGE)
+
+
+def _decode_powershell_encoded_command(command: str) -> str:
+    marker = " -EncodedCommand "
+    assert marker in command
+    encoded = command.split(marker, 1)[1].split()[0]
+    return base64.b64decode(encoded).decode("utf-16-le")
 
 
 def test_doctor_warns_when_nvidia_gpu_is_visible_but_torch_cuda_is_unavailable(
@@ -136,9 +155,9 @@ def test_remote_in_process_windows_command_uses_target_python_and_paths() -> Non
             name="windows_gpu",
             kind="ssh",
             host="user@example.invalid",
-            remote_root="C:/code/autoresearch-gym",
+            remote_root="C:/code/autoresearch author's gym",
             path_style="windows",
-            python=".venv/Scripts/python.exe",
+            python="C:/Program Files/Python/python.exe",
         )
     )
 
@@ -151,15 +170,303 @@ def test_remote_in_process_windows_command_uses_target_python_and_paths() -> Non
             "--benchmark",
             "C:/code/autoresearch-gym/tasks/benchmark.json",
             "--tag",
-            "pass01-baseline",
+            "pass01 author's baseline",
         ],
     )
 
-    assert "powershell.exe" in command
-    assert "Set-Location 'C:/code/autoresearch-gym'" in command
-    assert ".venv\\Scripts\\python.exe" in command
-    assert "'-m' 'autoresearch_gym.cli' 'run'" in command
-    assert "'--benchmark' 'C:/code/autoresearch-gym/tasks/benchmark.json'" in command
+    assert command.startswith("powershell.exe -NoProfile -EncodedCommand ")
+    assert "Set-Location" not in command
+    script = _decode_powershell_encoded_command(command)
+    assert "Set-Location -LiteralPath 'C:/code/autoresearch author''s gym'" in script
+    assert "& 'C:\\Program Files\\Python\\python.exe'" in script
+    assert "'-m' 'autoresearch_gym.cli' 'run'" in script
+    assert "'--benchmark' 'C:/code/autoresearch-gym/tasks/benchmark.json'" in script
+    assert "'--tag' 'pass01 author''s baseline'" in script
+
+
+def test_remote_environment_fingerprint_windows_command_uses_encoded_python() -> None:
+    from autoresearch_gym.external.remote_session import remote_environment_fingerprint_command
+    from autoresearch_gym.external.targets import SshTarget, TargetConfig
+
+    target = SshTarget(
+        TargetConfig(
+            name="windows_gpu",
+            kind="ssh",
+            host="user@example.invalid",
+            remote_root="C:/code/autoresearch author's gym",
+            path_style="windows",
+            python="C:/Program Files/Python/python.exe",
+        )
+    )
+
+    command = remote_environment_fingerprint_command(target)
+
+    assert command.startswith("powershell.exe -NoProfile -EncodedCommand ")
+    assert "git\",\"rev-parse" not in command
+    assert "git status" not in command
+    script = _decode_powershell_encoded_command(command)
+    assert "Set-Location -LiteralPath 'C:/code/autoresearch author''s gym'" in script
+    assert "$env:AR_CODE=" in script
+    assert "& 'C:\\Program Files\\Python\\python.exe' -c" in script
+    assert "os.environ[chr(65)+chr(82)+chr(95)+chr(67)+chr(79)+chr(68)+chr(69)]" in script
+
+
+def test_remote_session_doctor_windows_command_uses_encoded_python() -> None:
+    from autoresearch_gym.external.remote_session import remote_session_doctor_command
+    from autoresearch_gym.external.targets import SshTarget, TargetConfig
+
+    target = SshTarget(
+        TargetConfig(
+            name="windows_gpu",
+            kind="ssh",
+            host="user@example.invalid",
+            remote_root="C:/code/autoresearch author's gym",
+            path_style="windows",
+            python="C:/Program Files/Python/python.exe",
+        )
+    )
+
+    command = remote_session_doctor_command(
+        target,
+        {
+            "benchmark": "benchmark author's.json",
+            "required_paths": [".external/unitree_rl_mjlab"],
+            "packages": ["torch", "warp"],
+        },
+    )
+
+    assert command.startswith("powershell.exe -NoProfile -EncodedCommand ")
+    assert "unitree_rl_mjlab" not in command
+    script = _decode_powershell_encoded_command(command)
+    assert "Set-Location -LiteralPath 'C:/code/autoresearch author''s gym'" in script
+    assert "$env:AR_SESSION_DOCTOR_CODE=" in script
+    assert "$env:AR_SESSION_DOCTOR_PACKAGES=" in script
+    assert "& 'C:\\Program Files\\Python\\python.exe' -c" in script
+
+
+def test_remote_environment_fingerprint_posix_command_quotes_paths() -> None:
+    from autoresearch_gym.external.remote_session import remote_environment_fingerprint_command
+    from autoresearch_gym.external.targets import SshTarget, TargetConfig
+
+    target = SshTarget(
+        TargetConfig(
+            name="linux_gpu",
+            kind="ssh",
+            host="user@example.invalid",
+            remote_root="/tmp/autoresearch gym",
+            path_style="posix",
+            python="/opt/python env/bin/python",
+        )
+    )
+
+    command = remote_environment_fingerprint_command(target)
+
+    assert "cd '/tmp/autoresearch gym'" in command
+    assert "'/opt/python env/bin/python' -c" in command
+    assert "git\",\"rev-parse" not in command
+
+
+def test_ssh_target_windows_run_quotes_python_module_and_mode(tmp_path, monkeypatch) -> None:
+    from autoresearch_gym.external.base import CommandSpec
+    from autoresearch_gym.external.targets import SshTarget, TargetConfig
+
+    calls: list[list[str]] = []
+
+    class FakeProcess:
+        returncode = 0
+
+        def poll(self):
+            return 0
+
+        def communicate(self):
+            return ("{}", "")
+
+    def fake_popen(argv, **kwargs):
+        calls.append(list(argv))
+        return FakeProcess()
+
+    target = SshTarget(
+        TargetConfig(
+            name="windows_gpu",
+            kind="ssh",
+            host="user@example.invalid",
+            remote_root="C:/code/autoresearch author's gym",
+            path_style="windows",
+            python="C:/Program Files/Python/python.exe",
+        )
+    )
+    monkeypatch.setattr("autoresearch_gym.external.targets.subprocess.Popen", fake_popen)
+    monkeypatch.setattr(target, "sync_live", lambda bundle: None)
+    bundle = types.SimpleNamespace(
+        run_id="run author's spaces",
+        external_dir=tmp_path / "external artifacts",
+        session_dir=None,
+    )
+
+    target.run(
+        CommandSpec(
+            argv=["python", "-m", "autoresearch_gym.external.unitree_backend", "--mode", "train"],
+            label="train",
+            timeout_seconds=1.0,
+        ),
+        bundle,
+    )
+
+    remote_command = calls[0][-1]
+    assert remote_command.startswith("powershell.exe -NoProfile -EncodedCommand ")
+    assert "Set-Location" not in remote_command
+    script = _decode_powershell_encoded_command(remote_command)
+    assert "Set-Location -LiteralPath 'C:/code/autoresearch author''s gym'" in script
+    assert "& 'C:\\Program Files\\Python\\python.exe'" in script
+    assert "-m 'autoresearch_gym.external.unitree_backend'" in script
+    assert "--mode 'train'" in script
+    assert (
+        "--bundle 'C:/code/autoresearch author's gym\\autoresearch_runs\\external_remote\\run author's spaces\\external\\bundle.json'"
+        not in script
+    )
+    assert (
+        "--bundle 'C:/code/autoresearch author''s gym\\autoresearch_runs\\external_remote\\run author''s spaces\\external\\bundle.json'"
+        in script
+    )
+
+
+def test_ssh_target_windows_utility_commands_use_encoded_powershell(monkeypatch) -> None:
+    from autoresearch_gym.external.base import CommandResult
+    from autoresearch_gym.external.targets import SshTarget, TargetConfig
+
+    commands: list[str] = []
+
+    def fake_ssh(command: str, timeout: float = 30.0):
+        commands.append(command)
+        return CommandResult(returncode=0, stdout="ok\n", stderr="")
+
+    target = SshTarget(
+        TargetConfig(
+            name="windows_gpu",
+            kind="ssh",
+            host="user@example.invalid",
+            remote_root="C:/code/autoresearch author's gym",
+            path_style="windows",
+            python="C:/Program Files/Python/python.exe",
+        )
+    )
+    monkeypatch.setattr(target, "_ssh", fake_ssh)
+
+    target.ensure_remote_dir("C:/tmp/author's live")
+    tar_command = target._remote_tar_command("C:/tmp/author's final")
+    preflight = target.preflight(types.SimpleNamespace())
+
+    mkdir_script = _decode_powershell_encoded_command(commands[0])
+    tar_script = _decode_powershell_encoded_command(tar_command)
+    preflight_script = _decode_powershell_encoded_command(commands[1])
+    assert preflight.ok is True
+    assert "New-Item -ItemType Directory -Force -Path 'C:/tmp/author''s live'" in mkdir_script
+    assert "Test-Path -LiteralPath 'C:/tmp/author''s final'" in tar_script
+    assert "tar -cf - -C 'C:/tmp/author''s final' ." in tar_script
+    assert "$root='C:/code/autoresearch author''s gym'" in preflight_script
+    assert "Set-Location -LiteralPath $root" in preflight_script
+    assert "& 'C:\\Program Files\\Python\\python.exe' --version" in preflight_script
+
+
+def test_ssh_target_windows_remote_path_info_uses_encoded_powershell(monkeypatch) -> None:
+    from autoresearch_gym.external.base import CommandResult
+    from autoresearch_gym.external.targets import SshTarget, TargetConfig
+
+    commands: list[str] = []
+
+    def fake_ssh(command: str, timeout: float = 30.0):
+        commands.append(command)
+        return CommandResult(
+            returncode=0,
+            stdout=json.dumps({"exists": True, "length": 12, "age_seconds": 3.5}) + "\n",
+            stderr="",
+        )
+
+    target = SshTarget(
+        TargetConfig(
+            name="windows_gpu",
+            kind="ssh",
+            host="user@example.invalid",
+            remote_root="C:/code/autoresearch author's gym",
+            path_style="windows",
+        )
+    )
+    monkeypatch.setattr(target, "_ssh", fake_ssh)
+
+    info = target.remote_path_info("C:/tmp/status author's.log")
+
+    script = _decode_powershell_encoded_command(commands[0])
+    assert info["exists"] is True
+    assert info["age_seconds"] == 3.5
+    assert "$payload = if (Test-Path -LiteralPath $p)" in script
+    assert "Test-Path -LiteralPath $p" in script
+    assert "$p='C:/tmp/status author''s.log'" in script
+    assert "$payload | ConvertTo-Json -Compress" in script
+
+
+def test_ssh_target_windows_terminate_processes_matching_is_guarded_and_encoded(monkeypatch) -> None:
+    from autoresearch_gym.external.base import CommandResult
+    from autoresearch_gym.external.targets import SshTarget, TargetConfig
+
+    commands: list[str] = []
+
+    def fake_ssh(command: str, timeout: float = 30.0):
+        commands.append(command)
+        return CommandResult(
+            returncode=0,
+            stdout=json.dumps([{"pid": 123, "command": "python -m autoresearch_gym.cli run --tag pass02"}]) + "\n",
+            stderr="",
+        )
+
+    target = SshTarget(
+        TargetConfig(
+            name="windows_gpu",
+            kind="ssh",
+            host="user@example.invalid",
+            remote_root="C:/code/autoresearch author's gym",
+            path_style="windows",
+        )
+    )
+    monkeypatch.setattr(target, "_ssh", fake_ssh)
+
+    with pytest.raises(ValueError, match="at least two match terms"):
+        target.terminate_processes_matching(["pass02"])
+    killed = target.terminate_processes_matching(["autoresearch_gym.cli", "--tag", "pass02"])
+
+    script = _decode_powershell_encoded_command(commands[0])
+    assert killed == [{"pid": 123, "command": "python -m autoresearch_gym.cli run --tag pass02"}]
+    assert "Get-CimInstance Win32_Process" in script
+    assert "Stop-Process -Id $_.ProcessId -Force" in script
+    assert "$terms=@('autoresearch_gym.cli','--tag','pass02')" in script
+
+
+def test_remote_in_process_stale_status_uses_remote_file_age() -> None:
+    from autoresearch_gym.external.in_process import _remote_status_stale_info
+
+    class FakeTarget:
+        def remote_path_info(self, remote_status_file):
+            assert remote_status_file == "C:/session/live/status.log"
+            return {"exists": True, "age_seconds": 901.0, "length": 100}
+
+    stale = _remote_status_stale_info(FakeTarget(), "C:/session/live/status.log", stale_seconds=600.0)
+
+    assert stale is not None
+    assert stale["age_seconds"] == 901.0
+    assert stale["stale_seconds"] == 600.0
+
+
+def test_remote_in_process_localizes_fetched_checkpoint_path(tmp_path) -> None:
+    from autoresearch_gym.external.in_process import _localize_fetched_summary_artifacts
+
+    local_run_dir = tmp_path / "runs" / "run-1"
+    local_run_dir.mkdir(parents=True)
+    checkpoint = local_run_dir / "agent_checkpoint.pt"
+    checkpoint.write_bytes(b"checkpoint")
+    summary = {"artifacts": {"checkpoint_path": r"C:\remote\run-1\agent_checkpoint.pt"}}
+
+    _localize_fetched_summary_artifacts(summary, local_run_dir)
+
+    assert summary["artifacts"]["checkpoint_path"] == str(checkpoint.resolve())
 
 
 def test_remote_in_process_sync_fetches_live_sampled_rollout_refs(tmp_path) -> None:
@@ -492,23 +799,23 @@ def test_ssh_live_sync_merges_policy_probe_records_for_dashboard(tmp_path) -> No
 
 
 def test_unitree_backend_records_curriculum_signal_scalars() -> None:
-    from autoresearch_gym.external.unitree_backend import MJLAB_TRAIN_SCRIPT
+    train_bridge = _mjlab_train_bridge_source()
 
-    assert "CURRICULUM_SIGNAL_KEYS" in MJLAB_TRAIN_SCRIPT
-    assert "episode_reward_track_linear_velocity" in MJLAB_TRAIN_SCRIPT
-    assert "episode_reward_body_orientation_l2" in MJLAB_TRAIN_SCRIPT
-    assert "episode_reward_motion_global_root_pos" in MJLAB_TRAIN_SCRIPT
-    assert "episode_reward_motion_body_ang_vel" in MJLAB_TRAIN_SCRIPT
-    assert "episode_termination_anchor_pos" in MJLAB_TRAIN_SCRIPT
-    assert "metrics_mpkpe" in MJLAB_TRAIN_SCRIPT
-    assert "episode_termination_illegal_contact" in MJLAB_TRAIN_SCRIPT
-    assert "curriculum_terrain_levels" in MJLAB_TRAIN_SCRIPT
-    assert "curriculum_command_stage" in MJLAB_TRAIN_SCRIPT
-    assert '"curriculum_command_lin_vel_x"' in MJLAB_TRAIN_SCRIPT
-    assert "info_metrics[key] = value" in MJLAB_TRAIN_SCRIPT
-    assert "diagnostic_series" in MJLAB_TRAIN_SCRIPT
-    assert "_recipe_diagnostic_series(recipe)" in MJLAB_TRAIN_SCRIPT
-    assert "_diagnostic_series_metadata(records, recipe)" in MJLAB_TRAIN_SCRIPT
+    assert "CURRICULUM_SIGNAL_KEYS" in train_bridge
+    assert "episode_reward_track_linear_velocity" in train_bridge
+    assert "episode_reward_body_orientation_l2" in train_bridge
+    assert "episode_reward_motion_global_root_pos" in train_bridge
+    assert "episode_reward_motion_body_ang_vel" in train_bridge
+    assert "episode_termination_anchor_pos" in train_bridge
+    assert "metrics_mpkpe" in train_bridge
+    assert "episode_termination_illegal_contact" in train_bridge
+    assert "curriculum_terrain_levels" in train_bridge
+    assert "curriculum_command_stage" in train_bridge
+    assert '"curriculum_command_lin_vel_x"' in train_bridge
+    assert "info_metrics[key] = value" in train_bridge
+    assert "diagnostic_series" in train_bridge
+    assert "_recipe_diagnostic_series(recipe)" in train_bridge
+    assert "_diagnostic_series_metadata(records, recipe)" in train_bridge
 
 
 def test_dashboard_diagnostics_are_metadata_driven() -> None:
@@ -523,24 +830,53 @@ def test_dashboard_diagnostics_are_metadata_driven() -> None:
     assert "episode_reward_track_linear_velocity" not in source
 
 
-def test_unitree_mjlab_train_context_probes_run_out_of_process() -> None:
-    from autoresearch_gym.external.unitree_backend import MJLAB_TRAIN_SCRIPT
+def test_dashboard_resolves_absolute_session_local_artifacts(tmp_path) -> None:
+    root = tmp_path / "dashboard-root"
+    root.mkdir()
+    session_dir = tmp_path / "scratch" / "sessions" / "trajectory-smoke"
+    frame_path = session_dir / "live" / "trajectories" / "run" / "episode_000001" / "frame_0000.jpg"
+    frame_path.parent.mkdir(parents=True)
+    frame_path.write_bytes(b"jpeg")
+    (session_dir / "session.json").write_text("{}", encoding="utf-8")
 
-    assert "def _run_train_context_probe_subprocess" in MJLAB_TRAIN_SCRIPT
-    assert "--probe-checkpoint" in MJLAB_TRAIN_SCRIPT
-    assert "if args.probe_checkpoint" in MJLAB_TRAIN_SCRIPT
-    assert "train_script=Path(__file__).resolve()" in MJLAB_TRAIN_SCRIPT
-    assert "_run_train_context_probe_subprocess(" in MJLAB_TRAIN_SCRIPT
-    assert "def _probe_subprocess_env" in MJLAB_TRAIN_SCRIPT
-    assert 'env.setdefault("PYTHONIOENCODING", "utf-8")' in MJLAB_TRAIN_SCRIPT
-    assert "_run_checkpoint_probe(" in MJLAB_TRAIN_SCRIPT
-    assert "policy_probes\" / \"logs" in MJLAB_TRAIN_SCRIPT
-    assert "error=no_rollout" in MJLAB_TRAIN_SCRIPT
-    assert "env_cfg.scene.num_envs = 1 if frame_dir is not None else requested_num_envs" in MJLAB_TRAIN_SCRIPT
-    assert "command_metrics" in MJLAB_TRAIN_SCRIPT
-    assert "get_command(name)" in MJLAB_TRAIN_SCRIPT
-    assert "except PermissionError" in MJLAB_TRAIN_SCRIPT
-    assert "monitor_errors.log" in MJLAB_TRAIN_SCRIPT
+    assert cli.resolve_dashboard_session_dir(root, str(session_dir)) == session_dir.resolve()
+    assert cli.resolve_dashboard_artifact_path(root, str(session_dir), str(frame_path)) == frame_path.resolve()
+
+    outside_path = tmp_path / "outside.jpg"
+    outside_path.write_bytes(b"nope")
+    with pytest.raises(ValueError, match="escapes"):
+        cli.resolve_dashboard_artifact_path(root, str(session_dir), str(outside_path))
+
+
+def test_dashboard_sampled_trajectory_refreshes_when_frame_paths_change() -> None:
+    source = Path("dashboard/index.html").read_text(encoding="utf-8")
+
+    assert "/_autoresearch/artifact" in source
+    assert "cacheBustedUrl(artifactUrl(rawManifestPath))" in source
+    assert "let trajectoryFrameSignature = \"\";" in source
+    assert "const frameSignature = frames.map(normalizeArtifactPath).join(\"\\n\");" in source
+    assert "trajectoryFrameSignature !== frameSignature" in source
+    assert "trajectoryFrameIndex = 0;" in source
+
+
+def test_unitree_mjlab_train_context_probes_run_out_of_process() -> None:
+    train_bridge = _mjlab_train_bridge_source()
+
+    assert "def _run_train_context_probe_subprocess" in train_bridge
+    assert "--probe-checkpoint" in train_bridge
+    assert "if args.probe_checkpoint" in train_bridge
+    assert "train_script=Path(__file__).resolve()" in train_bridge
+    assert "_run_train_context_probe_subprocess(" in train_bridge
+    assert "def _probe_subprocess_env" in train_bridge
+    assert 'env.setdefault("PYTHONIOENCODING", "utf-8")' in train_bridge
+    assert "_run_checkpoint_probe(" in train_bridge
+    assert "policy_probes\" / \"logs" in train_bridge
+    assert "error=no_rollout" in train_bridge
+    assert "env_cfg.scene.num_envs = 1 if frame_dir is not None else requested_num_envs" in train_bridge
+    assert "command_metrics" in train_bridge
+    assert "get_command(name)" in train_bridge
+    assert "except PermissionError" in train_bridge
+    assert "monitor_errors.log" in train_bridge
 
 
 def test_unitree_go2_mjlab_uses_return_primary_without_fabricated_success(tmp_path, monkeypatch) -> None:
@@ -597,19 +933,57 @@ def test_unitree_go2_mjlab_uses_return_primary_without_fabricated_success(tmp_pa
 
 
 def test_unitree_mjlab_train_bridge_compiles_with_recipe_overrides() -> None:
-    from autoresearch_gym.external.unitree_backend import MJLAB_TRAIN_SCRIPT
+    rollout_bridge = _mjlab_rollout_bridge_source()
+    train_bridge = _mjlab_train_bridge_source()
 
-    compile(MJLAB_TRAIN_SCRIPT, "mjlab_train_bridge.py", "exec")
-    assert "--recipe-json" in MJLAB_TRAIN_SCRIPT
-    assert "reward_weights" in MJLAB_TRAIN_SCRIPT
-    assert "curriculum_overrides" in MJLAB_TRAIN_SCRIPT
-    assert "train_result_partial.json" in MJLAB_TRAIN_SCRIPT
-    assert "policy_probe_records.jsonl" in MJLAB_TRAIN_SCRIPT
-    assert "current_run_metrics.json" in MJLAB_TRAIN_SCRIPT
-    assert "--sample-rollout-frame-count" in MJLAB_TRAIN_SCRIPT
-    assert "--sample-trajectory-source" in MJLAB_TRAIN_SCRIPT
-    assert "_run_train_context_sample" in MJLAB_TRAIN_SCRIPT
-    assert "mjlab_live_probe" in MJLAB_TRAIN_SCRIPT
+    compile(rollout_bridge, "mjlab_rollout_bridge.py", "exec")
+    compile(train_bridge, "mjlab_train_bridge.py", "exec")
+    assert "--render-width" in rollout_bridge
+    assert "--render-height" in rollout_bridge
+    assert "_configure_render_resolution" in rollout_bridge
+    assert "_write_frame" in rollout_bridge
+    assert "--recipe-json" in train_bridge
+    assert "reward_weights" in train_bridge
+    assert "curriculum_overrides" in train_bridge
+    assert "train_result_partial.json" in train_bridge
+    assert "policy_probe_records.jsonl" in train_bridge
+    assert "current_run_metrics.json" in train_bridge
+    assert "--sample-rollout-frame-count" in train_bridge
+    assert "--sample-trajectory-source" in train_bridge
+    assert "_run_train_context_sample" in train_bridge
+    assert "mjlab_live_probe" in train_bridge
+    assert "--probe-render-width" in train_bridge
+    assert "--probe-render-height" in train_bridge
+    assert "_configure_render_resolution" in train_bridge
+    assert "_write_frame" in train_bridge
+    assert "def _normalize_dashboard_frame" in train_bridge
+    assert "DASHBOARD_FRAME_WIDTH" in train_bridge
+    assert "DEFAULT_TRAJECTORY_PLAYBACK_FPS" in train_bridge
+
+
+def test_unitree_backend_copies_packaged_mjlab_bridge_files(tmp_path: Path) -> None:
+    from autoresearch_gym.external import unitree_backend
+
+    rollout_path = unitree_backend._write_rollout_script(tmp_path)
+    train_path = unitree_backend._write_train_script(tmp_path)
+
+    assert rollout_path.read_text(encoding="utf-8") == _mjlab_rollout_bridge_source()
+    assert train_path.read_text(encoding="utf-8") == _mjlab_train_bridge_source()
+
+
+def test_unitree_backend_normalizes_media_frames_to_panda_mujoco_size(tmp_path: Path) -> None:
+    from autoresearch_gym.external import unitree_backend
+
+    frame_path = tmp_path / "frame.jpg"
+    Image.fromarray(np.full((12, 16, 3), 96, dtype=np.uint8)).save(frame_path)
+
+    normalized = unitree_backend._normalize_dashboard_frame(frame_path)
+
+    assert normalized == frame_path
+    with Image.open(frame_path) as image:
+        assert image.size == (unitree_backend.DASHBOARD_FRAME_WIDTH, unitree_backend.DASHBOARD_FRAME_HEIGHT)
+    assert unitree_backend.DASHBOARD_FRAME_WIDTH == 720
+    assert unitree_backend.DASHBOARD_FRAME_HEIGHT == 480
 
 
 def _literal_eval_with_module_constants(node: ast.AST, constants: dict[str, object]) -> object:
@@ -916,6 +1290,23 @@ def test_seed_artifact_smoke_cases_cover_every_bundled_seed_trainable() -> None:
         assert Path(case.benchmark).exists(), f"{case.name} benchmark is missing"
 
 
+def test_inverted_pendulum_smoke_does_not_use_kinematic_visual_fallback(monkeypatch) -> None:
+    from scripts import smoke_seed_artifacts
+
+    runner_source = Path("autoresearch_gym/runner/experiment.py").read_text(encoding="utf-8")
+    case = next(case for case in smoke_seed_artifacts.SEED_CASES if case.name == "inverted-pendulum")
+
+    assert "render_mujoco_kinematic_frame" not in runner_source
+    assert "MUJOCO_KINEMATIC_RENDER_ENV_IDS" not in runner_source
+
+    monkeypatch.setattr(smoke_seed_artifacts.sys, "platform", "darwin")
+    monkeypatch.delenv("AUTORESEARCH_SMOKE_VISUALS", raising=False)
+    assert smoke_seed_artifacts.visual_artifact_smoke_enabled(case) is False
+
+    monkeypatch.setenv("AUTORESEARCH_SMOKE_VISUALS", "1")
+    assert smoke_seed_artifacts.visual_artifact_smoke_enabled(case) is True
+
+
 def test_panda_mjwarp_vectorized_seed_answers_sampled_trajectory_requests(tmp_path: Path) -> None:
     torch = pytest.importorskip("torch")
     from autoresearch_gym.tasks.panda_pick_and_place_mjwarp_v0 import seed_trainable
@@ -1053,7 +1444,7 @@ def test_panda_mjwarp_render_policy_frame_falls_back_after_width_typeerror() -> 
     assert frame is not None
     assert frame.shape == (5, 6, 3)
     assert frame.dtype == np.uint8
-    assert env.unwrapped.calls == [{"width": 480, "height": 360}, {}]
+    assert env.unwrapped.calls == [{"width": 720, "height": 480}, {}]
 
 
 def test_ssh_target_sync_live_mirrors_remote_dashboard_metrics(tmp_path, monkeypatch) -> None:
@@ -1239,12 +1630,133 @@ def test_ssh_target_fetch_artifacts_uses_single_remote_archive(tmp_path, monkeyp
     assert [call[0] for call in calls] == ["ssh", "tar"]
 
 
-def test_unitree_lower_level_cleanrl_seed_trains_evals_and_renders(tmp_path) -> None:
+def test_ssh_target_windows_fetch_artifacts_skips_archive_first(tmp_path, monkeypatch) -> None:
+    from autoresearch_gym.external.targets import SshTarget, TargetConfig
+
+    archive_calls: list[str] = []
+    file_calls: list[str] = []
+    dir_calls: list[str] = []
+    target = SshTarget(
+        TargetConfig(
+            name="pytest-windows-ssh",
+            kind="ssh",
+            host="example.invalid",
+            remote_root="C:/code/autoresearch gym",
+            path_style="windows",
+        )
+    )
+
+    def fake_archive(remote_dir, local_dir, *, timeout):
+        archive_calls.append(remote_dir)
+        return True
+
+    def fake_file(remote_file, local_file, **kwargs):
+        file_calls.append(remote_file)
+        return True
+
+    def fake_dir(remote_dir, local_dir, **kwargs):
+        dir_calls.append(remote_dir)
+        return True
+
+    monkeypatch.setattr(target, "_fetch_remote_dir_archive", fake_archive)
+    monkeypatch.setattr(target, "_scp_remote_file", fake_file)
+    monkeypatch.setattr(target, "_scp_remote_dir_contents", fake_dir)
+    monkeypatch.setattr(target, "_merge_live_policy_probe_records", lambda bundle: None)
+    monkeypatch.setattr(target, "_localize_live_artifacts", lambda bundle: None)
+    bundle = types.SimpleNamespace(run_id="run-1", external_dir=tmp_path / "local_external", session_dir=None)
+
+    target.fetch_artifacts(bundle)
+
+    assert archive_calls == []
+    assert any(path.endswith("train_result.json") for path in file_calls)
+    assert any(path.endswith("live") for path in dir_calls)
+
+
+def test_fetch_remote_session_final_artifacts_fetches_critical_files_before_optional(tmp_path) -> None:
+    from autoresearch_gym.external import remote_session
+
+    calls: list[tuple[str, str]] = []
+
+    class FakeTarget:
+        config = types.SimpleNamespace(path_style="windows")
+
+        def remote_join(self, *parts):
+            return "\\".join(str(part).strip("\\/") for part in parts if str(part))
+
+        def fetch_remote_file(self, remote_file, local_file, *, timeout=30.0):
+            calls.append(("file", remote_file))
+            Path(local_file).parent.mkdir(parents=True, exist_ok=True)
+            filename = remote_file.replace("\\", "/").rsplit("/", 1)[-1]
+            if filename in remote_session.FINAL_CRITICAL_RUN_FILES:
+                Path(local_file).write_text("{}", encoding="utf-8")
+            return not remote_file.endswith("agent_checkpoint.pt")
+
+        def fetch_remote_dir_contents(self, remote_dir, local_dir, *, timeout=60.0):
+            calls.append(("dir", remote_dir))
+            Path(local_dir).mkdir(parents=True, exist_ok=True)
+            return False
+
+        def fetch_remote_dir_archive(self, remote_dir, local_dir, *, timeout=60.0):
+            calls.append(("archive", remote_dir))
+            return False
+
+    local_run = remote_session.fetch_remote_session_final_artifacts(
+        FakeTarget(),
+        remote_session=None,
+        session_dir=None,
+        remote_out_dir="C:/remote/out",
+        out_dir=tmp_path / "runs",
+        run_id="run-1",
+    )
+
+    first_calls = calls[: len(remote_session.FINAL_CRITICAL_RUN_FILES)]
+    assert local_run == tmp_path / "runs" / "run-1"
+    assert [kind for kind, _ in first_calls] == ["file"] * len(remote_session.FINAL_CRITICAL_RUN_FILES)
+    assert [path.replace("\\", "/").rsplit("/", 1)[-1] for _, path in first_calls] == list(
+        remote_session.FINAL_CRITICAL_RUN_FILES
+    )
+    assert not any(kind == "archive" for kind, _ in calls)
+    assert any(path.endswith("agent_checkpoint.pt") for kind, path in calls if kind == "file")
+
+
+def test_fetch_remote_session_final_artifacts_raises_when_critical_files_missing(tmp_path) -> None:
+    from autoresearch_gym.external import remote_session
+
+    class FakeTarget:
+        config = types.SimpleNamespace(path_style="windows")
+
+        def remote_join(self, *parts):
+            return "\\".join(str(part).strip("\\/") for part in parts if str(part))
+
+        def fetch_remote_file(self, remote_file, local_file, *, timeout=30.0):
+            return False
+
+        def fetch_remote_dir_contents(self, remote_dir, local_dir, *, timeout=60.0):
+            Path(local_dir).mkdir(parents=True, exist_ok=True)
+            return False
+
+        def fetch_remote_dir_archive(self, remote_dir, local_dir, *, timeout=60.0):
+            return False
+
+    with pytest.raises(RuntimeError, match="final artifacts are incomplete"):
+        remote_session.fetch_remote_session_final_artifacts(
+            FakeTarget(),
+            remote_session=None,
+            session_dir=None,
+            remote_out_dir="C:/remote/out",
+            out_dir=tmp_path / "runs",
+            run_id="run-1",
+        )
+
+
+def test_unitree_lower_level_cleanrl_seed_trains_evals_and_reports_missing_renderer(tmp_path) -> None:
     from autoresearch_gym.external.cleanrl_backend import CleanRlExternalBackend
     from autoresearch_gym.tasks.unitree_g1_motion_mirror_v0 import seed_trainable_lower_level_cleanrl as g1_seed
     from autoresearch_gym.tasks.unitree_go2_rough_locomotion_v0 import seed_trainable_lower_level_cleanrl as go2_seed
 
     assert CleanRlExternalBackend().normalize_media(ArtifactSet(root=tmp_path)) == {"media_available": False}
+    assert (g1_seed.RENDER_WIDTH, g1_seed.RENDER_HEIGHT) == (720, 480)
+    assert (go2_seed.RENDER_WIDTH, go2_seed.RENDER_HEIGHT) == (720, 480)
     g1_benchmark = types.SimpleNamespace(
         env_kwargs={"render_mode": "rgb_array", "num_envs": 2, "steps_per_env_per_iteration": 4},
         train_episodes=1,
@@ -1277,8 +1789,8 @@ def test_unitree_lower_level_cleanrl_seed_trains_evals_and_renders(tmp_path) -> 
     g1_env.close()
     assert g1_seed.evaluate_agent(agent, g1_benchmark)["episodes"] == 1
     media = g1_seed.render_policy(agent, g1_benchmark, tmp_path / "g1-media")
-    assert media["media_available"] is True
-    assert Path(media["live_frame_path"]).exists()
+    assert media["media_available"] is False
+    assert media["visual"]["disabled_reason"] == "real_unitree_renderer_unavailable"
 
     go2_benchmark = types.SimpleNamespace(env_kwargs={"render_mode": "rgb_array"}, max_steps=8)
     go2_env = go2_seed.make_external_env(go2_benchmark)
@@ -1287,7 +1799,11 @@ def test_unitree_lower_level_cleanrl_seed_trains_evals_and_renders(tmp_path) -> 
     assert obs.shape == go2_env.observation_space.shape
     assert isinstance(float(reward), float)
     assert "command_tracking_error" in info
-    assert go2_env.render().ndim == 3
+    frame = go2_env.render()
+    if getattr(go2_env.unwrapped, "model", None) is None:
+        assert frame is None
+    else:
+        assert frame.ndim == 3
     assert terminated in {True, False}
     assert truncated in {True, False}
     go2_agent = go2_seed.Agent(int(go2_env.observation_space.shape[0]), int(go2_env.action_space.shape[0]))
@@ -1484,20 +2000,6 @@ def test_headless_env_override_keeps_panda_pybullet_render_mode() -> None:
     assert benchmark.env_kwargs["renderer"] == "Tiny"
 
 
-def test_inverted_pendulum_kinematic_render_fallback_uses_mujoco_state() -> None:
-    fake_env = types.SimpleNamespace(
-        spec=types.SimpleNamespace(id="InvertedPendulum-v5"),
-        data=types.SimpleNamespace(qpos=np.asarray([0.25, 0.15], dtype=np.float64)),
-    )
-
-    frame = render_mujoco_kinematic_frame(fake_env, height=180, width=240)
-
-    assert frame is not None
-    assert frame.shape == (180, 240, 3)
-    assert frame.dtype == np.uint8
-    assert np.unique(frame.reshape(-1, 3), axis=0).shape[0] > 3
-
-
 def test_compact_status_writer_uses_stderr(capsys: pytest.CaptureFixture[str]) -> None:
     writer = make_compact_status_writer(10.0)
 
@@ -1664,6 +2166,12 @@ def test_unitree_dry_run_live_metrics_preserve_candidate_description(tmp_path) -
 
     payload = json.loads((session_dir / "live" / "current_run_metrics.json").read_text(encoding="utf-8"))
     assert payload["run"]["candidate"]["description"] == "unitree candidate"
+    assert payload["visual"]["mode"] == "off"
+    assert payload["visual"]["disabled_reason"] == "unitree_dry_run_has_no_real_renderer"
+    assert not (session_dir / "live" / "current_run_frame.jpg").exists()
+    assert not (session_dir / "live" / "trajectories").exists()
+    media = json.loads((tmp_path / "external" / "media_result.json").read_text(encoding="utf-8"))
+    assert media["media_available"] is False
 
 
 def test_live_writer_keeps_full_episode_history(tmp_path) -> None:
@@ -2439,6 +2947,11 @@ def test_run_parser_accepts_headless_and_compact_status_flags() -> None:
             "--probe-episodes",
             "2",
             "--no-train-probe",
+            "--dashboard-port",
+            "4180",
+            "--dashboard-port-end",
+            "4190",
+            "--allow-remote-drift",
         ]
     )
 
@@ -2449,6 +2962,583 @@ def test_run_parser_accepts_headless_and_compact_status_flags() -> None:
     assert args.probe_interval_seconds == 3.5
     assert args.probe_episodes == 2
     assert args.no_train_probe is True
+    assert args.dashboard is True
+    assert args.dashboard_port == 4180
+    assert args.dashboard_port_end == 4190
+    assert args.allow_remote_drift is True
+
+
+def test_run_parser_accepts_no_dashboard_opt_out() -> None:
+    args = parse_args(["--candidate", "candidate.py", "--no-dashboard"])
+
+    assert args.dashboard is False
+
+
+def test_run_parser_rejects_removed_dashboard_alias() -> None:
+    with pytest.raises(SystemExit):
+        parse_args(["--candidate", "candidate.py", "--dashboard"])
+
+
+def test_init_session_dashboard_is_default_and_has_no_dashboard_opt_out() -> None:
+    parser = cli.build_parser()
+
+    default_args = parser.parse_args(["init-session", "--label", "dashboard-default"])
+    opt_out_args = parser.parse_args(["init-session", "--label", "dashboard-off", "--no-dashboard"])
+
+    assert default_args.dashboard is True
+    assert opt_out_args.dashboard is False
+    with pytest.raises(SystemExit):
+        parser.parse_args(["init-session", "--label", "dashboard-alias", "--dashboard"])
+
+
+def test_init_session_writes_doctor_report(tmp_path, monkeypatch, capsys) -> None:
+    benchmark = tmp_path / "benchmark.json"
+    seed_candidate = tmp_path / "seed_trainable.py"
+    benchmark.write_text(
+        json.dumps(
+            {
+                "name": "doctor-test",
+                "device": "external",
+                "execution_backend": {
+                    "kind": "external",
+                    "required_paths": [".external/unitree_rl_mjlab"],
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    seed_candidate.write_text("def get_candidate():\n    return {}\n", encoding="utf-8")
+    calls: list[dict[str, object]] = []
+
+    def fake_doctor(*args, **kwargs):
+        calls.append({"args": args, "kwargs": kwargs})
+        return {"ok": False, "checks": [{"name": "required_path:.external/unitree_rl_mjlab", "status": "fail"}]}
+
+    monkeypatch.setattr(cli, "run_session_doctor", fake_doctor)
+    args = argparse.Namespace(
+        label="doctor init",
+        benchmark=benchmark,
+        seed_candidate=seed_candidate,
+        base_dir=tmp_path / "runs",
+        search_mode="linear",
+        execution_target="windows_gpu",
+        target_config=tmp_path / "targets.toml",
+        skip_doctor=False,
+        strict_doctor=False,
+        doctor_timeout=12.0,
+        dashboard=False,
+        dashboard_host="127.0.0.1",
+        dashboard_port=4174,
+        dashboard_port_end=4199,
+        dashboard_ready_timeout=0.01,
+    )
+
+    status = cli.cmd_init_session(args)
+    payload = json.loads(capsys.readouterr().out)
+    session_dir = Path(payload["session_dir"])
+    doctor_path = session_dir / "doctor.json"
+    session_meta = json.loads((session_dir / "session.json").read_text(encoding="utf-8"))
+
+    assert status == 0
+    assert payload["doctor"]["ok"] is False
+    assert doctor_path.exists()
+    assert json.loads(doctor_path.read_text(encoding="utf-8"))["ok"] is False
+    assert session_meta["doctor_ok"] is False
+    assert session_meta["doctor_path"] == str(doctor_path)
+    assert calls[0]["args"] == (benchmark,)
+    assert calls[0]["kwargs"]["execution_target"] == "windows_gpu"
+    assert calls[0]["kwargs"]["target_config_path"] == tmp_path / "targets.toml"
+    assert calls[0]["kwargs"]["timeout"] == 12.0
+
+
+def test_init_session_strict_doctor_returns_nonzero(tmp_path, monkeypatch, capsys) -> None:
+    benchmark = tmp_path / "benchmark.json"
+    seed_candidate = tmp_path / "seed_trainable.py"
+    benchmark.write_text(json.dumps({"name": "strict-doctor"}), encoding="utf-8")
+    seed_candidate.write_text("def get_candidate():\n    return {}\n", encoding="utf-8")
+    monkeypatch.setattr(cli, "run_session_doctor", lambda *args, **kwargs: {"ok": False, "checks": []})
+
+    args = argparse.Namespace(
+        label="strict doctor",
+        benchmark=benchmark,
+        seed_candidate=seed_candidate,
+        base_dir=tmp_path / "runs",
+        search_mode="linear",
+        execution_target=None,
+        target_config=None,
+        skip_doctor=False,
+        strict_doctor=True,
+        doctor_timeout=12.0,
+        dashboard=False,
+        dashboard_host="127.0.0.1",
+        dashboard_port=4174,
+        dashboard_port_end=4199,
+        dashboard_ready_timeout=0.01,
+    )
+
+    status = cli.cmd_init_session(args)
+    payload = json.loads(capsys.readouterr().out)
+
+    assert status == 1
+    assert Path(payload["session_dir"], "doctor.json").exists()
+
+
+def test_dashboard_url_uses_localhost_for_wildcard_host() -> None:
+    from autoresearch_gym.runner.dashboard_server import dashboard_url
+
+    assert (
+        dashboard_url("0.0.0.0", 4174, "autoresearch_runs/sessions/example session")
+        == "http://127.0.0.1:4174/dashboard/?session=autoresearch_runs/sessions/example%20session"
+    )
+
+
+def test_session_dashboard_ensure_reuses_ready_pointer(tmp_path, monkeypatch) -> None:
+    from autoresearch_gym.runner import dashboard_server
+
+    session_dir = tmp_path / "autoresearch_runs" / "sessions" / "example"
+    pointer = {
+        "url": "http://127.0.0.1:4174/dashboard/?session=autoresearch_runs/sessions/example",
+        "ready": True,
+        "pid": 123,
+        "managed_by": dashboard_server.DASHBOARD_MANAGER,
+    }
+    dashboard_server.write_dashboard_pointer(session_dir, pointer)
+    monkeypatch.setattr(dashboard_server, "wait_for_dashboard", lambda url, *, timeout_seconds=1.0: True)
+
+    payload = dashboard_server.ensure_session_dashboard(
+        session_dir,
+        host="127.0.0.1",
+        port=4174,
+        port_end=4199,
+        root=tmp_path,
+    )
+
+    assert payload["reused"] is True
+    assert payload["pid"] == 123
+    assert dashboard_server.read_dashboard_pointer(session_dir)["reused"] is True
+
+
+def test_session_dashboard_teardown_only_kills_managed_pointer(tmp_path, monkeypatch) -> None:
+    from autoresearch_gym.runner import dashboard_server
+
+    session_dir = tmp_path / "autoresearch_runs" / "sessions" / "example"
+    dashboard_server.write_dashboard_pointer(session_dir, {"pid": 123, "managed_by": "someone_else"})
+    kill_calls: list[tuple[int, int]] = []
+    monkeypatch.setattr(dashboard_server.os, "kill", lambda pid, sig: kill_calls.append((pid, sig)))
+
+    unmanaged = dashboard_server.terminate_session_dashboard(session_dir)
+
+    assert unmanaged["ok"] is False
+    assert unmanaged["reason"] == "unmanaged_pointer"
+    assert kill_calls == []
+
+    dashboard_server.write_dashboard_pointer(
+        session_dir,
+        {"pid": 456, "managed_by": dashboard_server.DASHBOARD_MANAGER, "url": "http://127.0.0.1:4174/dashboard/"},
+    )
+    alive = {"value": True}
+
+    def fake_is_alive(pid):
+        return bool(alive["value"])
+
+    def fake_kill(pid, sig):
+        kill_calls.append((pid, sig))
+        alive["value"] = False
+
+    monkeypatch.setattr(dashboard_server, "is_process_alive", fake_is_alive)
+    monkeypatch.setattr(dashboard_server.os, "kill", fake_kill)
+
+    managed = dashboard_server.terminate_session_dashboard(session_dir)
+
+    assert managed["ok"] is True
+    assert managed["action"] == "terminated"
+    assert kill_calls == [(456, dashboard_server.signal.SIGTERM)]
+    assert dashboard_server.read_dashboard_pointer(session_dir)["stopped"] is True
+
+
+def test_remote_session_pass_wrapper_adds_dashboard_and_status_defaults(tmp_path) -> None:
+    script_path = Path(__file__).resolve().parents[1] / "scripts" / "run_session_remote_pass.py"
+    spec = importlib.util.spec_from_file_location("run_session_remote_pass", script_path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    session_dir = tmp_path / "autoresearch_runs" / "sessions" / "example"
+    candidate = session_dir / "candidates" / "pass02_test.py"
+    candidate.parent.mkdir(parents=True)
+    candidate.write_text("def get_candidate():\n    return {}\n", encoding="utf-8")
+
+    module.validate_session_candidate(session_dir, candidate)
+    args = argparse.Namespace(
+        session_dir=session_dir,
+        candidate=candidate,
+        execution_target="personal_windows_gpu",
+        target_config=Path(".autoresearch.local.toml"),
+        no_compact_status=False,
+        no_dashboard=False,
+        dashboard_host="127.0.0.1",
+        dashboard_port=4174,
+        dashboard_port_end=4199,
+        disable_train_probes=True,
+        allow_remote_drift=False,
+    )
+
+    run_args = module.build_run_args(args, ["--benchmark", "benchmark.json", "--tag", "pass02-test"])
+
+    assert "--compact-status" in run_args
+    assert run_args[run_args.index("--compact-status-file") + 1] == str(session_dir / "live" / "status.log")
+    assert "--dashboard" not in run_args
+    assert "--no-dashboard" not in run_args
+    assert "--dashboard-host" in run_args
+    assert run_args[run_args.index("--execution-target") + 1] == "personal_windows_gpu"
+    assert "--no-train-probe" in run_args
+
+    args.no_dashboard = True
+    opt_out_args = module.build_run_args(args, ["--benchmark", "benchmark.json", "--tag", "pass02-test"])
+    assert "--no-dashboard" in opt_out_args
+    assert "--dashboard-host" not in opt_out_args
+
+
+def test_launch_autoresearch_pass_writes_agent_prerun_log(tmp_path) -> None:
+    script_dir = Path(__file__).resolve().parents[1] / "scripts"
+    script_path = script_dir / "launch_autoresearch_pass.py"
+    sys.path.insert(0, str(script_dir))
+    try:
+        spec = importlib.util.spec_from_file_location("launch_autoresearch_pass", script_path)
+        assert spec is not None and spec.loader is not None
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+    finally:
+        sys.path.remove(str(script_dir))
+
+    session_dir = tmp_path / "autoresearch_runs" / "sessions" / "example"
+    candidate = session_dir / "candidates" / "pass03_contact_replay.py"
+    candidate.parent.mkdir(parents=True)
+    candidate.write_text("def get_candidate():\n    return {}\n", encoding="utf-8")
+    args = argparse.Namespace(
+        session_dir=session_dir,
+        candidate=candidate,
+        execution_target=None,
+        hypothesis="Contact-heavy replay should increase object motion.",
+        mutation_summary="Increase replay sampling weight for contact windows.",
+        expected_diagnostics="near_cube and lifted_ever should improve together.",
+        success_criteria=None,
+        next_planned_mutation="Keep if fixed eval lift improves.",
+    )
+
+    module.append_agent_prerun_log(
+        args,
+        [
+            "--benchmark",
+            "benchmark.json",
+            "--seed-candidate",
+            "seed_trainable.py",
+            "--tag",
+            "pass03-contact-replay",
+            "--mutation-family",
+            "replay",
+        ],
+    )
+    module.append_agent_prerun_log(
+        args,
+        [
+            "--benchmark",
+            "benchmark.json",
+            "--seed-candidate",
+            "seed_trainable.py",
+            "--tag",
+            "pass03-contact-replay",
+            "--mutation-family",
+            "replay",
+        ],
+    )
+
+    log = (session_dir / "outer_loop_log.md").read_text(encoding="utf-8")
+    assert "## pass03-contact-replay pre-run plan" in log
+    assert log.count("## pass03-contact-replay pre-run plan") == 1
+    assert "- authored_by: agent" in log
+    assert "Contact-heavy replay should increase object motion." in log
+    assert "Increase replay sampling weight for contact windows." in log
+    assert "near_cube and lifted_ever should improve together." in log
+
+
+def test_session_run_no_dashboard_preserves_existing_dashboard_pointer(tmp_path) -> None:
+    from autoresearch_gym.runner import session_run
+
+    session_dir = tmp_path / "autoresearch_runs" / "sessions" / "example"
+    live_dir = session_dir / "live"
+    live_dir.mkdir(parents=True)
+    (live_dir / "dashboard.json").write_text(
+        json.dumps({"url": "http://127.0.0.1:4174/dashboard/?session=stale", "ready": True}),
+        encoding="utf-8",
+    )
+    args = argparse.Namespace(dashboard=False)
+
+    payload = session_run.start_dashboard(args, session_dir)
+
+    assert payload == {"url": "http://127.0.0.1:4174/dashboard/?session=stale", "ready": True}
+    written = json.loads((live_dir / "dashboard.json").read_text(encoding="utf-8"))
+    assert written == payload
+
+
+def test_session_run_dashboard_ensures_session_dashboard(tmp_path, monkeypatch) -> None:
+    from autoresearch_gym.runner import session_run
+
+    calls: list[dict[str, object]] = []
+
+    def fake_ensure(session_dir, **kwargs):
+        calls.append({"session_dir": session_dir, **kwargs})
+        return {
+            "url": "http://127.0.0.1:4174/dashboard/?session=example",
+            "ready": True,
+            "reused": True,
+            "log_path": str(session_dir / "live" / "dashboard.log"),
+        }
+
+    monkeypatch.setattr(session_run, "ensure_session_dashboard", fake_ensure)
+    session_dir = tmp_path / "autoresearch_runs" / "sessions" / "example"
+    args = argparse.Namespace(
+        dashboard=True,
+        dashboard_host="127.0.0.1",
+        dashboard_port=4174,
+        dashboard_port_end=4199,
+        dashboard_ready_timeout=2.0,
+    )
+
+    payload = session_run.start_dashboard(args, session_dir)
+
+    assert payload["reused"] is True
+    assert calls == [
+        {
+            "session_dir": session_dir,
+            "host": "127.0.0.1",
+            "port": 4174,
+            "port_end": 4199,
+            "root": Path.cwd(),
+            "ready_timeout": 2.0,
+        }
+    ]
+
+
+def test_launch_autoresearch_pass_builds_fragile_remote_defaults(tmp_path) -> None:
+    script_dir = Path(__file__).resolve().parents[1] / "scripts"
+    script_path = script_dir / "launch_autoresearch_pass.py"
+    sys.path.insert(0, str(script_dir))
+    try:
+        spec = importlib.util.spec_from_file_location("launch_autoresearch_pass_defaults", script_path)
+        assert spec is not None and spec.loader is not None
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+    finally:
+        sys.path.remove(str(script_dir))
+
+    session_dir = tmp_path / "autoresearch_runs" / "sessions" / "example"
+    candidate = session_dir / "candidates" / "pass04_remote.py"
+    args = argparse.Namespace(
+        session_dir=session_dir,
+        candidate=candidate,
+        execution_target="personal_windows_gpu",
+        target_config=None,
+        no_compact_status=False,
+        no_dashboard=False,
+        dashboard_host="127.0.0.1",
+        dashboard_port=4174,
+        dashboard_port_end=4199,
+        disable_train_probes=False,
+        profile="fragile-remote",
+        allow_remote_drift=True,
+    )
+
+    run_args = module.build_run_args(args, ["--benchmark", "benchmark.json", "--tag", "pass04-remote"])
+
+    assert run_args[run_args.index("--execution-target") + 1] == "personal_windows_gpu"
+    assert "--compact-status" in run_args
+    assert "--dashboard" not in run_args
+    assert "--no-dashboard" not in run_args
+    assert "--dashboard-host" in run_args
+    assert "--no-train-probe" in run_args
+    assert "--allow-remote-drift" in run_args
+
+    args.no_dashboard = True
+    opt_out_args = module.build_run_args(args, ["--benchmark", "benchmark.json", "--tag", "pass04-remote"])
+    assert "--no-dashboard" in opt_out_args
+    assert "--dashboard-host" not in opt_out_args
+
+
+def test_launch_autoresearch_pass_does_not_import_remote_script() -> None:
+    source = (Path(__file__).resolve().parents[1] / "scripts" / "launch_autoresearch_pass.py").read_text(
+        encoding="utf-8"
+    )
+
+    assert "run_session_remote_pass" not in source
+
+
+def test_remote_environment_verification_compares_git_and_lock_hashes(monkeypatch) -> None:
+    from autoresearch_gym.external import remote_session
+
+    local = {
+        "repo_root": str(Path.cwd()),
+        "git_head": "local-head",
+        "dirty_paths": ["?? autoresearch_runs/sessions/example/candidates/pass02.py"],
+        "lock_hashes": {"pyproject.toml": "pyproject-hash", "uv.lock": "uv-hash"},
+    }
+
+    class FakeTarget:
+        config = types.SimpleNamespace(kind="ssh")
+
+    monkeypatch.setattr(remote_session, "load_ssh_target", lambda *args, **kwargs: FakeTarget())
+    monkeypatch.setattr(remote_session, "local_environment_fingerprint", lambda repo_root: local)
+    monkeypatch.setattr(
+        remote_session,
+        "remote_environment_fingerprint",
+        lambda target: {
+            "git_head": "local-head",
+            "dirty_paths": [],
+            "python_version": "3.10.test",
+            "lock_hashes": dict(local["lock_hashes"]),
+        },
+    )
+
+    status = remote_session.verify_remote_environment("pytest-target", repo_root=Path.cwd())
+
+    assert status["ok"] is True
+    assert {check["name"] for check in status["checks"]} == {
+        "git_head",
+        "pyproject_hash",
+        "uv_lock_hash",
+        "local_environment_clean",
+        "remote_environment_clean",
+    }
+
+    monkeypatch.setattr(
+        remote_session,
+        "remote_environment_fingerprint",
+        lambda target: {
+            "git_head": "different",
+            "dirty_paths": [],
+            "python_version": "3.10.test",
+            "lock_hashes": dict(local["lock_hashes"]),
+        },
+    )
+
+    with pytest.raises(RuntimeError, match="remote environment differs"):
+        remote_session.verify_remote_environment("pytest-target", repo_root=Path.cwd())
+
+
+def test_remote_environment_verification_blocks_dirty_package_paths(monkeypatch) -> None:
+    from autoresearch_gym.external import remote_session
+
+    local = {
+        "repo_root": str(Path.cwd()),
+        "git_head": "same-head",
+        "dirty_paths": [" M autoresearch_gym/external/remote_session.py"],
+        "lock_hashes": {"pyproject.toml": "pyproject-hash", "uv.lock": "uv-hash"},
+    }
+
+    class FakeTarget:
+        config = types.SimpleNamespace(kind="ssh")
+
+    monkeypatch.setattr(remote_session, "load_ssh_target", lambda *args, **kwargs: FakeTarget())
+    monkeypatch.setattr(remote_session, "local_environment_fingerprint", lambda repo_root: local)
+    monkeypatch.setattr(
+        remote_session,
+        "remote_environment_fingerprint",
+        lambda target: {
+            "git_head": "same-head",
+            "dirty_paths": [],
+            "python_version": "3.10.test",
+            "lock_hashes": dict(local["lock_hashes"]),
+        },
+    )
+
+    with pytest.raises(RuntimeError, match="local_environment_clean"):
+        remote_session.verify_remote_environment("pytest-target", repo_root=Path.cwd())
+
+    status = remote_session.verify_remote_environment("pytest-target", repo_root=Path.cwd(), allow_remote_drift=True)
+    assert status["ok"] is False
+    failed = [check for check in status["checks"] if not check["ok"]]
+    assert failed[0]["dirty_paths"] == ["autoresearch_gym/external/remote_session.py"]
+
+
+def test_remote_in_process_sync_delegates_to_shared_remote_session(monkeypatch, tmp_path) -> None:
+    from autoresearch_gym.external import in_process
+
+    calls: list[tuple[object, str, Path | None]] = []
+
+    def fake_sync(target, remote_session, session_dir):
+        calls.append((target, remote_session, session_dir))
+
+    monkeypatch.setattr(in_process, "sync_remote_session_live", fake_sync)
+    target = object()
+    session_dir = tmp_path / "session"
+
+    in_process._sync_remote_session(target, "C:/repo/autoresearch_runs/sessions/example", session_dir)
+
+    assert calls == [(target, "C:/repo/autoresearch_runs/sessions/example", session_dir)]
+
+
+def test_pre_commit_affected_plan_selects_exact_seed_case() -> None:
+    script_dir = Path(__file__).resolve().parents[1] / "scripts"
+    script_path = script_dir / "pre_commit_checks.py"
+    sys.path.insert(0, str(script_dir))
+    try:
+        spec = importlib.util.spec_from_file_location("pre_commit_checks", script_path)
+        assert spec is not None and spec.loader is not None
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+    finally:
+        sys.path.remove(str(script_dir))
+
+    path = Path("autoresearch_gym/tasks/panda_pick_and_place_mjwarp_pandagym_dense_v0/seed_trainable_guided_warmup.py")
+    commands = module.affected_plan([path], "python", 12.0, Path.cwd())
+    flattened = [" ".join(cmd) for _, cmd in commands]
+
+    assert any("py_compile" in command and "seed_trainable_guided_warmup.py" in command for command in flattened)
+    assert any("--case panda-mjwarp-pandagym-dense-guided-warmup" in command for command in flattened)
+    assert not any("--case panda-mjwarp-pandagym-dense " in f"{command} " for command in flattened)
+
+
+def test_pre_commit_affected_plan_skips_docs_only() -> None:
+    script_dir = Path(__file__).resolve().parents[1] / "scripts"
+    script_path = script_dir / "pre_commit_checks.py"
+    sys.path.insert(0, str(script_dir))
+    try:
+        spec = importlib.util.spec_from_file_location("pre_commit_checks_docs", script_path)
+        assert spec is not None and spec.loader is not None
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+    finally:
+        sys.path.remove(str(script_dir))
+
+    assert module.affected_plan([Path("AUTORESEARCH.md"), Path("docs/example.md")], "python", 12.0, Path.cwd()) == []
+
+
+def test_pre_commit_affected_plan_uses_changed_test_names() -> None:
+    script_dir = Path(__file__).resolve().parents[1] / "scripts"
+    script_path = script_dir / "pre_commit_checks.py"
+    sys.path.insert(0, str(script_dir))
+    try:
+        spec = importlib.util.spec_from_file_location("pre_commit_checks_tests", script_path)
+        assert spec is not None and spec.loader is not None
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+    finally:
+        sys.path.remove(str(script_dir))
+
+    commands = module.affected_plan(
+        [Path("tests/test_smoke.py")],
+        "python",
+        12.0,
+        Path.cwd(),
+        {"test_new_contract"},
+    )
+
+    assert commands == [
+        (
+            "affected unit smoke tests",
+            ["python", "-m", "pytest", "tests/test_smoke.py", "-k", "test_new_contract"],
+        )
+    ]
 
 
 def test_live_session_pointer_records_unresolved_latest_alias(tmp_path, monkeypatch) -> None:
@@ -3199,6 +4289,27 @@ def test_mujoco_pandagym_dense_guided_warmup_seed_exposes_scripted_controller() 
     assert target[1, :2].tolist() == pytest.approx(obs[1, 3:5].tolist())
     assert target[1, 2] == pytest.approx(seed_trainable_guided_warmup.SCRIPTED_CONFIG["grasp_z"])
     assert gripper.tolist() == pytest.approx([-1.0, 1.0])
+
+
+def test_mujoco_pandagym_dense_guided_warmup_reward_biases_lift_over_push() -> None:
+    from autoresearch_gym.tasks.panda_pick_and_place_mjwarp_pandagym_dense_v0 import seed_trainable_guided_warmup
+
+    obs = np.zeros((2, 43), dtype=np.float32)
+    obs[0, 0:3] = np.asarray([0.0, 0.0, 0.02], dtype=np.float32)
+    obs[0, 3:6] = np.asarray([0.0, 0.0, 0.02], dtype=np.float32)
+    obs[0, 6:9] = np.asarray([0.0, 0.0, 0.02], dtype=np.float32)
+    obs[1, 0:3] = np.asarray([0.0, 0.0, 0.08], dtype=np.float32)
+    obs[1, 3:6] = np.asarray([0.0, 0.0, 0.08], dtype=np.float32)
+    obs[1, 6:9] = np.asarray([0.0, 0.0, 0.08], dtype=np.float32)
+
+    reward = seed_trainable_guided_warmup._goal_reward(obs, lifted_ever=np.asarray([False, True]))
+
+    assert reward[1] > reward[0]
+    assert reward[1] - reward[0] == pytest.approx(
+        seed_trainable_guided_warmup.LIFT_REWARD_WEIGHT * 0.06
+        + seed_trainable_guided_warmup.LIFTED_EVER_BONUS
+        + seed_trainable_guided_warmup.UNLIFTED_GOAL_PENALTY
+    )
 
 
 def test_mujoco_pandagym_dense_guided_warmup_sampling_uses_scripted_actions() -> None:
