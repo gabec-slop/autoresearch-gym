@@ -723,6 +723,7 @@ def test_unitree_backend_scales_mjlab_probe_interval_to_run_length(monkeypatch: 
     assert _mjlab_probe_interval_iterations(recipe, bundle, 692) == 139
     assert _mjlab_probe_interval_iterations({"runner": {"probe_interval_iterations": 100}}, bundle, 692) == 100
     assert _mjlab_probe_interval_iterations({"runner": {"probe_interval_iterations": 0}}, bundle, 692) == 0
+    assert _mjlab_probe_interval_iterations(recipe, {"benchmark": {"train_probe_interval_seconds": 120.0}}, 692) == 67
 
     monkeypatch.setenv("UNITREE_MJLAB_TARGET_POLICY_PROBES", "10")
     assert _mjlab_probe_interval_iterations(recipe, bundle, 692) == 70
@@ -3116,6 +3117,38 @@ def test_session_dashboard_ensure_reuses_ready_pointer(tmp_path, monkeypatch) ->
     assert payload["reused"] is True
     assert payload["pid"] == 123
     assert dashboard_server.read_dashboard_pointer(session_dir)["reused"] is True
+
+
+def test_session_dashboard_child_command_uses_selected_port_end(tmp_path, monkeypatch) -> None:
+    from autoresearch_gym.runner import dashboard_server
+
+    session_dir = tmp_path / "autoresearch_runs" / "sessions" / "example"
+    launched: list[list[str]] = []
+
+    class FakeProcess:
+        pid = 321
+
+    def fake_popen(cmd, **kwargs):
+        launched.append(list(cmd))
+        return FakeProcess()
+
+    monkeypatch.setattr(dashboard_server, "find_available_port", lambda host, port, port_end: 4200)
+    monkeypatch.setattr(dashboard_server, "wait_for_dashboard", lambda url, *, timeout_seconds=1.0: True)
+    monkeypatch.setattr(dashboard_server.subprocess, "Popen", fake_popen)
+
+    payload = dashboard_server.ensure_session_dashboard(
+        session_dir,
+        host="127.0.0.1",
+        port=4200,
+        port_end=4299,
+        root=tmp_path,
+    )
+
+    assert payload["ready"] is True
+    assert launched
+    command = launched[0]
+    assert command[command.index("--port") + 1] == "4200"
+    assert command[command.index("--port-end") + 1] == "4200"
 
 
 def test_session_dashboard_teardown_only_kills_managed_pointer(tmp_path, monkeypatch) -> None:

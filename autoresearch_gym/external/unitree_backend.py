@@ -66,6 +66,7 @@ class UnitreeExternalBackend:
                 "eval_episodes": bundle.eval_episodes,
                 "max_steps": bundle.max_steps,
                 "primary_metric": bundle.benchmark.primary_metric,
+                "train_probe_interval_seconds": bundle.benchmark.train_probe.interval_seconds,
             },
             "candidate": bundle.candidate_metadata,
             "eval_cases": bundle.eval_cases,
@@ -253,6 +254,14 @@ def _steps_per_env(bundle: dict[str, Any]) -> int:
     return max(1, int(value or 24))
 
 
+def _seconds_per_iteration_estimate(recipe: dict[str, Any], bundle: dict[str, Any]) -> float:
+    runner = _recipe_section(recipe, "runner")
+    num_envs = _parallel_env_count(bundle, for_eval=False)
+    task_family = str(bundle.get("task_family") or bundle.get("execution_backend", {}).get("task_family", ""))
+    default_seconds_per_iteration = 2.6 if "g1" in task_family else 1.8 * max(1.0, num_envs / 1024.0)
+    return float(runner.get("seconds_per_iteration_estimate") or default_seconds_per_iteration)
+
+
 def _learning_iterations(bundle: dict[str, Any]) -> int:
     recipe = _candidate_recipe(bundle)
     runner = _recipe_section(recipe, "runner")
@@ -261,10 +270,7 @@ def _learning_iterations(bundle: dict[str, Any]) -> int:
         benchmark = bundle.get("benchmark", {})
         train_seconds = benchmark.get("train_seconds")
         if train_seconds is not None:
-            num_envs = _parallel_env_count(bundle, for_eval=False)
-            task_family = str(bundle.get("task_family") or bundle.get("execution_backend", {}).get("task_family", ""))
-            default_seconds_per_iteration = 2.6 if "g1" in task_family else 1.8 * max(1.0, num_envs / 1024.0)
-            seconds_per_iteration = float(runner.get("seconds_per_iteration_estimate") or default_seconds_per_iteration)
+            seconds_per_iteration = _seconds_per_iteration_estimate(recipe, bundle)
             value = max(1, int(float(train_seconds) / max(0.1, seconds_per_iteration)))
         else:
             value = benchmark.get("train_episodes", 1)
@@ -276,6 +282,11 @@ def _mjlab_probe_interval_iterations(recipe: dict[str, Any], bundle: dict[str, A
     explicit = runner.get("probe_interval_iterations")
     if explicit is not None:
         return max(0, int(explicit))
+    benchmark = bundle.get("benchmark", {})
+    interval_seconds = benchmark.get("train_probe_interval_seconds")
+    if interval_seconds is not None:
+        seconds_per_iteration = _seconds_per_iteration_estimate(recipe, bundle)
+        return max(1, int(round(float(interval_seconds) / max(0.1, seconds_per_iteration))))
     target_raw = runner.get("target_policy_probe_count") or os.environ.get("UNITREE_MJLAB_TARGET_POLICY_PROBES") or 5
     target = max(1, int(target_raw))
     return max(1, int(math.ceil(max(1, int(iterations)) / target)))

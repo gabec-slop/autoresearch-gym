@@ -166,6 +166,8 @@ def ensure_session_dashboard(
         host,
         "--port",
         str(selected_port),
+        "--port-end",
+        str(selected_port),
         "--root",
         str(root),
         "--session",
