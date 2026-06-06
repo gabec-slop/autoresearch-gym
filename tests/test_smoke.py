@@ -16,6 +16,7 @@ from pathlib import Path
 import gymnasium as gym
 import numpy as np
 import pytest
+import torch
 from PIL import Image
 
 import autoresearch_gym  # noqa: F401
@@ -904,6 +905,38 @@ def test_dashboard_resolves_absolute_session_local_artifacts(tmp_path) -> None:
     outside_path.write_bytes(b"nope")
     with pytest.raises(ValueError, match="escapes"):
         cli.resolve_dashboard_artifact_path(root, str(session_dir), str(outside_path))
+
+def test_dashboard_sampled_trajectory_refreshes_when_frame_paths_change() -> None:
+    source = Path("dashboard/index.html").read_text(encoding="utf-8")
+
+    assert "/_autoresearch/artifact" in source
+    assert "cacheBustedUrl(artifactUrl(rawManifestPath))" in source
+    assert "let trajectoryFrameSignature = \"\";" in source
+    assert "const frameSignature = [" in source
+    assert "...frames," in source
+    assert "...steps.map((step) => JSON.stringify(step.feeds || {}))," in source
+    assert "trajectoryFrameSignature !== frameSignature" in source
+    assert "trajectoryFrameIndex = 0;" in source
+
+
+def test_unitree_mjlab_train_context_probes_run_out_of_process() -> None:
+    train_bridge = _mjlab_train_bridge_source()
+
+    assert "def _run_train_context_probe_subprocess" in train_bridge
+    assert "--probe-checkpoint" in train_bridge
+    assert "if args.probe_checkpoint" in train_bridge
+    assert "train_script=Path(__file__).resolve()" in train_bridge
+    assert "_run_train_context_probe_subprocess(" in train_bridge
+    assert "def _probe_subprocess_env" in train_bridge
+    assert 'env.setdefault("PYTHONIOENCODING", "utf-8")' in train_bridge
+    assert "_run_checkpoint_probe(" in train_bridge
+    assert "policy_probes\" / \"logs" in train_bridge
+    assert "error=no_rollout" in train_bridge
+    assert "env_cfg.scene.num_envs = 1 if frame_dir is not None else requested_num_envs" in train_bridge
+    assert "command_metrics" in train_bridge
+    assert "get_command(name)" in train_bridge
+    assert "except PermissionError" in train_bridge
+    assert "monitor_errors.log" in train_bridge
 
 
 def test_unitree_go2_mjlab_uses_return_primary_without_fabricated_success(tmp_path, monkeypatch) -> None:
@@ -4462,6 +4495,236 @@ def test_mujoco_panda_pick_and_place_seed_task_resets_and_steps_when_assets_are_
     assert "ee_to_cube_progress" in info
     assert "initial_ee_to_cube_distance" in info
     env.close()
+
+
+def test_mujoco_so101_scene_exposes_upstream_joint_names_and_limits() -> None:
+    pytest.importorskip("mujoco")
+    from autoresearch_gym.envs import mujoco_so101_reach as so101_env
+
+    env = gym.make("AutoresearchMujocoSO101Reach-v0", render_mode="rgb_array", max_steps=4)
+    try:
+        model = env.unwrapped.model
+        mujoco = env.unwrapped.mujoco
+        for name in so101_env.JOINT_NAMES:
+            joint_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, name)
+            actuator_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_ACTUATOR, name)
+            assert joint_id >= 0
+            assert actuator_id >= 0
+
+        ctrl_ranges = np.asarray(model.actuator_ctrlrange)
+        assert ctrl_ranges[0] == pytest.approx([-1.91986, 1.91986])
+        assert ctrl_ranges[1] == pytest.approx([-1.74533, 1.74533])
+        assert ctrl_ranges[2] == pytest.approx([-1.69, 1.69])
+        assert ctrl_ranges[3] == pytest.approx([-1.65806, 1.65806])
+        assert ctrl_ranges[4] == pytest.approx([-2.74385, 2.84121])
+        assert ctrl_ranges[5] == pytest.approx([-0.17453, 1.74533])
+    finally:
+        env.close()
+
+
+def test_mujoco_so101_reach_fixed_case_reset_step_and_render() -> None:
+    pytest.importorskip("mujoco")
+
+    env = gym.make("AutoresearchMujocoSO101Reach-v0", render_mode="rgb_array", max_steps=4)
+    try:
+        target = np.asarray([0.32, 0.0, 0.18], dtype=np.float32)
+        obs, info = env.reset(seed=123, options={"fixed_case": {"target_pos": target.tolist()}})
+        assert obs["desired_goal"] == pytest.approx(target)
+        assert obs["achieved_goal"].shape == (3,)
+        assert "ee_to_target_distance" in info
+
+        next_obs, reward, terminated, truncated, info = env.step(np.zeros(env.action_space.shape, dtype=np.float32))
+        assert next_obs["observation"].shape == env.observation_space["observation"].shape
+        assert isinstance(float(reward), float)
+        assert isinstance(bool(terminated), bool)
+        assert isinstance(bool(truncated), bool)
+        assert "ee_to_target_progress" in info
+
+        frame = env.render()
+        assert isinstance(frame, np.ndarray)
+        assert frame.dtype == np.uint8
+        assert frame.shape == (480, 720, 3)
+        assert float(np.std(frame)) > 0.0
+    finally:
+        env.close()
+
+
+def test_mujoco_so101_reach_seed_task_resets_and_steps_when_mujoco_is_installed() -> None:
+    pytest.importorskip("mujoco")
+    from autoresearch_gym.tasks.so101_reach_mujoco_v0.seed_trainable import RewardRecipeWrapper
+
+    env = RewardRecipeWrapper(gym.make("AutoresearchMujocoSO101Reach-v0", render_mode="rgb_array", max_steps=4), "task_dense")
+    obs, info = env.reset(seed=123)
+    assert obs.shape == env.observation_space.shape
+    action = env.action_space.sample()
+    next_obs, reward, terminated, truncated, info = env.step(action)
+    assert next_obs.shape == env.observation_space.shape
+    assert isinstance(float(reward), float)
+    assert isinstance(bool(terminated), bool)
+    assert isinstance(bool(truncated), bool)
+    assert "ee_to_target_distance" in info
+    assert "initial_ee_to_target_distance" in info
+    env.close()
+
+
+def test_mujoco_so101_reach_sample_feeds_include_world_and_wrist() -> None:
+    pytest.importorskip("mujoco")
+
+    env = gym.make("AutoresearchMujocoSO101Reach-v0", render_mode="rgb_array", max_steps=4)
+    try:
+        env.reset(seed=123)
+        specs = env.unwrapped.sample_feed_specs()
+        assert specs["world"]["role"] == "debug"
+        assert specs["wrist"]["role"] == "policy_input"
+        feeds = env.unwrapped.sample_feeds()
+        assert set(feeds) == {"world", "wrist"}
+        assert feeds["world"].shape == (480, 720, 3)
+        assert feeds["wrist"].shape == (128, 128, 3)
+        assert float(np.std(feeds["world"])) > 0.0
+        assert float(np.std(feeds["wrist"])) > 0.0
+    finally:
+        env.close()
+
+
+@pytest.mark.parametrize(
+    ("env_id", "fixed_case", "metric_prefix"),
+    [
+        (
+            "AutoresearchMujocoSO101CubeToBin-v0",
+            {"object_pos": [0.27, -0.06, 0.025], "target_pos": [0.36, 0.065, 0.03]},
+            "cube_to_bin",
+        ),
+        (
+            "AutoresearchMujocoSO101VialToRack-v0",
+            {"object_pos": [0.28, -0.055, 0.045], "target_pos": [0.35, 0.055, 0.104]},
+            "vial_to_slot",
+        ),
+    ],
+)
+def test_mujoco_so101_pick_place_fixed_case_reset_step_and_render(
+    env_id: str,
+    fixed_case: dict[str, list[float]],
+    metric_prefix: str,
+) -> None:
+    pytest.importorskip("mujoco")
+
+    env = gym.make(env_id, render_mode="rgb_array", max_steps=4)
+    try:
+        obs, info = env.reset(seed=123, options={"fixed_case": fixed_case})
+        assert obs["desired_goal"] == pytest.approx(np.asarray(fixed_case["target_pos"], dtype=np.float32))
+        assert obs["achieved_goal"].shape == (3,)
+        assert f"{metric_prefix}_distance" in info
+
+        next_obs, reward, terminated, truncated, info = env.step(np.zeros(env.action_space.shape, dtype=np.float32))
+        assert next_obs["observation"].shape == env.observation_space["observation"].shape
+        assert isinstance(float(reward), float)
+        assert isinstance(bool(terminated), bool)
+        assert isinstance(bool(truncated), bool)
+        assert f"{metric_prefix}_progress" in info
+        assert "object_to_target_distance" in info
+        assert "ee_to_object_distance" in info
+        if env_id == "AutoresearchMujocoSO101VialToRack-v0":
+            assert "vial_uprightness" in info
+            assert "vial_height_error" in info
+
+        frame = env.render()
+        assert isinstance(frame, np.ndarray)
+        assert frame.dtype == np.uint8
+        assert frame.shape == (480, 720, 3)
+        assert float(np.std(frame)) > 0.0
+    finally:
+        env.close()
+
+
+@pytest.mark.parametrize(
+    ("env_id", "seed_module", "expected_info_key"),
+    [
+        (
+            "AutoresearchMujocoSO101CubeToBin-v0",
+            "autoresearch_gym.tasks.so101_cube_to_bin_mujoco_v0.seed_trainable",
+            "cube_to_bin_distance",
+        ),
+        (
+            "AutoresearchMujocoSO101VialToRack-v0",
+            "autoresearch_gym.tasks.so101_vial_to_rack_mujoco_v0.seed_trainable",
+            "vial_to_slot_distance",
+        ),
+    ],
+)
+def test_mujoco_so101_pick_place_seed_task_resets_and_steps_when_mujoco_is_installed(
+    env_id: str,
+    seed_module: str,
+    expected_info_key: str,
+) -> None:
+    pytest.importorskip("mujoco")
+    seed = importlib.import_module(seed_module)
+
+    env = seed.RewardRecipeWrapper(gym.make(env_id, render_mode="rgb_array", max_steps=4), "task_dense")
+    obs, info = env.reset(seed=123)
+    assert obs.shape == env.observation_space.shape
+    action = env.action_space.sample()
+    next_obs, reward, terminated, truncated, info = env.step(action)
+    assert next_obs.shape == env.observation_space.shape
+    assert isinstance(float(reward), float)
+    assert isinstance(bool(terminated), bool)
+    assert isinstance(bool(truncated), bool)
+    assert expected_info_key in info
+    assert f"initial_{expected_info_key}" in info
+    env.close()
+
+
+def test_mujoco_so101_pixel_actor_critic_seed_uses_low_res_wrist_pixels() -> None:
+    pytest.importorskip("mujoco")
+    seed = importlib.import_module("autoresearch_gym.tasks.so101_cube_to_bin_mujoco_v0.seed_trainable_pixel_actor_critic")
+
+    env = seed.RewardRecipeWrapper(
+        gym.make(
+            "AutoresearchMujocoSO101CubeToBin-v0",
+            render_mode="rgb_array",
+            max_steps=4,
+            vision_observation=True,
+            vision_image_size=84,
+            vision_frame_stack=3,
+        ),
+        "task_dense",
+    )
+    try:
+        obs, info = env.reset(seed=123)
+        assert obs["pixels"].shape == (9, 84, 84)
+        assert obs["pixels"].dtype == np.uint8
+        assert obs["proprio"].shape == (18,)
+        agent = seed.Agent(env, device=torch.device("cpu"))
+        action = agent.act(obs, deterministic=True)
+        assert action.shape == env.action_space.shape
+        next_obs, reward, terminated, truncated, info = env.step(action)
+        assert next_obs["pixels"].shape == obs["pixels"].shape
+        assert isinstance(float(reward), float)
+        assert isinstance(bool(terminated), bool)
+        assert isinstance(bool(truncated), bool)
+    finally:
+        env.close()
+
+
+def test_mujoco_so101_vial_rack_slot_rails_are_colliding() -> None:
+    pytest.importorskip("mujoco")
+
+    env = gym.make("AutoresearchMujocoSO101VialToRack-v0", render_mode="rgb_array", max_steps=4)
+    try:
+        model = env.unwrapped.model
+        mujoco = env.unwrapped.mujoco
+        for name in (
+            "rack_center_slot_back",
+            "rack_center_slot_front",
+            "rack_center_slot_left",
+            "rack_center_slot_right",
+            "rack_backstop",
+        ):
+            geom_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_GEOM, name)
+            assert geom_id >= 0
+            assert int(model.geom_contype[geom_id]) != 0
+            assert int(model.geom_conaffinity[geom_id]) != 0
+    finally:
+        env.close()
 
 
 def test_mujoco_panda_real_env_default_render_returns_nonblank_frame_when_assets_are_installed() -> None:

@@ -1,0 +1,29 @@
+{
+  "name": "so101_cube_to_bin_mujoco_wall_clock_v0",
+  "description": "Wall-clock MuJoCo Menagerie RobotStudio SO-101 cube-in-bin benchmark.",
+  "env_id": "AutoresearchMujocoSO101CubeToBin-v0",
+  "env_kwargs": {
+    "render_mode": "rgb_array",
+    "reward_type": "dense"
+  },
+  "train_episodes": 100000,
+  "train_seconds": 300,
+  "eval_episodes": 10,
+  "max_steps": 120,
+  "render_mode": "rgb_array",
+  "primary_metric": "eval_success_rate",
+  "primary_metric_mode": "maximize",
+  "train_seed": 121,
+  "eval_seed_start": 7120,
+  "device": "auto",
+  "eval_case_bank": "eval_cases.json",
+  "train_probe": {
+    "enabled": true,
+    "interval_seconds": 20.0,
+    "episodes": 3,
+    "seed_start": 902000
+  },
+  "notes": [
+    "Wall-clock benchmark for the SO-101 cube-in-bin MuJoCo task."
+  ]
+}

@@ -664,6 +664,8 @@ def make_live_writer(
     sampled_episode: int | None = None
     sampled_manifest_path: Path | None = None
     sampled_frames: list[str] = []
+    sampled_steps: list[dict[str, Any]] = []
+    sampled_feed_specs: dict[str, Any] = {}
     sampled_status = "idle"
     sampled_last_step = -1
     sampled_env_id: int | None = None
@@ -676,6 +678,8 @@ def make_live_writer(
     visual_sampling_eligible = False
     visual_env_ids: set[int] = set()
     mujoco_renderers: dict[tuple[int, int, int], Any] = {}
+    live_feed_paths: dict[str, str] = {}
+    live_feed_specs: dict[str, Any] = {}
     effective_budget_mode = budget_mode or ("time" if benchmark.train_seconds is not None else "episodes")
     effective_sample_trajectory_source = str(sample_trajectory_source or sampled_trajectory_source(candidate))
     if effective_sample_trajectory_source not in SAMPLE_TRAJECTORY_SOURCE_VALUES:
@@ -727,6 +731,26 @@ def make_live_writer(
         except Exception:
             return None
 
+    def sample_env_feeds(env: gym.Env[np.ndarray, np.ndarray]) -> tuple[dict[str, Any], dict[str, np.ndarray]]:
+        feed_provider = getattr(env, "unwrapped", env)
+        feed_fn = getattr(feed_provider, "sample_feeds", None)
+        if not callable(feed_fn):
+            return {}, {}
+        specs_fn = getattr(feed_provider, "sample_feed_specs", None)
+        specs = specs_fn() if callable(specs_fn) else {}
+        raw_feeds = feed_fn()
+        if not isinstance(raw_feeds, dict):
+            return specs if isinstance(specs, dict) else {}, {}
+        feeds: dict[str, np.ndarray] = {}
+        for name, frame in raw_feeds.items():
+            try:
+                arr = np.asarray(frame, dtype=np.uint8)
+            except Exception:
+                continue
+            if arr.ndim == 3 and arr.shape[2] >= 3:
+                feeds[str(name)] = arr[:, :, :3]
+        return specs if isinstance(specs, dict) else {}, feeds
+
     def read_visual_control(force: bool = False) -> dict[str, Any]:
         nonlocal last_control_read_at, visual_control, visual_control_error
         if visual_disabled_reason is not None:
@@ -758,6 +782,8 @@ def make_live_writer(
             "updated_at": time.time(),
             "frame_count": len(sampled_frames),
             "frames": sampled_frames,
+            "steps": sampled_steps,
+            "feed_specs": sampled_feed_specs,
             "latest_frame_path": sampled_frames[-1] if sampled_frames else None,
             "playback_fps": float(visual_control.get("trajectory_playback_fps", 20.0)),
             "frame_stride": int(visual_control.get("trajectory_frame_stride", 2)),
@@ -768,21 +794,24 @@ def make_live_writer(
         write_json_atomic(sampled_manifest_path, payload)
 
     def stop_sampled_episode(status: str, reason: str | None = None) -> None:
-        nonlocal sampled_episode, sampled_manifest_path, sampled_frames, sampled_status, sampled_last_step
-        nonlocal sampled_env_id, sampled_trajectory_index
+        nonlocal sampled_episode, sampled_manifest_path, sampled_frames, sampled_steps, sampled_feed_specs
+        nonlocal sampled_status, sampled_last_step, sampled_env_id, sampled_trajectory_index
         if sampled_episode is not None:
             write_sampled_manifest(status, sampled_episode, reason)
         sampled_episode = None
         sampled_manifest_path = None
         sampled_frames = []
+        sampled_steps = []
+        sampled_feed_specs = {}
         sampled_status = "idle" if status == "completed" else status
         sampled_last_step = -1
         sampled_env_id = None
         sampled_trajectory_index = None
 
     def start_sampled_episode(env: gym.Env[np.ndarray, np.ndarray], episode: int) -> None:
-        nonlocal sampled_episode, sampled_manifest_path, sampled_frames, sampled_status, sampled_last_step
-        nonlocal sampled_env_id, sampled_trajectory_count, sampled_trajectory_index, latest_trajectory_index
+        nonlocal sampled_episode, sampled_manifest_path, sampled_frames, sampled_steps, sampled_feed_specs
+        nonlocal sampled_status, sampled_last_step, sampled_env_id, sampled_trajectory_count, sampled_trajectory_index
+        nonlocal latest_trajectory_index
         sampled_trajectory_count += 1
         sampled_trajectory_index = sampled_trajectory_count
         latest_trajectory_index = sampled_trajectory_index
@@ -791,23 +820,31 @@ def make_live_writer(
         sampled_status = "recording"
         sampled_last_step = -1
         sampled_frames = []
+        sampled_steps = []
+        sampled_feed_specs = {}
         sampled_dir = trajectories_dir / f"episode_{episode:06d}"
         sampled_manifest_path = sampled_dir / "manifest.json"
         write_sampled_manifest("recording", sampled_episode)
 
     def sample_trajectory_frame(env: gym.Env[np.ndarray, np.ndarray], episode_length: int, reason: str) -> None:
-        nonlocal sampled_last_step, latest_trajectory_manifest_path, latest_trajectory_frame_path
+        nonlocal sampled_last_step, latest_trajectory_manifest_path, latest_trajectory_frame_path, sampled_feed_specs
         if sampled_episode is None or sampled_manifest_path is None:
             return
         if sampled_env_id is not None and id(env) != sampled_env_id:
             return
         if episode_length == sampled_last_step and reason != "episode_end":
             return
-        frame = render_live_frame(env)
+        feed_specs, feeds = sample_env_feeds(env)
+        if feed_specs:
+            sampled_feed_specs = feed_specs
+        frame = feeds.get("world") if feeds else None
+        if frame is None:
+            frame = render_live_frame(env)
         if frame is None:
             write_sampled_manifest("render_unavailable", sampled_episode, "renderer returned no frame")
             return
-        frame_path = sampled_manifest_path.parent / f"frame_{len(sampled_frames):04d}.jpg"
+        frame_index = len(sampled_frames)
+        frame_path = sampled_manifest_path.parent / f"frame_{frame_index:04d}.jpg"
         width, height = render_size(visual_control)
         write_frame_atomic(
             frame_path,
@@ -816,6 +853,32 @@ def make_live_writer(
             size=(width, height),
         )
         sampled_frames.append(repo_relative(frame_path))
+        feed_paths: dict[str, str] = {}
+        for feed_name, feed_frame in feeds.items():
+            safe_name = "".join(ch if ch.isalnum() or ch in {"-", "_"} else "_" for ch in str(feed_name))
+            feed_path = sampled_manifest_path.parent / "feeds" / f"frame_{frame_index:04d}_{safe_name}.jpg"
+            write_frame_atomic(
+                feed_path,
+                feed_frame,
+                quality=int(visual_control.get("jpeg_quality", 70)),
+                size=None,
+            )
+            feed_paths[str(feed_name)] = repo_relative(feed_path)
+        if feed_paths:
+            sampled_steps.append(
+                {
+                    "index": frame_index,
+                    "step": int(episode_length),
+                    "reason": reason,
+                    "frame_path": repo_relative(frame_path),
+                    "feeds": feed_paths,
+                    "policy_feeds": [
+                        name
+                        for name, spec in sampled_feed_specs.items()
+                        if isinstance(spec, dict) and spec.get("role") == "policy_input"
+                    ],
+                }
+            )
         sampled_last_step = int(episode_length)
         latest_trajectory_manifest_path = sampled_manifest_path
         latest_trajectory_frame_path = frame_path
@@ -827,6 +890,9 @@ def make_live_writer(
         frames = payload.get("frames")
         if not isinstance(frames, list):
             frames = []
+        steps_payload = payload.get("steps")
+        if not isinstance(steps_payload, list):
+            steps_payload = []
         sampled_trajectory_count += 1
         sample_index = int(payload.get("sample_index") or sampled_trajectory_count)
         latest_trajectory_index = sample_index
@@ -865,6 +931,35 @@ def make_live_writer(
                 except Exception:
                     shutil.copy2(source_path, frame_path)
             written_frames.append(repo_relative(frame_path))
+        written_steps: list[dict[str, Any]] = []
+        for step_index, raw_step in enumerate(steps_payload):
+            if not isinstance(raw_step, dict):
+                continue
+            raw_feeds = raw_step.get("feeds")
+            if not isinstance(raw_feeds, dict):
+                continue
+            feed_paths: dict[str, str] = {}
+            for feed_name, raw_feed in raw_feeds.items():
+                safe_name = "".join(ch if ch.isalnum() or ch in {"-", "_"} else "_" for ch in str(feed_name))
+                feed_path = sampled_dir / "feeds" / f"step_{step_index:04d}_{safe_name}.jpg"
+                if isinstance(raw_feed, np.ndarray):
+                    write_frame_atomic(
+                        feed_path,
+                        raw_feed,
+                        quality=int(visual_control.get("jpeg_quality", 70)),
+                        size=None,
+                    )
+                else:
+                    source_path = Path(str(raw_feed))
+                    if not source_path.is_absolute():
+                        source_path = ROOT_DIR / source_path
+                    feed_path.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copy2(source_path, feed_path)
+                feed_paths[str(feed_name)] = repo_relative(feed_path)
+            if feed_paths:
+                step_record = {key: value for key, value in raw_step.items() if key != "feeds"}
+                step_record["feeds"] = feed_paths
+                written_steps.append(step_record)
         latest_trajectory_manifest_path = manifest_path
         latest_trajectory_frame_path = Path(written_frames[-1]) if written_frames else None
         if latest_trajectory_frame_path is not None and not latest_trajectory_frame_path.is_absolute():
@@ -882,6 +977,8 @@ def make_live_writer(
             "updated_at": time.time(),
             "frame_count": len(written_frames),
             "frames": written_frames,
+            "steps": written_steps,
+            "feed_specs": payload.get("feed_specs") if isinstance(payload.get("feed_specs"), dict) else {},
             "latest_frame_path": written_frames[-1] if written_frames else None,
             "playback_fps": float(
                 payload.get("playback_fps") or visual_control.get("trajectory_playback_fps", 20.0)
@@ -1028,6 +1125,8 @@ def make_live_writer(
                 "control_path": repo_relative(control_path),
                 "control_error": visual_control_error,
                 "live_frame_path": live_frame_path,
+                "live_feed_paths": dict(live_feed_paths),
+                "live_feed_specs": dict(live_feed_specs),
                 "trajectory_manifest_path": trajectory_manifest,
                 "trajectory_latest_frame_path": trajectory_latest_frame,
                 "sampled_status": sampled_status,
@@ -1096,7 +1195,10 @@ def make_live_writer(
             now = time.perf_counter()
             frame_interval = float(control.get("live_frame_interval_seconds", 5.0))
             if status in {"starting", "finished"} or now - last_frame_at >= frame_interval:
-                frame = render_live_frame(env)
+                nonlocal_live_specs, live_feeds = sample_env_feeds(env)
+                frame = live_feeds.get("world") if live_feeds else None
+                if frame is None:
+                    frame = render_live_frame(env)
                 if frame is not None:
                     width, height = render_size(control)
                     write_frame_atomic(
@@ -1105,6 +1207,20 @@ def make_live_writer(
                         quality=int(control.get("jpeg_quality", 70)),
                         size=(width, height),
                     )
+                    live_feed_paths.clear()
+                    live_feed_specs.clear()
+                    if nonlocal_live_specs:
+                        live_feed_specs.update(nonlocal_live_specs)
+                    for feed_name, feed_frame in live_feeds.items():
+                        safe_name = "".join(ch if ch.isalnum() or ch in {"-", "_"} else "_" for ch in str(feed_name))
+                        feed_path = live_dir / "feeds" / f"current_{safe_name}.jpg"
+                        write_frame_atomic(
+                            feed_path,
+                            feed_frame,
+                            quality=int(control.get("jpeg_quality", 70)),
+                            size=None,
+                        )
+                        live_feed_paths[str(feed_name)] = repo_relative(feed_path)
                     last_frame_at = now
                     write_metrics()
         custom_request: dict[str, Any] | None = None

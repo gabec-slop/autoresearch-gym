@@ -1,0 +1,15 @@
+{
+  "name": "so101_vial_to_rack_mujoco_eval_cases_v0",
+  "cases": [
+    {"name": "left-vial-center-slot", "object_pos": [0.28, -0.055, 0.045], "target_pos": [0.35, 0.055, 0.104]},
+    {"name": "left-vial-near-slot", "object_pos": [0.30, -0.040, 0.045], "target_pos": [0.35, 0.055, 0.104]},
+    {"name": "center-vial-right-slot", "object_pos": [0.28, 0.000, 0.045], "target_pos": [0.35, -0.055, 0.104]},
+    {"name": "near-vial-forward-slot", "object_pos": [0.25, -0.030, 0.045], "target_pos": [0.37, 0.050, 0.104]},
+    {"name": "center-vial-left-slot", "object_pos": [0.30, 0.025, 0.045], "target_pos": [0.34, 0.070, 0.104]},
+    {"name": "back-vial-right-slot", "object_pos": [0.24, 0.010, 0.045], "target_pos": [0.34, -0.065, 0.104]},
+    {"name": "forward-vial-center-slot", "object_pos": [0.31, -0.060, 0.045], "target_pos": [0.36, 0.050, 0.104]},
+    {"name": "near-center-slot", "object_pos": [0.30, 0.010, 0.045], "target_pos": [0.35, 0.055, 0.104]},
+    {"name": "left-wide-slot", "object_pos": [0.25, -0.075, 0.045], "target_pos": [0.37, 0.070, 0.104]},
+    {"name": "right-wide-slot", "object_pos": [0.26, 0.040, 0.045], "target_pos": [0.36, -0.070, 0.104]}
+  ]
+}

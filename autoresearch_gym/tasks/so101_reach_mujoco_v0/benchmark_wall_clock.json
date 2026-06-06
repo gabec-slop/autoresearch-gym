@@ -1,0 +1,29 @@
+{
+  "name": "so101_reach_mujoco_wall_clock_v0",
+  "description": "Wall-clock MuJoCo Menagerie RobotStudio SO-101 reach benchmark with fixed target eval cases.",
+  "env_id": "AutoresearchMujocoSO101Reach-v0",
+  "env_kwargs": {
+    "render_mode": "rgb_array",
+    "reward_type": "dense"
+  },
+  "train_episodes": 100000,
+  "train_seconds": 300,
+  "eval_episodes": 25,
+  "max_steps": 80,
+  "render_mode": "rgb_array",
+  "primary_metric": "eval_success_rate",
+  "primary_metric_mode": "maximize",
+  "train_seed": 101,
+  "eval_seed_start": 7100,
+  "device": "auto",
+  "eval_case_bank": "eval_cases.json",
+  "train_probe": {
+    "enabled": true,
+    "interval_seconds": 20.0,
+    "episodes": 3,
+    "seed_start": 901000
+  },
+  "notes": [
+    "Wall-clock benchmark for the MuJoCo Menagerie RobotStudio SO-101 reach task."
+  ]
+}

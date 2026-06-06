@@ -140,6 +140,72 @@ SEED_CASES: tuple[SeedCase, ...] = (
         },
     ),
     SeedCase(
+        "so101-reach-mujoco",
+        "autoresearch_gym/tasks/so101_reach_mujoco_v0/benchmark.json",
+        "autoresearch_gym/tasks/so101_reach_mujoco_v0/seed_trainable.py",
+        required_modules=("mujoco",),
+        benchmark_overrides={
+            "max_steps": 4,
+            "env_kwargs": {"max_steps": 4},
+        },
+    ),
+    SeedCase(
+        "so101-reach-vision-mujoco",
+        "autoresearch_gym/tasks/so101_reach_mujoco_v0/benchmark_vision.json",
+        "autoresearch_gym/tasks/so101_reach_mujoco_v0/seed_trainable_pixel_actor_critic.py",
+        required_modules=("mujoco",),
+        benchmark_overrides={
+            "max_steps": 4,
+            "train_episodes": 1,
+            "eval_episodes": 1,
+            "env_kwargs": {"max_steps": 4},
+        },
+    ),
+    SeedCase(
+        "so101-cube-to-bin-mujoco",
+        "autoresearch_gym/tasks/so101_cube_to_bin_mujoco_v0/benchmark.json",
+        "autoresearch_gym/tasks/so101_cube_to_bin_mujoco_v0/seed_trainable.py",
+        required_modules=("mujoco",),
+        benchmark_overrides={
+            "max_steps": 4,
+            "env_kwargs": {"max_steps": 4},
+        },
+    ),
+    SeedCase(
+        "so101-cube-to-bin-vision-mujoco",
+        "autoresearch_gym/tasks/so101_cube_to_bin_mujoco_v0/benchmark_vision.json",
+        "autoresearch_gym/tasks/so101_cube_to_bin_mujoco_v0/seed_trainable_pixel_actor_critic.py",
+        required_modules=("mujoco",),
+        benchmark_overrides={
+            "max_steps": 4,
+            "train_episodes": 1,
+            "eval_episodes": 1,
+            "env_kwargs": {"max_steps": 4},
+        },
+    ),
+    SeedCase(
+        "so101-vial-to-rack-mujoco",
+        "autoresearch_gym/tasks/so101_vial_to_rack_mujoco_v0/benchmark.json",
+        "autoresearch_gym/tasks/so101_vial_to_rack_mujoco_v0/seed_trainable.py",
+        required_modules=("mujoco",),
+        benchmark_overrides={
+            "max_steps": 4,
+            "env_kwargs": {"max_steps": 4},
+        },
+    ),
+    SeedCase(
+        "so101-vial-to-rack-vision-mujoco",
+        "autoresearch_gym/tasks/so101_vial_to_rack_mujoco_v0/benchmark_vision.json",
+        "autoresearch_gym/tasks/so101_vial_to_rack_mujoco_v0/seed_trainable_pixel_actor_critic.py",
+        required_modules=("mujoco",),
+        benchmark_overrides={
+            "max_steps": 4,
+            "train_episodes": 1,
+            "eval_episodes": 1,
+            "env_kwargs": {"max_steps": 4},
+        },
+    ),
+    SeedCase(
         "bat-to-goal",
         "autoresearch_gym/tasks/bat_to_goal_v0/benchmark.json",
         "autoresearch_gym/tasks/bat_to_goal_v0/seed_trainable.py",
@@ -418,6 +484,17 @@ def run_case(repo_root: Path, case: SeedCase, mode: str, output_root: Path, time
             result["errors"].append("missing or empty live frame")
         else:
             result["errors"].extend(validate_image_file(frame_path, "live frame", expected_size=(720, 480)))
+        live_feed_paths = visual.get("live_feed_paths")
+        if isinstance(live_feed_paths, dict) and live_feed_paths:
+            for feed_name, feed_path_value in live_feed_paths.items():
+                feed_path = repo_path(repo_root, feed_path_value)
+                if feed_path is None or not feed_path.exists() or feed_path.stat().st_size <= 0:
+                    result["errors"].append(f"missing or empty live feed {feed_name}: {feed_path_value}")
+                    break
+                image_errors = validate_image_file(feed_path, f"live feed {feed_name}")
+                if image_errors:
+                    result["errors"].extend(image_errors)
+                    break
     elif mode == "sampled_trajectory":
         manifest_path = repo_path(repo_root, visual.get("trajectory_manifest_path"))
         if manifest_path is None or not manifest_path.exists():
@@ -440,6 +517,21 @@ def run_case(repo_root: Path, case: SeedCase, mode: str, output_root: Path, time
                 if image_errors:
                     result["errors"].extend(image_errors)
                     break
+            steps = manifest.get("steps")
+            if isinstance(steps, list) and steps:
+                first_feeds = steps[0].get("feeds") if isinstance(steps[0], dict) else None
+                if not isinstance(first_feeds, dict) or not first_feeds:
+                    result["errors"].append("sampled trajectory step missing feeds")
+                else:
+                    for feed_name, feed_path_value in first_feeds.items():
+                        feed_path = repo_path(repo_root, feed_path_value)
+                        if feed_path is None or not feed_path.exists() or feed_path.stat().st_size <= 0:
+                            result["errors"].append(f"missing or empty sampled feed {feed_name}: {feed_path_value}")
+                            break
+                        image_errors = validate_image_file(feed_path, f"sampled feed {feed_name}")
+                        if image_errors:
+                            result["errors"].extend(image_errors)
+                            break
 
     return result
 

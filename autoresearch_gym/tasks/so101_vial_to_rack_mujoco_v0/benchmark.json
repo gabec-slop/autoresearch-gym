@@ -1,0 +1,29 @@
+{
+  "name": "so101_vial_to_rack_mujoco_v0",
+  "description": "MuJoCo Menagerie RobotStudio SO-101 vial-to-rack benchmark with fixed vial and slot eval cases.",
+  "env_id": "AutoresearchMujocoSO101VialToRack-v0",
+  "env_kwargs": {
+    "render_mode": "rgb_array",
+    "reward_type": "dense"
+  },
+  "train_episodes": 50,
+  "eval_episodes": 10,
+  "max_steps": 120,
+  "render_mode": "rgb_array",
+  "primary_metric": "eval_success_rate",
+  "primary_metric_mode": "maximize",
+  "train_seed": 131,
+  "eval_seed_start": 7130,
+  "device": "auto",
+  "eval_case_bank": "eval_cases.json",
+  "train_probe": {
+    "enabled": true,
+    "interval_seconds": 20.0,
+    "episodes": 3,
+    "seed_start": 903000
+  },
+  "notes": [
+    "Uses MuJoCo Menagerie robotstudio_so101/so101.xml when available and a primitive SO-101 fallback for minimal smoke installs.",
+    "The achieved goal is the vial center suspended in the rack slot; success requires center tolerance, uprightness, and rack-height tolerance."
+  ]
+}

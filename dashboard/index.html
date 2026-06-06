@@ -313,6 +313,51 @@
         display: none;
       }
 
+      .sim-feed-grid {
+        display: none;
+        width: 100%;
+        height: 100%;
+        grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+        gap: 8px;
+        padding: 8px;
+        align-items: stretch;
+      }
+
+      .sim-feed-grid.is-visible {
+        display: grid;
+      }
+
+      .sim-feed {
+        min-width: 0;
+        min-height: 0;
+        display: grid;
+        grid-template-rows: auto minmax(0, 1fr);
+        gap: 6px;
+      }
+
+      .sim-feed-label {
+        display: flex;
+        justify-content: space-between;
+        gap: 8px;
+        color: var(--muted);
+        font-size: 12px;
+        line-height: 1.2;
+      }
+
+      .sim-feed-label strong {
+        color: var(--text);
+        font-size: 12px;
+      }
+
+      .sim-feed img {
+        width: 100%;
+        height: 100%;
+        min-height: 0;
+        object-fit: cover;
+        border: 1px solid var(--border);
+        background: #05070b;
+      }
+
       .sim-placeholder {
         display: none;
         width: min(540px, calc(100% - 32px));
@@ -819,6 +864,7 @@
               </div>
               <div class="sim-frame-wrap">
                 <img id="simFrame" class="sim-frame" alt="Live simulation frame" />
+                <div id="simFeedGrid" class="sim-feed-grid" aria-label="Synchronized trajectory feeds"></div>
                 <div id="simPlaceholder" class="sim-placeholder">
                   Live frames are disabled for this benchmark. Metrics, losses, and
                   rollout history is still streaming.
@@ -976,6 +1022,7 @@
       const lossCtx = lossCanvas.getContext("2d");
       const scoreCtx = scoreCanvas.getContext("2d");
       const simFrame = document.getElementById("simFrame");
+      const simFeedGrid = document.getElementById("simFeedGrid");
       const simPlaceholder = document.getElementById("simPlaceholder");
       let frameRefreshActive = false;
       let frameRefreshTimer = null;
@@ -985,6 +1032,7 @@
       let trajectoryManifestPath = "";
       let trajectoryFrames = [];
       let trajectoryFrameSignature = "";
+      let trajectorySteps = [];
       let trajectoryFrameIndex = 0;
       let trajectoryFrameDelayMs = 1000;
       let trajectorySampleLabel = "";
@@ -1083,6 +1131,7 @@
         trajectoryManifestPath = "";
         trajectoryFrames = [];
         trajectoryFrameSignature = "";
+        trajectorySteps = [];
         trajectoryFrameIndex = 0;
         updateText("subtitle", sessionDisplayLabel());
         renderSessionList();
@@ -2589,8 +2638,49 @@
 
       function showFramePlaceholder(message) {
         simFrame.classList.add("is-hidden");
+        simFeedGrid.classList.remove("is-visible");
         simPlaceholder.classList.add("is-visible");
         simPlaceholder.textContent = message;
+      }
+
+      function showSingleFrame() {
+        simFeedGrid.classList.remove("is-visible");
+        simPlaceholder.classList.remove("is-visible");
+        simFrame.classList.remove("is-hidden");
+      }
+
+      function showFeedSet(feeds, specs = {}, policyFeeds = []) {
+        const feedNames = Object.keys(feeds).sort((a, b) => {
+          if (a === "world") return -1;
+          if (b === "world") return 1;
+          if (a === "wrist") return -1;
+          if (b === "wrist") return 1;
+          return a.localeCompare(b);
+        });
+        if (!feedNames.length) return false;
+        simFeedGrid.innerHTML = feedNames
+          .map((name) => {
+            const path = normalizeArtifactPath(feeds[name]);
+            const spec = specs[name] || {};
+            const role = policyFeeds.includes(name) || spec.role === "policy_input" ? "policy input" : (spec.role || "debug");
+            return `
+              <div class="sim-feed">
+                <div class="sim-feed-label"><strong>${escapeHtml(name)}</strong><span>${escapeHtml(role)}</span></div>
+                <img alt="${escapeHtml(name)} feed" src="${artifactUrl(path)}?t=${Date.now()}" />
+              </div>
+            `;
+          })
+          .join("");
+        simPlaceholder.classList.remove("is-visible");
+        simFrame.classList.add("is-hidden");
+        simFeedGrid.classList.add("is-visible");
+        return true;
+      }
+
+      function showFeedStep(step, manifest) {
+        const feeds = step && typeof step === "object" ? step.feeds || {} : {};
+        const policyFeeds = Array.isArray(step.policy_feeds) ? step.policy_feeds : [];
+        return showFeedSet(feeds, manifest.feed_specs || {}, policyFeeds);
       }
 
       async function refreshSampledTrajectoryFrame() {
@@ -2610,13 +2700,17 @@
           if (!response.ok) throw new Error(`HTTP ${response.status}`);
           const manifest = await response.json();
           const frames = Array.isArray(manifest.frames)
-            ? manifest.frames.map((value) => String(value || "")).filter(Boolean)
+            ? manifest.frames.map((value) => normalizeArtifactPath(String(value || ""))).filter(Boolean)
             : [];
-          const frameSignature = frames.map(normalizeArtifactPath).join("\n");
+          const steps = Array.isArray(manifest.steps) ? manifest.steps.filter((step) => step && typeof step === "object" && step.feeds) : [];
+          const frameSignature = [
+            ...frames,
+            ...steps.map((step) => JSON.stringify(step.feeds || {})),
+          ].join("\n");
           const sampleLabel = manifest.sample_index ? ` #${manifest.sample_index}` : "";
           const episodeLabel = manifest.episode ? ` rollout ${manifest.episode}` : "";
           trajectorySampleLabel = `${sampleLabel}${episodeLabel}`.trim();
-          if (!frames.length) {
+          if (!frames.length && !steps.length) {
             updateText("frameStatus", `Sampled rollout${sampleLabel}${episodeLabel}: ${manifest.status || "recording"}`);
             showFramePlaceholder("Sampling rollout frames. No frame has been written yet.");
             scheduleFrameRefresh(1000);
@@ -2625,18 +2719,33 @@
           if (trajectoryManifestPath !== manifestPath || trajectoryFrameSignature !== frameSignature) {
             trajectoryManifestPath = manifestPath;
             trajectoryFrames = frames;
+            trajectorySteps = steps;
             trajectoryFrameSignature = frameSignature;
             trajectoryFrameIndex = 0;
           }
           trajectoryFrameDelayMs = Math.max(50, Math.round(1000 / Number(manifest.playback_fps || 20)));
           displayedFrameKind = "sampled_trajectory";
           simPlaceholder.classList.remove("is-visible");
-          simFrame.classList.remove("is-hidden");
           if (frameRefreshActive) return;
-          const framePath = trajectoryFrames[trajectoryFrameIndex % trajectoryFrames.length];
-          trajectoryFrameIndex = (trajectoryFrameIndex + 1) % trajectoryFrames.length;
+          const sampleCount = trajectorySteps.length || trajectoryFrames.length;
+          const currentIndex = trajectoryFrameIndex % sampleCount;
+          const step = trajectorySteps[currentIndex];
+          const showedFeeds = step ? showFeedStep(step, manifest) : false;
+          if (!showedFeeds) {
+            showSingleFrame();
+            const framePath = trajectoryFrames[currentIndex % trajectoryFrames.length];
+            simFrame.src = cacheBustedUrl(artifactUrl(framePath));
+          }
+          trajectoryFrameIndex = (trajectoryFrameIndex + 1) % sampleCount;
           frameRefreshActive = true;
-          simFrame.src = cacheBustedUrl(artifactUrl(framePath));
+          if (showedFeeds) {
+            const sampleLabel = trajectorySampleLabel ? ` ${trajectorySampleLabel}` : "";
+            updateText("frameStatus", `Sampled rollout${sampleLabel} - ${trajectoryFrames.length} frames / ${trajectorySteps.length} synced feed steps`);
+            window.requestAnimationFrame(() => {
+              frameRefreshActive = false;
+              scheduleFrameRefresh(trajectoryFrameDelayMs);
+            });
+          }
         } catch (error) {
           updateText("frameStatus", "Sampled rollout unavailable");
           showFramePlaceholder("Waiting for a readable sampled rollout manifest.");
@@ -2660,19 +2769,37 @@
           refreshSampledTrajectoryFrame();
           return;
         }
-        const activeFrameUrl = explicitFrame || (latestRun.frame_path ? artifactUrl(latestRun.frame_path) : frameUrl);
-        const expectsFrames = Boolean(explicitFrame || latestRun.frame_path || latestRun.render_mode === "rgb_array");
+        const visual = latestRun.visual || {};
+        const liveFeedPaths = visual.live_feed_paths && typeof visual.live_feed_paths === "object" ? visual.live_feed_paths : {};
+        const liveFeedSpecs = visual.live_feed_specs && typeof visual.live_feed_specs === "object" ? visual.live_feed_specs : {};
+        const liveFeedNames = Object.keys(liveFeedPaths);
+        if (liveFeedNames.length) {
+          const policyFeeds = liveFeedNames.filter((name) => liveFeedSpecs[name] && liveFeedSpecs[name].role === "policy_input");
+          if (showFeedSet(liveFeedPaths, liveFeedSpecs, policyFeeds)) {
+            displayedFrameKind = "live_frame";
+            updateText("frameStatus", `Live feeds - ${liveFeedNames.length} synced feeds`);
+            scheduleFrameRefresh(1000);
+            return;
+          }
+        }
+        const liveFramePath = latestRun.frame_path || visual.live_frame_path;
+        const activeFrameUrl = explicitFrame || (liveFramePath ? artifactUrl(liveFramePath) : "");
+        const expectsFrames = Boolean(activeFrameUrl);
         if (!expectsFrames) {
-          updateText("frameStatus", "Frames disabled");
-          showFramePlaceholder("Live frames are disabled for this benchmark. Metrics, losses, and rollout history is still streaming.");
+          const hasSampledRollout = Boolean(latestRun.trajectory_manifest_path || visual.trajectory_manifest_path);
+          updateText("frameStatus", hasSampledRollout ? "No live frame artifact" : "Waiting for live frame");
+          showFramePlaceholder(
+            hasSampledRollout
+              ? "This run has sampled rollout media but no live-frame capture. Use Sampled Rollout for the recorded feeds."
+              : "Waiting for the first live frame. Metrics are still streaming.",
+          );
           scheduleFrameRefresh(1000);
           return;
         }
         if (frameRefreshActive) return;
         frameRefreshActive = true;
         displayedFrameKind = "live_frame";
-        simPlaceholder.classList.remove("is-visible");
-        simFrame.classList.remove("is-hidden");
+        showSingleFrame();
         simFrame.src = cacheBustedUrl(activeFrameUrl);
       }
 
@@ -2683,7 +2810,8 @@
           scheduleFrameRefresh(1000);
         } else if (displayedFrameKind === "sampled_trajectory") {
           const sampleLabel = trajectorySampleLabel ? ` ${trajectorySampleLabel}` : "";
-          updateText("frameStatus", `Sampled rollout${sampleLabel} - ${trajectoryFrames.length} frames`);
+          const feedLabel = trajectorySteps.length ? ` / ${trajectorySteps.length} synced feed steps` : "";
+          updateText("frameStatus", `Sampled rollout${sampleLabel} - ${trajectoryFrames.length} frames${feedLabel}`);
           window.requestAnimationFrame(() => scheduleFrameRefresh(trajectoryFrameDelayMs));
         } else {
           updateText("frameStatus", "Live frame");

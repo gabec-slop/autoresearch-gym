@@ -1,0 +1,26 @@
+{
+  "name": "so101_cube_to_bin_vision_mujoco_v0",
+  "description": "SO-101 MuJoCo cube-to-bin benchmark for low-resolution wrist-camera pixel RL.",
+  "env_id": "AutoresearchMujocoSO101CubeToBin-v0",
+  "env_kwargs": {
+    "render_mode": "rgb_array",
+    "reward_type": "dense",
+    "vision_observation": true,
+    "vision_image_size": 84,
+    "vision_frame_stack": 3
+  },
+  "train_episodes": 20,
+  "eval_episodes": 5,
+  "max_steps": 120,
+  "render_mode": "rgb_array",
+  "primary_metric": "eval_success_rate",
+  "primary_metric_mode": "maximize",
+  "train_seed": 134,
+  "eval_seed_start": 7134,
+  "device": "auto",
+  "eval_case_bank": "eval_cases.json",
+  "notes": [
+    "Vision training is opt-in via the pixel actor-critic seed; existing state-based SO-101 cube-to-bin benchmarks are unchanged.",
+    "The policy input feed is the low-resolution wrist camera plus proprioception. The world feed is debug-only and appears in synchronized sampled trajectory artifacts."
+  ]
+}

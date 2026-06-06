@@ -36,6 +36,24 @@ def register_envs() -> None:
                 "reject_initial_success": False,
             },
         )
+    if "AutoresearchMujocoSO101Reach-v0" not in registry:
+        register(
+            id="AutoresearchMujocoSO101Reach-v0",
+            entry_point="autoresearch_gym.envs.mujoco_so101_reach:AutoresearchMujocoSO101ReachEnv",
+            max_episode_steps=80,
+        )
+    if "AutoresearchMujocoSO101CubeToBin-v0" not in registry:
+        register(
+            id="AutoresearchMujocoSO101CubeToBin-v0",
+            entry_point="autoresearch_gym.envs.mujoco_so101_pick_place:AutoresearchMujocoSO101CubeToBinEnv",
+            max_episode_steps=120,
+        )
+    if "AutoresearchMujocoSO101VialToRack-v0" not in registry:
+        register(
+            id="AutoresearchMujocoSO101VialToRack-v0",
+            entry_point="autoresearch_gym.envs.mujoco_so101_pick_place:AutoresearchMujocoSO101VialToRackEnv",
+            max_episode_steps=120,
+        )
 
 
 def __getattr__(name: str):
@@ -51,7 +69,27 @@ def __getattr__(name: str):
         from autoresearch_gym.envs.mujoco_panda_pick_and_place import AutoresearchMujocoPandaPickAndPlaceEnv
 
         return AutoresearchMujocoPandaPickAndPlaceEnv
+    if name == "AutoresearchMujocoSO101ReachEnv":
+        from autoresearch_gym.envs.mujoco_so101_reach import AutoresearchMujocoSO101ReachEnv
+
+        return AutoresearchMujocoSO101ReachEnv
+    if name == "AutoresearchMujocoSO101CubeToBinEnv":
+        from autoresearch_gym.envs.mujoco_so101_pick_place import AutoresearchMujocoSO101CubeToBinEnv
+
+        return AutoresearchMujocoSO101CubeToBinEnv
+    if name == "AutoresearchMujocoSO101VialToRackEnv":
+        from autoresearch_gym.envs.mujoco_so101_pick_place import AutoresearchMujocoSO101VialToRackEnv
+
+        return AutoresearchMujocoSO101VialToRackEnv
     raise AttributeError(name)
 
 
-__all__ = ["AutoresearchMujocoPandaPickAndPlaceEnv", "AutoresearchPandaPickAndPlaceEnv", "BatToGoalEnv", "register_envs"]
+__all__ = [
+    "AutoresearchMujocoPandaPickAndPlaceEnv",
+    "AutoresearchMujocoSO101CubeToBinEnv",
+    "AutoresearchMujocoSO101ReachEnv",
+    "AutoresearchMujocoSO101VialToRackEnv",
+    "AutoresearchPandaPickAndPlaceEnv",
+    "BatToGoalEnv",
+    "register_envs",
+]

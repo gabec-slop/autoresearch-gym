@@ -25,7 +25,7 @@ uv sync --extra mujoco
 Useful extras:
 
 ```bash
-uv sync --extra mujoco  # Hopper, InvertedPendulum, FetchPush
+uv sync --extra mujoco  # Hopper, InvertedPendulum, FetchPush, SO-101 reach
 uv sync --extra mujoco-warp  # Menagerie Panda MuJoCo/MJWarp task
 uv sync --extra panda   # Panda/PyBullet and PandaGym tasks
 uv sync --extra dev     # tests and development tools
@@ -64,12 +64,22 @@ Bundled tasks:
 | Panda pick-and-place | `autoresearch_gym/tasks/panda_pick_and_place_v0/benchmark.json` | `autoresearch_gym/tasks/panda_pick_and_place_v0/seed_trainable.py` or `seed_trainable_her.py` |
 | Panda pick-and-place MuJoCo/MJWarp | `autoresearch_gym/tasks/panda_pick_and_place_mjwarp_v0/benchmark_wall_clock.json` | `autoresearch_gym/tasks/panda_pick_and_place_mjwarp_v0/seed_trainable.py` or `seed_trainable_tqc_her_ee.py` |
 | Panda-gym dense pick-and-place MuJoCo/MJWarp | `autoresearch_gym/tasks/panda_pick_and_place_mjwarp_pandagym_dense_v0/benchmark_wall_clock.json` | `autoresearch_gym/tasks/panda_pick_and_place_mjwarp_pandagym_dense_v0/seed_trainable_tqc_her_ee.py` or `seed_trainable_guided_warmup.py` |
+| SO-101 reach MuJoCo | `autoresearch_gym/tasks/so101_reach_mujoco_v0/benchmark.json` | `autoresearch_gym/tasks/so101_reach_mujoco_v0/seed_trainable.py` |
+| SO-101 cube-to-bin MuJoCo | `autoresearch_gym/tasks/so101_cube_to_bin_mujoco_v0/benchmark.json` | `autoresearch_gym/tasks/so101_cube_to_bin_mujoco_v0/seed_trainable.py` |
+| SO-101 vial-to-rack MuJoCo | `autoresearch_gym/tasks/so101_vial_to_rack_mujoco_v0/benchmark.json` | `autoresearch_gym/tasks/so101_vial_to_rack_mujoco_v0/seed_trainable.py` |
 | Panda bat-to-goal | `autoresearch_gym/tasks/bat_to_goal_v0/benchmark.json` | `autoresearch_gym/tasks/bat_to_goal_v0/seed_trainable.py` |
 | Panda bat-to-goal vectorized wall-clock | `autoresearch_gym/tasks/bat_to_goal_v0/benchmark_vectorized_wall_clock.json` | `autoresearch_gym/tasks/bat_to_goal_v0/seed_trainable_vectorized.py` |
 | Unitree G1 motion mirror external | `autoresearch_gym/tasks/unitree_g1_motion_mirror_v0/benchmark.json` | `autoresearch_gym/tasks/unitree_g1_motion_mirror_v0/seed_trainable.py` |
 | Unitree G1 lower-level CleanRL external | `autoresearch_gym/tasks/unitree_g1_motion_mirror_v0/benchmark_lower_level.json` | `autoresearch_gym/tasks/unitree_g1_motion_mirror_v0/seed_trainable_lower_level_cleanrl.py` |
 | Unitree Go2 rough locomotion external | `autoresearch_gym/tasks/unitree_go2_rough_locomotion_v0/benchmark.json` | `autoresearch_gym/tasks/unitree_go2_rough_locomotion_v0/seed_trainable.py` |
 | Unitree Go2 lower-level CleanRL external | `autoresearch_gym/tasks/unitree_go2_rough_locomotion_v0/benchmark_lower_level.json` | `autoresearch_gym/tasks/unitree_go2_rough_locomotion_v0/seed_trainable_lower_level_cleanrl.py` |
+
+The SO-101 MuJoCo tasks use MuJoCo Menagerie's `robotstudio_so101` model when
+available. Set `AUTORESEARCH_SO101_MJCF`, set `MUJOCO_MENAGERIE_PATH`, or clone
+Menagerie into `.external/mujoco_menagerie` so
+`.external/mujoco_menagerie/robotstudio_so101/so101.xml` exists. A primitive
+fallback remains available for minimal smoke installs; the manipulation tasks
+add simple MuJoCo cube, bin, vial, and rack geometry around the arm.
 
 External Unitree tasks use an `execution_backend` plus an `execution_target`.
 Bundled task files default to `execution_target = "local"` so a Windows or

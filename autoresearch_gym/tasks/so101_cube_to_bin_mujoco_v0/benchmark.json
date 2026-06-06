@@ -1,0 +1,29 @@
+{
+  "name": "so101_cube_to_bin_mujoco_v0",
+  "description": "MuJoCo Menagerie RobotStudio SO-101 cube-in-bin benchmark with fixed object and bin eval cases.",
+  "env_id": "AutoresearchMujocoSO101CubeToBin-v0",
+  "env_kwargs": {
+    "render_mode": "rgb_array",
+    "reward_type": "dense"
+  },
+  "train_episodes": 50,
+  "eval_episodes": 10,
+  "max_steps": 120,
+  "render_mode": "rgb_array",
+  "primary_metric": "eval_success_rate",
+  "primary_metric_mode": "maximize",
+  "train_seed": 121,
+  "eval_seed_start": 7120,
+  "device": "auto",
+  "eval_case_bank": "eval_cases.json",
+  "train_probe": {
+    "enabled": true,
+    "interval_seconds": 20.0,
+    "episodes": 3,
+    "seed_start": 902000
+  },
+  "notes": [
+    "Uses MuJoCo Menagerie robotstudio_so101/so101.xml when available and a primitive SO-101 fallback for minimal smoke installs.",
+    "The achieved goal is the cube center; success means the cube center is inside the bin tolerance."
+  ]
+}

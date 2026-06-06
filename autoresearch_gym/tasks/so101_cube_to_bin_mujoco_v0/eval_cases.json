@@ -1,0 +1,15 @@
+{
+  "name": "so101_cube_to_bin_mujoco_eval_cases_v0",
+  "cases": [
+    {"name": "left-cube-center-bin", "object_pos": [0.27, -0.06, 0.025], "target_pos": [0.36, 0.065, 0.03]},
+    {"name": "left-cube-near-bin", "object_pos": [0.30, -0.04, 0.025], "target_pos": [0.36, 0.060, 0.03]},
+    {"name": "right-cube-center-bin", "object_pos": [0.27, 0.00, 0.025], "target_pos": [0.36, -0.060, 0.03]},
+    {"name": "near-cube-forward-bin", "object_pos": [0.25, -0.03, 0.025], "target_pos": [0.38, 0.055, 0.03]},
+    {"name": "center-cube-left-bin", "object_pos": [0.29, 0.03, 0.025], "target_pos": [0.35, 0.080, 0.03]},
+    {"name": "back-cube-right-bin", "object_pos": [0.24, 0.01, 0.025], "target_pos": [0.34, -0.070, 0.03]},
+    {"name": "forward-cube-center-bin", "object_pos": [0.31, -0.06, 0.025], "target_pos": [0.37, 0.050, 0.03]},
+    {"name": "near-center-bin", "object_pos": [0.30, 0.01, 0.025], "target_pos": [0.35, 0.055, 0.03]},
+    {"name": "left-wide-bin", "object_pos": [0.25, -0.08, 0.025], "target_pos": [0.38, 0.075, 0.03]},
+    {"name": "right-wide-bin", "object_pos": [0.26, 0.04, 0.025], "target_pos": [0.36, -0.080, 0.03]}
+  ]
+}

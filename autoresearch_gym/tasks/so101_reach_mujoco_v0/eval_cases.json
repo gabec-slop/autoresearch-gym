@@ -1,0 +1,30 @@
+{
+  "name": "so101_reach_mujoco_eval_cases_v0",
+  "cases": [
+    {"name": "home-center", "target_pos": [0.32, 0.00, 0.18]},
+    {"name": "left-mid", "target_pos": [0.31, 0.05, 0.18]},
+    {"name": "right-mid", "target_pos": [0.31, -0.05, 0.18]},
+    {"name": "near-high", "target_pos": [0.29, 0.00, 0.22]},
+    {"name": "near-low", "target_pos": [0.29, 0.00, 0.14]},
+    {"name": "forward-left", "target_pos": [0.37, 0.04, 0.18]},
+    {"name": "forward-right", "target_pos": [0.37, -0.04, 0.18]},
+    {"name": "back-left", "target_pos": [0.26, 0.04, 0.17]},
+    {"name": "back-right", "target_pos": [0.26, -0.04, 0.17]},
+    {"name": "forward-high", "target_pos": [0.36, 0.00, 0.22]},
+    {"name": "forward-low", "target_pos": [0.36, 0.00, 0.14]},
+    {"name": "back-center", "target_pos": [0.26, 0.00, 0.18]},
+    {"name": "far-center", "target_pos": [0.39, 0.00, 0.18]},
+    {"name": "far-left", "target_pos": [0.38, 0.06, 0.18]},
+    {"name": "far-right", "target_pos": [0.38, -0.06, 0.18]},
+    {"name": "near-left-low", "target_pos": [0.29, 0.06, 0.14]},
+    {"name": "near-right-low", "target_pos": [0.29, -0.06, 0.14]},
+    {"name": "near-left-high", "target_pos": [0.29, 0.06, 0.22]},
+    {"name": "near-right-high", "target_pos": [0.29, -0.06, 0.22]},
+    {"name": "center-left-low", "target_pos": [0.32, 0.06, 0.14]},
+    {"name": "center-right-low", "target_pos": [0.32, -0.06, 0.14]},
+    {"name": "center-left-high", "target_pos": [0.32, 0.06, 0.22]},
+    {"name": "center-right-high", "target_pos": [0.32, -0.06, 0.22]},
+    {"name": "far-left-high", "target_pos": [0.38, 0.06, 0.22]},
+    {"name": "far-right-low", "target_pos": [0.38, -0.06, 0.14]}
+  ]
+}
