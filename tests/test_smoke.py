@@ -521,6 +521,7 @@ def test_remote_in_process_sync_fetches_live_sampled_rollout_refs(tmp_path) -> N
     (remote_trajectory / "feeds").mkdir()
     (remote_trajectory / "feeds" / "frame_0000_world.jpg").write_bytes(b"fake world")
     (remote_trajectory / "feeds" / "frame_0000_wrist.jpg").write_bytes(b"fake wrist")
+    fetched_suffixes = []
 
     class FakeTarget:
         def remote_join(self, *parts):
@@ -529,6 +530,7 @@ def test_remote_in_process_sync_fetches_live_sampled_rollout_refs(tmp_path) -> N
         def fetch_remote_file(self, remote_file, local_file, *, timeout=15.0):
             del timeout
             suffix = str(remote_file).split("/live/", 1)[1]
+            fetched_suffixes.append(suffix)
             source = remote_live / suffix
             if not source.exists():
                 return False
@@ -560,6 +562,11 @@ def test_remote_in_process_sync_fetches_live_sampled_rollout_refs(tmp_path) -> N
     assert (
         session_dir / "live" / "trajectories" / "run-1" / "sample_000001" / "feeds" / "frame_0000_wrist.jpg"
     ).read_bytes() == b"fake wrist"
+
+    fetched_suffixes.clear()
+    _sync_remote_session(FakeTarget(), remote_session, session_dir)
+    assert "trajectories/run-1/sample_000001/feeds/frame_0000_world.jpg" not in fetched_suffixes
+    assert "trajectories/run-1/sample_000001/feeds/frame_0000_wrist.jpg" not in fetched_suffixes
 
 
 def test_fake_external_run_writes_normalized_artifacts(tmp_path) -> None:

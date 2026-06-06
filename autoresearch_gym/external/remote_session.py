@@ -711,8 +711,19 @@ def verify_remote_environment(
     return status
 
 
-def _copy_live_file(target: SshTarget, remote_session: str, session_dir: Path, suffix: str, timeout: float = 15.0) -> None:
-    target.fetch_remote_file(target.remote_join(remote_session, "live", suffix), session_dir / "live" / suffix, timeout=timeout)
+def _copy_live_file(
+    target: SshTarget,
+    remote_session: str,
+    session_dir: Path,
+    suffix: str,
+    timeout: float = 15.0,
+    *,
+    skip_existing: bool = False,
+) -> None:
+    local_path = session_dir / "live" / suffix
+    if skip_existing and local_path.exists():
+        return
+    target.fetch_remote_file(target.remote_join(remote_session, "live", suffix), local_path, timeout=timeout)
 
 
 def _dashboard_path(path: Path) -> str:
@@ -834,7 +845,13 @@ def sync_live_artifact_refs(target: SshTarget, remote_session: str, session_dir:
         and (suffix.startswith("trajectories/") or suffix == "current_run_frame.jpg")
     }
     for suffix in sorted(suffixes):
-        _copy_live_file(target, remote_session, session_dir, suffix)
+        _copy_live_file(
+            target,
+            remote_session,
+            session_dir,
+            suffix,
+            skip_existing=suffix.startswith("trajectories/") and not suffix.endswith("manifest.json"),
+        )
     manifests = [session_dir / "live" / suffix for suffix in suffixes if suffix.endswith("manifest.json")]
     for manifest_path in manifests:
         if not manifest_path.exists():
@@ -863,12 +880,12 @@ def sync_live_artifact_refs(target: SshTarget, remote_session: str, session_dir:
             suffix = _remote_live_suffix(remote_session, session_dir, value)
             if suffix is None or not suffix.startswith("trajectories/"):
                 continue
-            _copy_live_file(target, remote_session, session_dir, suffix)
+            _copy_live_file(target, remote_session, session_dir, suffix, skip_existing=not suffix.endswith("manifest.json"))
         for value in _remote_path_values(selected_steps):
             suffix = _remote_live_suffix(remote_session, session_dir, value)
             if suffix is None or not suffix.startswith("trajectories/"):
                 continue
-            _copy_live_file(target, remote_session, session_dir, suffix)
+            _copy_live_file(target, remote_session, session_dir, suffix, skip_existing=not suffix.endswith("manifest.json"))
     localize_live_json_files(remote_session, session_dir)
 
 
