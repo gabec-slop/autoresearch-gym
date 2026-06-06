@@ -480,6 +480,8 @@ def test_remote_in_process_sync_fetches_live_sampled_rollout_refs(tmp_path) -> N
     remote_trajectory.mkdir(parents=True)
     windows_manifest = f"{remote_session}\\live\\trajectories\\run-1\\sample_000001\\manifest.json"
     windows_frame = f"{remote_session}\\live\\trajectories\\run-1\\sample_000001\\frame_0000.jpg"
+    windows_world_feed = f"{remote_session}\\live\\trajectories\\run-1\\sample_000001\\feeds\\frame_0000_world.jpg"
+    windows_wrist_feed = f"{remote_session}\\live\\trajectories\\run-1\\sample_000001\\feeds\\frame_0000_wrist.jpg"
     (remote_live / "current_run_metrics.json").write_text(
         json.dumps(
             {
@@ -496,10 +498,29 @@ def test_remote_in_process_sync_fetches_live_sampled_rollout_refs(tmp_path) -> N
     (remote_live / "status.log").write_text("st=run step=1\n", encoding="utf-8")
     (remote_live / "control.json").write_text("{}", encoding="utf-8")
     (remote_trajectory / "manifest.json").write_text(
-        json.dumps({"status": "completed", "frames": [windows_frame], "latest_frame_path": windows_frame, "frame_count": 1}),
+        json.dumps(
+            {
+                "status": "completed",
+                "frames": [windows_frame],
+                "steps": [
+                    {
+                        "index": 0,
+                        "frame_path": windows_frame,
+                        "feeds": {"world": windows_world_feed, "wrist": windows_wrist_feed},
+                        "policy_feeds": ["wrist"],
+                    }
+                ],
+                "feed_specs": {"wrist": {"role": "policy_input"}},
+                "latest_frame_path": windows_frame,
+                "frame_count": 1,
+            }
+        ),
         encoding="utf-8",
     )
     (remote_trajectory / "frame_0000.jpg").write_bytes(b"fake image")
+    (remote_trajectory / "feeds").mkdir()
+    (remote_trajectory / "feeds" / "frame_0000_world.jpg").write_bytes(b"fake world")
+    (remote_trajectory / "feeds" / "frame_0000_wrist.jpg").write_bytes(b"fake wrist")
 
     class FakeTarget:
         def remote_join(self, *parts):
@@ -526,7 +547,19 @@ def test_remote_in_process_sync_fetches_live_sampled_rollout_refs(tmp_path) -> N
     assert latest_frame_path.endswith(f"{session_name}/live/trajectories/run-1/sample_000001/frame_0000.jpg")
     manifest = json.loads((session_dir / "live" / "trajectories" / "run-1" / "sample_000001" / "manifest.json").read_text())
     assert manifest["frames"][0].endswith(f"{session_name}/live/trajectories/run-1/sample_000001/frame_0000.jpg")
+    assert manifest["steps"][0]["feeds"]["world"].endswith(
+        f"{session_name}/live/trajectories/run-1/sample_000001/feeds/frame_0000_world.jpg"
+    )
+    assert manifest["steps"][0]["feeds"]["wrist"].endswith(
+        f"{session_name}/live/trajectories/run-1/sample_000001/feeds/frame_0000_wrist.jpg"
+    )
     assert (session_dir / "live" / "trajectories" / "run-1" / "sample_000001" / "frame_0000.jpg").read_bytes() == b"fake image"
+    assert (
+        session_dir / "live" / "trajectories" / "run-1" / "sample_000001" / "feeds" / "frame_0000_world.jpg"
+    ).read_bytes() == b"fake world"
+    assert (
+        session_dir / "live" / "trajectories" / "run-1" / "sample_000001" / "feeds" / "frame_0000_wrist.jpg"
+    ).read_bytes() == b"fake wrist"
 
 
 def test_fake_external_run_writes_normalized_artifacts(tmp_path) -> None:

@@ -800,6 +800,25 @@ def _sample_live_trajectory_frames(frames: list[str]) -> list[str]:
     return [frames[index] for index in sorted(selected_indexes)]
 
 
+def _sample_live_trajectory_steps(manifest: dict[str, Any], selected_frames: list[str]) -> list[dict[str, Any]]:
+    steps = [step for step in manifest.get("steps", []) if isinstance(step, dict)]
+    if not steps or not selected_frames:
+        return steps
+    selected_frame_set = set(selected_frames)
+    selected_steps = [
+        step
+        for step in steps
+        if isinstance(step.get("frame_path"), str) and step["frame_path"] in selected_frame_set
+    ]
+    if selected_steps:
+        return selected_steps
+    frames = [value for value in manifest.get("frames", []) if isinstance(value, str)]
+    if len(frames) == len(steps):
+        selected_indexes = {index for index, frame in enumerate(frames) if frame in selected_frame_set}
+        return [step for index, step in enumerate(steps) if index in selected_indexes]
+    return steps
+
+
 def sync_live_artifact_refs(target: SshTarget, remote_session: str, session_dir: Path) -> None:
     metrics_path = session_dir / "live" / "current_run_metrics.json"
     if not metrics_path.exists():
@@ -826,12 +845,26 @@ def sync_live_artifact_refs(target: SshTarget, remote_session: str, session_dir:
             continue
         frames = [value for value in manifest.get("frames", []) if isinstance(value, str)]
         selected_frames = _sample_live_trajectory_frames(frames)
+        selected_steps = _sample_live_trajectory_steps(manifest, selected_frames)
+        manifest_changed = False
         if frames and selected_frames != frames:
             manifest["source_frame_count"] = len(frames)
             manifest["live_frame_count"] = len(selected_frames)
             manifest["frames"] = selected_frames
+            manifest_changed = True
+        if selected_steps != manifest.get("steps", []):
+            manifest["source_step_count"] = len([step for step in manifest.get("steps", []) if isinstance(step, dict)])
+            manifest["live_step_count"] = len(selected_steps)
+            manifest["steps"] = selected_steps
+            manifest_changed = True
+        if manifest_changed:
             manifest_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
         for value in selected_frames:
+            suffix = _remote_live_suffix(remote_session, session_dir, value)
+            if suffix is None or not suffix.startswith("trajectories/"):
+                continue
+            _copy_live_file(target, remote_session, session_dir, suffix)
+        for value in _remote_path_values(selected_steps):
             suffix = _remote_live_suffix(remote_session, session_dir, value)
             if suffix is None or not suffix.startswith("trajectories/"):
                 continue

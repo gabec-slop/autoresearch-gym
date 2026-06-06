@@ -475,20 +475,30 @@ def append_result(path: Path, payload: dict[str, Any]) -> None:
         handle.write(json.dumps(payload, default=json_default) + "\n")
 
 
-def write_json_atomic(path: Path, payload: dict[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp_path = path.with_suffix(path.suffix + f".{os.getpid()}.{time.time_ns()}.tmp")
-    tmp_path.write_text(json.dumps(payload, indent=2, default=json_default), encoding="utf-8")
+def replace_with_retry(tmp_path: Path, path: Path) -> None:
+    timeout_seconds = float(os.environ.get("AUTORESEARCH_ATOMIC_REPLACE_TIMEOUT_SECONDS", "30"))
+    deadline = time.perf_counter() + max(0.0, timeout_seconds)
+    sleep_seconds = 0.05
     last_error: PermissionError | None = None
-    for _ in range(100):
+    while True:
         try:
             tmp_path.replace(path)
             return
         except PermissionError as exc:
             last_error = exc
-            time.sleep(0.05)
+            if time.perf_counter() >= deadline:
+                break
+            time.sleep(sleep_seconds)
+            sleep_seconds = min(0.25, sleep_seconds * 1.5)
     tmp_path.unlink(missing_ok=True)
     raise last_error if last_error is not None else RuntimeError(f"failed to write {path}")
+
+
+def write_json_atomic(path: Path, payload: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = path.with_suffix(path.suffix + f".{os.getpid()}.{time.time_ns()}.tmp")
+    tmp_path.write_text(json.dumps(payload, indent=2, default=json_default), encoding="utf-8")
+    replace_with_retry(tmp_path, path)
 
 
 def write_frame_atomic(path: Path, frame: np.ndarray, quality: int = 75, size: tuple[int, int] | None = None) -> None:
@@ -499,16 +509,7 @@ def write_frame_atomic(path: Path, frame: np.ndarray, quality: int = 75, size: t
     if size is not None and pil_image.size != size:
         pil_image = pil_image.resize(size, Image.Resampling.BILINEAR)
     pil_image.save(tmp_path, format="JPEG", quality=quality, optimize=False)
-    last_error: PermissionError | None = None
-    for _ in range(100):
-        try:
-            tmp_path.replace(path)
-            return
-        except PermissionError as exc:
-            last_error = exc
-            time.sleep(0.05)
-    tmp_path.unlink(missing_ok=True)
-    raise last_error if last_error is not None else RuntimeError(f"failed to write {path}")
+    replace_with_retry(tmp_path, path)
 
 
 def repo_relative(path: Path) -> str:
