@@ -129,7 +129,7 @@ def train_agent(
     rng = np.random.default_rng(int(benchmark.train_seed))
     episode_records: list[dict[str, Any]] = []
     total_steps = 0
-    started_at = time.perf_counter()
+    started_at = time.time()
     train_seconds = getattr(benchmark, "train_seconds", None)
     stop_reason = "episode_budget_exhausted"
     try:

@@ -4603,6 +4603,13 @@ def test_mujoco_panda_pick_and_place_seed_task_resets_and_steps_when_assets_are_
     env.close()
 
 
+def test_mujoco_so101_reach_seed_uses_wall_clock_time_source() -> None:
+    source = Path("autoresearch_gym/tasks/so101_reach_mujoco_v0/seed_trainable.py").read_text(encoding="utf-8")
+
+    assert "started_at = time.time()" in source
+    assert "started_at = time.perf_counter()" not in source
+
+
 def test_mujoco_so101_scene_exposes_upstream_joint_names_and_limits() -> None:
     pytest.importorskip("mujoco")
     from autoresearch_gym.envs import mujoco_so101_reach as so101_env
