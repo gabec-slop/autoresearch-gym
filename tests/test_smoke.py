@@ -7,6 +7,7 @@ import importlib.util
 import io
 import json
 import shutil
+import subprocess
 import sys
 import tarfile
 import types
@@ -729,6 +730,94 @@ def test_unitree_backend_scales_mjlab_probe_interval_to_run_length(monkeypatch: 
     assert _mjlab_probe_interval_iterations(recipe, bundle, 692) == 70
 
 
+def test_unitree_mjlab_train_seconds_timeout_writes_time_budget_result(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from autoresearch_gym.external import unitree_backend
+
+    out_dir = tmp_path / "external"
+    out_dir.mkdir()
+    run_dir = tmp_path / "mjlab_run"
+    run_dir.mkdir()
+    (run_dir / "model_4.pt").write_text("checkpoint", encoding="utf-8")
+    (out_dir / "train_result_partial.json").write_text(
+        json.dumps(
+            {
+                "episode_records": [
+                    {
+                        "record_type": "train_collection_window",
+                        "episode": 1,
+                        "return": 1.0,
+                        "length": 24.0,
+                        "step": 24576,
+                        "episodes_in_window": 1024,
+                    },
+                    {
+                        "record_type": "train_collection_window",
+                        "episode": 2,
+                        "return": 2.0,
+                        "length": 30.0,
+                        "step": 49152,
+                        "episodes_in_window": 1024,
+                    },
+                    {
+                        "record_type": "policy_probe",
+                        "episode": 2,
+                        "return": -1.0,
+                        "length": 120.0,
+                        "step": 49152,
+                    },
+                ],
+                "total_steps": 49152,
+                "last_metrics": {"train_mean_reward": 2.0},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    seen_timeout = {}
+
+    def fake_run_subprocess(argv, **kwargs):
+        seen_timeout["timeout"] = kwargs.get("timeout")
+        raise subprocess.TimeoutExpired(cmd=argv, timeout=kwargs.get("timeout") or 30.0, output="stdout", stderr="stderr")
+
+    monkeypatch.setattr(unitree_backend, "_run_subprocess", fake_run_subprocess)
+    monkeypatch.setattr(unitree_backend, "_unitree_root", lambda bundle: tmp_path)
+    monkeypatch.setattr(unitree_backend, "_mjlab_python", lambda bundle: "python")
+    monkeypatch.setattr(unitree_backend, "_write_train_script", lambda path: path / "mjlab_train_bridge.py")
+    monkeypatch.setattr(unitree_backend, "_write_rollout_script", lambda path: path / "mjlab_rollout_bridge.py")
+    monkeypatch.setattr(unitree_backend, "_find_latest_run_dir", lambda bundle, started_at: run_dir)
+    monkeypatch.setattr(
+        unitree_backend,
+        "_terminate_local_processes_matching",
+        lambda required_terms: [{"pid": 123, "command": "mjlab_train_bridge.py pytest-timeout"}],
+    )
+
+    bundle = {
+        "run_id": "pytest-timeout",
+        "task_family": "go2_rough_locomotion",
+        "benchmark": {
+            "env_kwargs": {"task_id": "Unitree-Go2-Rough", "num_envs": 1024},
+            "train_seconds": 30.0,
+            "max_steps": 200,
+        },
+        "candidate": {"recipe": {"runner": {"num_envs": 1024, "num_steps_per_env": 24, "max_iterations": 100}}},
+    }
+
+    unitree_backend._run_mjlab_train(bundle, out_dir)
+    summary = json.loads((out_dir / "train_result.json").read_text(encoding="utf-8"))
+
+    assert summary["stop_reason"] == "time_budget_exhausted"
+    assert seen_timeout["timeout"] == 30.0
+    assert summary["total_steps"] == 49152
+    assert summary["episode_batches"] == 2
+    assert summary["gradient_updates"] == 2
+    assert summary["episodes_completed"] == 2048
+    assert summary["mjlab"]["learning_iterations"] == 2
+    assert summary["mjlab"]["target_learning_iterations"] == 100
+    assert summary["mjlab"]["terminated_processes"][0]["pid"] == 123
+    assert summary["last_metrics"]["time_budget_exhausted"] == 1.0
+    assert (out_dir / "agent_checkpoint.pt").read_text(encoding="utf-8") == "checkpoint"
+
+
 def test_ssh_live_sync_merges_policy_probe_records_for_dashboard(tmp_path) -> None:
     from autoresearch_gym.external.targets import SshTarget, TargetConfig
 
@@ -931,6 +1020,38 @@ def test_unitree_go2_mjlab_uses_return_primary_without_fabricated_success(tmp_pa
     assert summary["metric_source"] == "mjlab_rollout_reward"
     assert "success_rate" not in summary
     assert "success" not in summary["episode_records"][0]
+
+
+def test_unitree_eval_honors_checkpoint_override(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from autoresearch_gym.external import unitree_backend
+
+    override_checkpoint = tmp_path / "model_737.pt"
+    override_checkpoint.write_text("checkpoint", encoding="utf-8")
+    out_dir = tmp_path / "external"
+    out_dir.mkdir()
+    seen = {}
+
+    def fake_run_mjlab_rollout(bundle, out_dir_arg, checkpoint, *, mode, frame_dir=None):
+        seen["checkpoint"] = checkpoint
+        seen["mode"] = mode
+        (Path(out_dir_arg) / "eval_result.json").write_text(
+            json.dumps({"avg_return": 1.0, "episode_records": []}),
+            encoding="utf-8",
+        )
+
+    monkeypatch.setattr(unitree_backend, "_run_mjlab_rollout", fake_run_mjlab_rollout)
+    bundle = {
+        "run_id": "pytest-eval-checkpoint",
+        "dry_run": False,
+        "checkpoint": str(override_checkpoint),
+        "task_family": "go2_rough_locomotion",
+        "required_paths": [],
+        "benchmark": {"env_kwargs": {"task_id": "Unitree-Go2-Rough"}, "eval_episodes": 1, "max_steps": 200},
+    }
+
+    unitree_backend._run_eval(bundle, out_dir)
+
+    assert seen == {"checkpoint": override_checkpoint, "mode": "eval"}
 
 
 def test_unitree_mjlab_train_bridge_compiles_with_recipe_overrides() -> None:

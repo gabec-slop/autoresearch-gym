@@ -8,6 +8,7 @@ import math
 import os
 import re
 import shutil
+import signal
 import subprocess
 import sys
 import time
@@ -318,17 +319,32 @@ def _external_env(bundle: dict[str, Any]) -> dict[str, str]:
 
 def _run_subprocess(argv: list[str], *, cwd: Path, env: dict[str, str], timeout: float | None, stdout_path: Path, stderr_path: Path) -> subprocess.CompletedProcess[str]:
     stdout_path.parent.mkdir(parents=True, exist_ok=True)
-    result = subprocess.run(
-        [str(arg) for arg in argv],
-        cwd=str(cwd),
-        env=env,
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        timeout=timeout,
-        check=False,
-    )
+    try:
+        result = subprocess.run(
+            [str(arg) for arg in argv],
+            cwd=str(cwd),
+            env=env,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=timeout,
+            check=False,
+        )
+    except subprocess.TimeoutExpired as exc:
+        stdout = exc.stdout or ""
+        stderr = exc.stderr or ""
+        if isinstance(stdout, bytes):
+            stdout = stdout.decode("utf-8", errors="replace")
+        if isinstance(stderr, bytes):
+            stderr = stderr.decode("utf-8", errors="replace")
+        stdout_path.write_text(str(stdout), encoding="utf-8")
+        stderr_path.write_text(str(stderr), encoding="utf-8")
+        (stderr_path.parent / f"{stderr_path.stem}.timeout.txt").write_text(
+            f"timeout_seconds={timeout}\ncmd={' '.join(map(str, argv))}\n",
+            encoding="utf-8",
+        )
+        raise
     stdout = result.stdout or ""
     stderr = result.stderr or ""
     stdout_path.write_text(stdout, encoding="utf-8")
@@ -340,6 +356,72 @@ def _run_subprocess(argv: list[str], *, cwd: Path, env: dict[str, str], timeout:
             f"stderr:\n{stderr[-2000:]}"
         )
     return result
+
+
+def _collection_records(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [record for record in records if str(record.get("record_type") or "train_episode") != "policy_probe"]
+
+
+def _completed_rollouts(collection_records: list[dict[str, Any]], num_envs: int) -> int:
+    total = 0
+    for record in collection_records:
+        try:
+            total += int(record.get("episodes_in_window", num_envs))
+        except (TypeError, ValueError):
+            total += int(num_envs)
+    return total
+
+
+def _terminate_local_processes_matching(required_terms: list[str], *, timeout: float = 15.0) -> list[dict[str, Any]]:
+    terms = [term for term in required_terms if term]
+    if len(terms) < 2:
+        raise ValueError("refusing to terminate local processes without at least two match terms")
+    if os.name == "nt":
+        quoted_terms = ",".join("'" + term.replace("'", "''") + "'" for term in terms)
+        script = (
+            f"$terms=@({quoted_terms}); "
+            "$matches=@(); "
+            "Get-CimInstance Win32_Process -Filter \"name = 'python.exe' or name = 'python3.exe'\" | "
+            "ForEach-Object { $cmd=[string]$_.CommandLine; "
+            "$ok=$true; foreach ($term in $terms) { if ($cmd -notlike ('*' + $term + '*')) { $ok=$false } }; "
+            "if ($ok) { $matches += [ordered]@{pid=[int]$_.ProcessId; command=$cmd}; "
+            "Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue } }; "
+            "$matches | ConvertTo-Json -Depth 4 -Compress"
+        )
+        completed = subprocess.run(
+            ["powershell.exe", "-NoProfile", "-Command", script],
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            check=False,
+        )
+        text = (completed.stdout or "").strip()
+        if completed.returncode != 0 or not text:
+            return []
+        try:
+            payload = json.loads(text)
+        except json.JSONDecodeError:
+            return []
+        return [payload] if isinstance(payload, dict) else [item for item in payload if isinstance(item, dict)]
+
+    completed = subprocess.run(["ps", "-eo", "pid=,args="], capture_output=True, text=True, timeout=timeout, check=False)
+    matches: list[dict[str, Any]] = []
+    self_pid = os.getpid()
+    for row in (completed.stdout or "").splitlines():
+        stripped = row.strip()
+        if not stripped:
+            continue
+        pid_s, _, command = stripped.partition(" ")
+        try:
+            pid = int(pid_s)
+        except ValueError:
+            continue
+        if pid == self_pid:
+            continue
+        if all(term in command for term in terms):
+            matches.append({"pid": pid, "command": command})
+            os.kill(pid, signal.SIGTERM)
+    return matches
 
 
 def _find_latest_run_dir(bundle: dict[str, Any], started_at: float) -> Path:
@@ -481,7 +563,7 @@ def _run_train(bundle: dict[str, Any], out_dir: Path) -> None:
 def _run_eval(bundle: dict[str, Any], out_dir: Path) -> None:
     _validate(bundle, out_dir)
     if not bundle.get("dry_run"):
-        checkpoint = out_dir / "agent_checkpoint.pt"
+        checkpoint = Path(str(bundle.get("checkpoint") or out_dir / "agent_checkpoint.pt"))
         _run_mjlab_rollout(bundle, out_dir, checkpoint, mode="eval")
         return
     task_family = str(bundle.get("task_family", "unitree"))
@@ -582,31 +664,43 @@ def _run_mjlab_train(bundle: dict[str, Any], out_dir: Path) -> None:
     motion_file = _motion_file(bundle)
     if motion_file:
         argv.extend(["--motion-file", motion_file])
-    _run_subprocess(
-        [str(arg) for arg in argv],
-        cwd=unitree_root,
-        env=_external_env(bundle),
-        timeout=float(
-            os.environ.get(
-                "UNITREE_MJLAB_TRAIN_TIMEOUT_SECONDS",
-                str(float(bundle["benchmark"].get("train_seconds") or 900.0) + 900.0),
-            )
-        ),
-        stdout_path=log_dir / "mjlab-train.stdout.log",
-        stderr_path=log_dir / "mjlab-train.stderr.log",
+    train_seconds = bundle["benchmark"].get("train_seconds")
+    train_timeout = (
+        float(train_seconds)
+        if train_seconds is not None
+        else float(os.environ.get("UNITREE_MJLAB_TRAIN_TIMEOUT_SECONDS", "1800.0"))
     )
+    timed_out = False
+    terminated_processes: list[dict[str, Any]] = []
+    try:
+        _run_subprocess(
+            [str(arg) for arg in argv],
+            cwd=unitree_root,
+            env=_external_env(bundle),
+            timeout=train_timeout,
+            stdout_path=log_dir / "mjlab-train.stdout.log",
+            stderr_path=log_dir / "mjlab-train.stderr.log",
+        )
+    except subprocess.TimeoutExpired:
+        if train_seconds is None:
+            raise
+        timed_out = True
+        try:
+            terminated_processes = _terminate_local_processes_matching([str(bundle["run_id"]), "mjlab_train_bridge.py"])
+        except Exception as exc:  # noqa: BLE001 - timeout recovery should still write partial artifacts.
+            terminated_processes = [{"error": str(exc)}]
     run_dir = _find_latest_run_dir(bundle, started_at)
     checkpoint = _checkpoint_from_run_dir(run_dir)
     shutil.copy2(checkpoint, out_dir / "agent_checkpoint.pt")
-    total_steps = int(iterations * num_envs * steps_per_env)
+    target_total_steps = int(iterations * num_envs * steps_per_env)
     partial_path = out_dir / "train_result_partial.json"
     if partial_path.exists():
         payload = json.loads(partial_path.read_text(encoding="utf-8"))
     else:
         payload = {}
     records = payload.get("episode_records") if isinstance(payload.get("episode_records"), list) else []
-    collection_records = [record for record in records if str(record.get("record_type") or "train_episode") != "policy_probe"]
-    if not collection_records:
+    collection_records = _collection_records(records)
+    if not collection_records and not timed_out:
         records = []
         for idx in range(iterations):
             records.append(
@@ -629,27 +723,44 @@ def _run_mjlab_train(bundle: dict[str, Any], out_dir: Path) -> None:
             records[-1]["episodes_in_window"] = num_envs
             records[-1]["env_steps_in_window"] = num_envs * steps_per_env
         collection_records = records
+    total_steps = 0
+    try:
+        total_steps = int(payload.get("total_steps") or 0)
+    except (TypeError, ValueError):
+        total_steps = 0
+    if total_steps <= 0 and collection_records:
+        try:
+            total_steps = int(collection_records[-1].get("step", 0) or 0)
+        except (TypeError, ValueError):
+            total_steps = 0
+    if total_steps <= 0 and not timed_out:
+        total_steps = target_total_steps
+    episodes_completed = _completed_rollouts(collection_records, num_envs)
     last_metrics = payload.get("last_metrics") if isinstance(payload.get("last_metrics"), dict) else {}
     last_metrics.update(
         {
-            "gradient_updates": float(len(collection_records) or iterations),
+            "gradient_updates": float(len(collection_records) if timed_out else (len(collection_records) or iterations)),
             "mjlab_num_envs": float(num_envs),
             "samples_per_iteration": float(num_envs * steps_per_env),
+            "mjlab_target_iterations": float(iterations),
+            "mjlab_completed_iterations": float(len(collection_records)),
             "policy_probe_count": float(len([record for record in records if str(record.get("record_type")) == "policy_probe"])),
         }
     )
+    if timed_out:
+        last_metrics["time_budget_exhausted"] = 1.0
     payload = {
         "episode_records": records,
         "total_steps": total_steps,
         "env_steps": total_steps,
-        "episodes_completed": int(iterations * num_envs),
-        "completed_episodes": int(iterations * num_envs),
-        "episode_batches": len(collection_records) or iterations,
-        "gradient_updates": len(collection_records) or iterations,
+        "episodes_completed": episodes_completed,
+        "completed_episodes": episodes_completed,
+        "episode_batches": len(collection_records) if timed_out else (len(collection_records) or iterations),
+        "gradient_updates": len(collection_records) if timed_out else (len(collection_records) or iterations),
         "avg_return": float(np.mean([float(record.get("return", 0.0)) for record in collection_records])) if collection_records else 0.0,
         "avg_length": float(np.mean([float(record.get("length", steps_per_env)) for record in collection_records])) if collection_records else float(steps_per_env),
         "last_metrics": last_metrics,
-        "stop_reason": "mjlab_train_complete",
+        "stop_reason": "time_budget_exhausted" if timed_out else "mjlab_train_complete",
         "external_backend_scaffold": False,
         "mjlab": {
             "task_id": task_id,
@@ -657,11 +768,14 @@ def _run_mjlab_train(bundle: dict[str, Any], out_dir: Path) -> None:
             "checkpoint_path": str(checkpoint),
             "num_envs": num_envs,
             "steps_per_env_per_iteration": steps_per_env,
-            "learning_iterations": iterations,
+            "learning_iterations": len(collection_records) if timed_out else iterations,
+            "target_learning_iterations": iterations,
             "recipe_path": str(recipe_path),
             "resolved_config_path": str(resolved_path),
         },
     }
+    if timed_out:
+        payload["mjlab"]["terminated_processes"] = terminated_processes
     if resolved_path.exists():
         resolved_payload = json.loads(resolved_path.read_text(encoding="utf-8"))
         payload["mjlab"]["applied_overrides"] = resolved_payload.get("applied", [])
