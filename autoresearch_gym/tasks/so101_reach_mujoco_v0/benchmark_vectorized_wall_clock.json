@@ -25,6 +25,7 @@
   },
   "notes": [
     "Use with seed_trainable_vectorized.py for fixed wall-clock SAC recipe research.",
+    "Reach success mirrors the SO101-Nexus ReachConfig default success_threshold=0.02 m, with targets sampled from a 0.15 m half-extent 3D workspace around the task center.",
     "The environment and fixed eval case bank match the non-vectorized SO-101 reach benchmark."
   ]
 }

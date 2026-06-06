@@ -21,6 +21,7 @@
   "eval_case_bank": "eval_cases.json",
   "notes": [
     "Vision training is opt-in via the pixel actor-critic seed; existing state-based SO-101 reach benchmarks are unchanged.",
+    "Reach success mirrors the SO101-Nexus ReachConfig default success_threshold=0.02 m, with targets sampled from a 0.15 m half-extent 3D workspace around the task center.",
     "The policy input feed is the low-resolution wrist camera plus proprioception. The world feed is debug-only and appears in synchronized sampled trajectory artifacts."
   ]
 }

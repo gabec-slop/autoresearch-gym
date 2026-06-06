@@ -24,6 +24,7 @@
   },
   "notes": [
     "The SO-101 task requires MuJoCo Menagerie robotstudio_so101/so101.xml from AUTORESEARCH_SO101_MJCF, MUJOCO_MENAGERIE_PATH, or .external/mujoco_menagerie and fails closed if the real RobotStudio/Menagerie model is missing.",
+    "Reach success mirrors the SO101-Nexus ReachConfig default success_threshold=0.02 m, with targets sampled from a 0.15 m half-extent 3D workspace around the task center.",
     "This first benchmark is a deterministic reach-to-target control surface; grasping/manipulation tasks should be added as separate benchmarks after the reach task is stable."
   ]
 }

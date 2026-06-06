@@ -150,6 +150,18 @@ SEED_CASES: tuple[SeedCase, ...] = (
         },
     ),
     SeedCase(
+        "so101-reach-vectorized-mujoco",
+        "autoresearch_gym/tasks/so101_reach_mujoco_v0/benchmark_vectorized_wall_clock.json",
+        "autoresearch_gym/tasks/so101_reach_mujoco_v0/seed_trainable_vectorized.py",
+        required_modules=("mujoco",),
+        benchmark_overrides={
+            "max_steps": 4,
+            "train_seconds": 2,
+            "eval_episodes": 1,
+            "env_kwargs": {"max_steps": 4},
+        },
+    ),
+    SeedCase(
         "so101-reach-vision-mujoco",
         "autoresearch_gym/tasks/so101_reach_mujoco_v0/benchmark_vision.json",
         "autoresearch_gym/tasks/so101_reach_mujoco_v0/seed_trainable_pixel_actor_critic.py",

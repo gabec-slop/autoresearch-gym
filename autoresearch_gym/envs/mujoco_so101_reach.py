@@ -13,10 +13,14 @@ from gymnasium import spaces
 from autoresearch_gym.envs.vision import _resize_rgb
 
 
-SUCCESS_THRESHOLD = 0.035
+SUCCESS_THRESHOLD = 0.02
 DEFAULT_FRAME_SKIP = 10
+TARGET_RADIUS = 0.02
 TARGET_CENTER = np.asarray([0.32, 0.0, 0.18], dtype=np.float32)
-TARGET_RANGE = np.asarray([0.07, 0.07, 0.05], dtype=np.float32)
+TARGET_WORKSPACE_HALF_EXTENT = 0.15
+TARGET_RANGE = np.full(3, TARGET_WORKSPACE_HALF_EXTENT, dtype=np.float32)
+TARGET_LOW = TARGET_CENTER - TARGET_RANGE
+TARGET_HIGH = TARGET_CENTER + TARGET_RANGE
 RENDER_CAMERA_LOOKAT = np.asarray([0.20, 0.0, 0.18], dtype=np.float64)
 
 JOINT_NAMES = (
@@ -115,8 +119,8 @@ class AutoresearchMujocoSO101ReachEnv(gym.Env[dict[str, np.ndarray], np.ndarray]
                     "proprio": spaces.Box(low=-np.inf, high=np.inf, shape=(self.model.nu * 3,), dtype=np.float32),
                     "achieved_goal": spaces.Box(low=-np.inf, high=np.inf, shape=(3,), dtype=np.float32),
                     "desired_goal": spaces.Box(
-                        low=TARGET_CENTER - TARGET_RANGE,
-                        high=TARGET_CENTER + TARGET_RANGE,
+                        low=TARGET_LOW,
+                        high=TARGET_HIGH,
                         dtype=np.float32,
                     ),
                 }
@@ -127,15 +131,15 @@ class AutoresearchMujocoSO101ReachEnv(gym.Env[dict[str, np.ndarray], np.ndarray]
                     "observation": spaces.Box(low=-np.inf, high=np.inf, shape=(obs_dim,), dtype=np.float32),
                     "achieved_goal": spaces.Box(low=-np.inf, high=np.inf, shape=(3,), dtype=np.float32),
                     "desired_goal": spaces.Box(
-                        low=TARGET_CENTER - TARGET_RANGE,
-                        high=TARGET_CENTER + TARGET_RANGE,
+                        low=TARGET_LOW,
+                        high=TARGET_HIGH,
                         dtype=np.float32,
                     ),
                 }
             )
 
     def _sample_target(self) -> np.ndarray:
-        return (TARGET_CENTER + self.rng.uniform(-TARGET_RANGE, TARGET_RANGE)).astype(np.float32)
+        return self.rng.uniform(TARGET_LOW, TARGET_HIGH).astype(np.float32)
 
     def reset(self, *, seed: int | None = None, options: dict[str, Any] | None = None):
         if seed is not None:
@@ -362,7 +366,7 @@ def write_so101_reach_scene_xml(so101_xml_path: Path) -> Path:
                 "name": "target",
                 "type": "sphere",
                 "pos": f"{TARGET_CENTER[0]:.6f} {TARGET_CENTER[1]:.6f} {TARGET_CENTER[2]:.6f}",
-                "size": "0.018",
+                "size": f"{TARGET_RADIUS:.6f}",
                 "rgba": "0.1 0.8 0.25 0.6",
             },
         )

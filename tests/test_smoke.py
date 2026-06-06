@@ -4766,6 +4766,15 @@ def test_mujoco_so101_reach_fails_when_real_assets_are_missing(monkeypatch) -> N
         so101_env.AutoresearchMujocoSO101ReachEnv(render_mode="rgb_array")
 
 
+def test_mujoco_so101_reach_contract_matches_nexus_reach_defaults() -> None:
+    from autoresearch_gym.envs import mujoco_so101_reach as so101_env
+
+    assert so101_env.SUCCESS_THRESHOLD == pytest.approx(0.02)
+    assert so101_env.TARGET_WORKSPACE_HALF_EXTENT == pytest.approx(0.15)
+    np.testing.assert_allclose(so101_env.TARGET_LOW, np.asarray([0.17, -0.15, 0.03], dtype=np.float32))
+    np.testing.assert_allclose(so101_env.TARGET_HIGH, np.asarray([0.47, 0.15, 0.33], dtype=np.float32))
+
+
 def test_mujoco_so101_reach_fixed_case_reset_step_and_render() -> None:
     pytest.importorskip("mujoco")
 
