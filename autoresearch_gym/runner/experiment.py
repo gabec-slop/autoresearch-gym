@@ -524,6 +524,8 @@ DEFAULT_VISUAL_CONTROL: dict[str, Any] = {
     "visual_mode": "sampled_trajectory",
     "live_frame_interval_seconds": 5.0,
     "trajectory_sample_rate": 0.05,
+    "trajectory_target_samples": 24,
+    "trajectory_sample_interval_seconds": 0.0,
     "trajectory_frame_stride": 2,
     "trajectory_playback_fps": 20.0,
     "jpeg_quality": 70,
@@ -571,6 +573,18 @@ def normalize_visual_control(payload: dict[str, Any] | None) -> dict[str, Any]:
         0.0,
         1.0,
     )
+    control["trajectory_target_samples"] = _bounded_int(
+        payload.get("trajectory_target_samples"),
+        int(control["trajectory_target_samples"]),
+        1,
+        10_000,
+    )
+    control["trajectory_sample_interval_seconds"] = _bounded_float(
+        payload.get("trajectory_sample_interval_seconds"),
+        float(control["trajectory_sample_interval_seconds"]),
+        0.0,
+        86_400.0,
+    )
     control["trajectory_frame_stride"] = _bounded_int(
         payload.get("trajectory_frame_stride"),
         int(control["trajectory_frame_stride"]),
@@ -595,7 +609,33 @@ def normalize_visual_control(payload: dict[str, Any] | None) -> dict[str, Any]:
     return control
 
 
-def should_sample_visual_episode(episode: int, control: dict[str, Any]) -> bool:
+def trajectory_sample_interval_seconds(control: dict[str, Any], train_seconds: float | None) -> float:
+    explicit_interval = float(control.get("trajectory_sample_interval_seconds", 0.0) or 0.0)
+    if explicit_interval > 0.0:
+        return explicit_interval
+    if train_seconds is None or train_seconds <= 0.0:
+        return 0.0
+    target_samples = int(control.get("trajectory_target_samples", 0) or 0)
+    if target_samples <= 0:
+        return 0.0
+    return float(min(max(float(train_seconds) / float(target_samples), 5.0), 300.0))
+
+
+def should_sample_visual_episode(
+    episode: int,
+    control: dict[str, Any],
+    *,
+    elapsed_seconds: float | None = None,
+    last_sample_elapsed: float | None = None,
+    train_seconds: float | None = None,
+) -> bool:
+    interval_seconds = trajectory_sample_interval_seconds(control, train_seconds)
+    if interval_seconds > 0.0 and elapsed_seconds is not None:
+        if episode == 1 and last_sample_elapsed is None:
+            return True
+        if last_sample_elapsed is None:
+            return elapsed_seconds >= interval_seconds
+        return elapsed_seconds - last_sample_elapsed >= interval_seconds
     sample_rate = float(control.get("trajectory_sample_rate", 0.0) or 0.0)
     if sample_rate <= 0.0:
         return False
@@ -677,6 +717,7 @@ def make_live_writer(
     latest_trajectory_frame_path: Path | None = None
     visual_episode = 0
     visual_sampling_eligible = False
+    last_sampled_elapsed: float | None = None
     visual_env_ids: set[int] = set()
     mujoco_renderers: dict[tuple[int, int, int], Any] = {}
     live_feed_paths: dict[str, str] = {}
@@ -789,6 +830,11 @@ def make_live_writer(
             "playback_fps": float(visual_control.get("trajectory_playback_fps", 20.0)),
             "frame_stride": int(visual_control.get("trajectory_frame_stride", 2)),
             "sample_rate": float(visual_control.get("trajectory_sample_rate", 0.05)),
+            "target_samples": int(visual_control.get("trajectory_target_samples", 24)),
+            "sample_interval_seconds": trajectory_sample_interval_seconds(
+                visual_control,
+                float(benchmark.train_seconds) if benchmark.train_seconds is not None else None,
+            ),
             "width": int(visual_control.get("render_width", DEFAULT_VISUAL_CONTROL["render_width"])),
             "height": int(visual_control.get("render_height", DEFAULT_VISUAL_CONTROL["render_height"])),
         }
@@ -986,6 +1032,11 @@ def make_live_writer(
             ),
             "frame_stride": int(payload.get("frame_stride") or visual_control.get("trajectory_frame_stride", 2)),
             "sample_rate": float(visual_control.get("trajectory_sample_rate", 0.05)),
+            "target_samples": int(visual_control.get("trajectory_target_samples", 24)),
+            "sample_interval_seconds": trajectory_sample_interval_seconds(
+                visual_control,
+                float(benchmark.train_seconds) if benchmark.train_seconds is not None else None,
+            ),
             "width": int(visual_control.get("render_width", DEFAULT_VISUAL_CONTROL["render_width"])),
             "height": int(visual_control.get("render_height", DEFAULT_VISUAL_CONTROL["render_height"])),
             "metadata": payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {},
@@ -993,12 +1044,19 @@ def make_live_writer(
         write_json_atomic(manifest_path, manifest_payload)
 
     def visual_reset(env: gym.Env[np.ndarray, np.ndarray]) -> None:
-        nonlocal visual_episode, visual_sampling_eligible, sampled_status
+        nonlocal visual_episode, visual_sampling_eligible, sampled_status, last_sampled_elapsed
         visual_episode += 1
         control = read_visual_control(force=True)
+        elapsed = time.time() - started_at
         visual_sampling_eligible = (
             str(control.get("visual_mode", DEFAULT_VISUAL_CONTROL["visual_mode"])) == "sampled_trajectory"
-            and should_sample_visual_episode(visual_episode, control)
+            and should_sample_visual_episode(
+                visual_episode,
+                control,
+                elapsed_seconds=elapsed,
+                last_sample_elapsed=last_sampled_elapsed,
+                train_seconds=float(benchmark.train_seconds) if benchmark.train_seconds is not None else None,
+            )
         )
         if sampled_episode is not None:
             if sampled_env_id == id(env):
@@ -1006,6 +1064,7 @@ def make_live_writer(
             else:
                 return
         if visual_sampling_eligible:
+            last_sampled_elapsed = elapsed
             start_sampled_episode(env, visual_episode)
             sample_trajectory_frame(env, 0, "episode_start")
         elif str(control.get("visual_mode")) == "sampled_trajectory":
@@ -1079,7 +1138,7 @@ def make_live_writer(
         diagnostic_series: dict[str, Any] | list[dict[str, Any]] | None = None,
         **_: Any,
     ) -> dict[str, Any]:
-        nonlocal last_frame_at, sampled_status
+        nonlocal last_frame_at, sampled_status, last_sampled_elapsed
         control = read_visual_control()
         visual_mode = str(control.get("visual_mode", DEFAULT_VISUAL_CONTROL["visual_mode"]))
         active_episode_number = int(current_episode or len(episode_records) + 1)
@@ -1226,10 +1285,18 @@ def make_live_writer(
                     write_metrics()
         custom_request: dict[str, Any] | None = None
         if custom_sample_trajectory and visual_mode == "sampled_trajectory":
+            elapsed = time.time() - started_at
             if (
-                should_sample_visual_episode(active_episode_number, control)
+                should_sample_visual_episode(
+                    active_episode_number,
+                    control,
+                    elapsed_seconds=elapsed,
+                    last_sample_elapsed=last_sampled_elapsed,
+                    train_seconds=float(benchmark.train_seconds) if benchmark.train_seconds is not None else None,
+                )
                 and active_episode_number not in custom_sample_completed_episodes
             ):
+                last_sampled_elapsed = elapsed
                 sample_index = custom_sample_request_indices.setdefault(
                     active_episode_number,
                     sampled_trajectory_count + 1,

@@ -37,6 +37,8 @@ from autoresearch_gym.runner.experiment import (
     normalize_train_summary_curve,
     normalize_run_tag,
     sampled_trajectory_source,
+    should_sample_visual_episode,
+    trajectory_sample_interval_seconds,
     utilization_flags,
     validate_sample_trajectory_source_contract,
     validate_train_curve_contract,
@@ -4648,6 +4650,85 @@ def test_mujoco_so101_reach_seed_uses_wall_clock_time_source() -> None:
 
     assert "started_at = time.time()" in source
     assert "started_at = time.perf_counter()" not in source
+
+
+def test_mujoco_so101_reach_seed_is_cleanrl_style_sac() -> None:
+    seed = importlib.import_module("autoresearch_gym.tasks.so101_reach_mujoco_v0.seed_trainable")
+    candidate = seed.get_candidate()
+
+    assert seed.ALGORITHM == "sac"
+    assert candidate["recipe"]["algorithm"] == "sac"
+    assert hasattr(seed, "ReplayBuffer")
+    assert hasattr(seed.Agent, "update")
+
+
+def test_mujoco_so101_default_seeds_are_real_training_recipes() -> None:
+    module_names = [
+        "autoresearch_gym.tasks.so101_reach_mujoco_v0.seed_trainable",
+        "autoresearch_gym.tasks.so101_cube_to_bin_mujoco_v0.seed_trainable",
+        "autoresearch_gym.tasks.so101_vial_to_rack_mujoco_v0.seed_trainable",
+    ]
+
+    for module_name in module_names:
+        seed = importlib.import_module(module_name)
+        candidate = seed.get_candidate()
+        assert candidate["recipe"]["algorithm"] == "sac"
+        assert hasattr(seed, "ReplayBuffer")
+        assert hasattr(seed.Agent, "update")
+
+
+def test_mujoco_so101_seeds_pass_agent_to_live_callback() -> None:
+    seed_paths = [
+        Path("autoresearch_gym/tasks/so101_reach_mujoco_v0/seed_trainable.py"),
+        Path("autoresearch_gym/tasks/so101_reach_mujoco_v0/seed_trainable_vectorized.py"),
+        Path("autoresearch_gym/tasks/so101_pixel_actor_critic_seed.py"),
+    ]
+
+    for seed_path in seed_paths:
+        seed_source = seed_path.read_text(encoding="utf-8")
+        assert "agent=agent" in seed_source
+
+
+def test_mujoco_so101_no_scripted_default_seed_remains() -> None:
+    so101_sources = [
+        path.read_text(encoding="utf-8")
+        for path in Path("autoresearch_gym/tasks").glob("so101_*_mujoco_v0/seed_trainable.py")
+    ]
+
+    assert not Path("autoresearch_gym/tasks/so101_scripted_pick_place_seed.py").exists()
+    assert all("so101_scripted_pick_place_seed" not in source for source in so101_sources)
+    assert all("so101_scripted_pick_place_baseline" not in source for source in so101_sources)
+
+
+def test_visual_sampling_derives_wall_clock_interval_from_target_samples() -> None:
+    control = {
+        "trajectory_sample_rate": 0.05,
+        "trajectory_target_samples": 24,
+        "trajectory_sample_interval_seconds": 0.0,
+    }
+
+    assert trajectory_sample_interval_seconds(control, 1200.0) == pytest.approx(50.0)
+    assert should_sample_visual_episode(
+        1,
+        control,
+        elapsed_seconds=0.0,
+        last_sample_elapsed=None,
+        train_seconds=1200.0,
+    )
+    assert not should_sample_visual_episode(
+        2,
+        control,
+        elapsed_seconds=10.0,
+        last_sample_elapsed=0.0,
+        train_seconds=1200.0,
+    )
+    assert should_sample_visual_episode(
+        3,
+        control,
+        elapsed_seconds=51.0,
+        last_sample_elapsed=0.0,
+        train_seconds=1200.0,
+    )
 
 
 def test_mujoco_so101_scene_exposes_upstream_joint_names_and_limits() -> None:

@@ -191,6 +191,8 @@ def train_agent(
                     current_episode=episode + 1,
                     episode_return=0.0,
                     episode_length=0,
+                    agent=agent,
+                    elapsed_seconds=elapsed_seconds_since(started_at),
                 )
             rewards: list[float] = []
             log_probs: list[torch.Tensor] = []
@@ -255,6 +257,8 @@ def train_agent(
                     current_episode=episode + 1,
                     episode_return=episode_return,
                     episode_length=episode_length,
+                    agent=agent,
+                    elapsed_seconds=elapsed_seconds_since(started_at),
                 )
             if stop_reason == "time_budget_exhausted":
                 break
