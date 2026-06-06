@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -15,6 +16,7 @@ from urllib.parse import parse_qs, urlparse
 from autoresearch_gym.runner import render_rollouts, session_run
 from autoresearch_gym.external.remote_session import run_session_doctor
 from autoresearch_gym.runner.dashboard_server import (
+    DASHBOARD_MANAGER,
     dashboard_url,
     ensure_session_dashboard,
     find_available_port,
@@ -285,6 +287,17 @@ class DashboardHandler(SimpleHTTPRequestHandler):
 
     def do_GET(self) -> None:
         parsed = urlparse(self.path)
+        if parsed.path == "/_autoresearch/identity":
+            self._send_json(
+                200,
+                {
+                    "ok": True,
+                    "managed_by": DASHBOARD_MANAGER,
+                    "root": str(self.dashboard_root),
+                    "pid": os.getpid(),
+                },
+            )
+            return
         if parsed.path == "/_autoresearch/sessions":
             self._send_json(200, {"ok": True, "current_session": self._read_live_session_path(), "sessions": self._list_sessions()})
             return
