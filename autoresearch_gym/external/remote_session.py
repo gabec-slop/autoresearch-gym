@@ -9,6 +9,7 @@ import os
 import shlex
 import subprocess
 import sys
+import time
 from pathlib import Path
 from typing import Any
 
@@ -723,7 +724,12 @@ def _copy_live_file(
     local_path = session_dir / "live" / suffix
     if skip_existing and local_path.exists():
         return
-    target.fetch_remote_file(target.remote_join(remote_session, "live", suffix), local_path, timeout=timeout)
+    tmp_path = local_path.with_suffix(local_path.suffix + f".fetch.{os.getpid()}.{time.time_ns()}.tmp")
+    ok = target.fetch_remote_file(target.remote_join(remote_session, "live", suffix), tmp_path, timeout=timeout)
+    if ok:
+        tmp_path.replace(local_path)
+    else:
+        tmp_path.unlink(missing_ok=True)
 
 
 def _dashboard_path(path: Path) -> str:
