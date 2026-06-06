@@ -20,7 +20,6 @@ from autoresearch_gym.envs.mujoco_so101_reach import (
     _joint_qpos_adrs,
     _joint_qvel_adrs,
     resolve_so101_xml_path,
-    write_so101_primitive_reach_scene_xml,
 )
 
 
@@ -61,7 +60,6 @@ class _AutoresearchMujocoSO101PickPlaceEnv(gym.Env[dict[str, np.ndarray], np.nda
         vision_image_size: int = 84,
         vision_frame_stack: int = 3,
         model_path: str | None = None,
-        allow_primitive_fallback: bool = True,
         **_: Any,
     ) -> None:
         try:
@@ -88,19 +86,15 @@ class _AutoresearchMujocoSO101PickPlaceEnv(gym.Env[dict[str, np.ndarray], np.nda
         self.viewer = None
 
         self.so101_xml_path = resolve_so101_xml_path(model_path)
-        if self.so101_xml_path is not None:
-            self.scene_xml_path = write_so101_pick_place_scene_xml(self.so101_xml_path, self.task_kind)
-            self.model_source = "mujoco_menagerie_robotstudio_so101"
-        elif allow_primitive_fallback:
-            primitive_path = write_so101_primitive_reach_scene_xml()
-            self.scene_xml_path = write_so101_pick_place_scene_xml(primitive_path, self.task_kind)
-            self.model_source = "mujoco_primitive_so101"
-        else:
+        if self.so101_xml_path is None:
             raise FileNotFoundError(
                 "Could not find MuJoCo Menagerie robotstudio_so101/so101.xml. "
                 "Set AUTORESEARCH_SO101_MJCF, set MUJOCO_MENAGERIE_PATH, or clone "
-                "Menagerie into .external/mujoco_menagerie."
+                "Menagerie into .external/mujoco_menagerie. SO-101 benchmarks require "
+                "the real RobotStudio/Menagerie model and do not provide a substitute model."
             )
+        self.scene_xml_path = write_so101_pick_place_scene_xml(self.so101_xml_path, self.task_kind)
+        self.model_source = "mujoco_menagerie_robotstudio_so101"
 
         self.model = self.mujoco.MjModel.from_xml_path(str(self.scene_xml_path))
         self.data = self.mujoco.MjData(self.model)

@@ -33,8 +33,7 @@ SO101_HOME = np.asarray([0.0, -1.35, 1.69, 0.20, 0.0, -0.16], dtype=np.float64)
 class AutoresearchMujocoSO101ReachEnv(gym.Env[dict[str, np.ndarray], np.ndarray]):
     """SO-101 MuJoCo reach task.
 
-    Uses the MuJoCo Menagerie `robotstudio_so101` model when available, with a
-    mesh-free primitive fallback for minimal installs.
+    Uses the MuJoCo Menagerie `robotstudio_so101` model.
     """
 
     metadata = {"render_modes": ["rgb_array", "human"]}
@@ -51,7 +50,6 @@ class AutoresearchMujocoSO101ReachEnv(gym.Env[dict[str, np.ndarray], np.ndarray]
         vision_image_size: int = 84,
         vision_frame_stack: int = 3,
         model_path: str | None = None,
-        allow_primitive_fallback: bool = True,
         **_: Any,
     ) -> None:
         try:
@@ -78,18 +76,15 @@ class AutoresearchMujocoSO101ReachEnv(gym.Env[dict[str, np.ndarray], np.ndarray]
         self.viewer = None
 
         self.so101_xml_path = resolve_so101_xml_path(model_path)
-        if self.so101_xml_path is not None:
-            self.scene_xml_path = write_so101_reach_scene_xml(self.so101_xml_path)
-            self.model_source = "mujoco_menagerie_robotstudio_so101"
-        elif allow_primitive_fallback:
-            self.scene_xml_path = write_so101_primitive_reach_scene_xml()
-            self.model_source = "mujoco_primitive_so101"
-        else:
+        if self.so101_xml_path is None:
             raise FileNotFoundError(
                 "Could not find MuJoCo Menagerie robotstudio_so101/so101.xml. "
                 "Set AUTORESEARCH_SO101_MJCF, set MUJOCO_MENAGERIE_PATH, or clone "
-                "Menagerie into .external/mujoco_menagerie."
+                "Menagerie into .external/mujoco_menagerie. SO-101 benchmarks require "
+                "the real RobotStudio/Menagerie model and do not provide a substitute model."
             )
+        self.scene_xml_path = write_so101_reach_scene_xml(self.so101_xml_path)
+        self.model_source = "mujoco_menagerie_robotstudio_so101"
         self.model = self.mujoco.MjModel.from_xml_path(str(self.scene_xml_path))
         self.data = self.mujoco.MjData(self.model)
         self.ctrl_low, self.ctrl_high = _actuator_ctrl_ranges(self.model)
@@ -424,14 +419,6 @@ def write_so101_reach_scene_xml(so101_xml_path: Path) -> Path:
     return scene_path
 
 
-def write_so101_primitive_reach_scene_xml() -> Path:
-    scene_dir = Path(tempfile.gettempdir()) / "autoresearch_gym_so101"
-    scene_dir.mkdir(parents=True, exist_ok=True)
-    scene_path = scene_dir / "so101_reach_primitive.xml"
-    scene_path.write_text(_SO101_REACH_XML, encoding="utf-8")
-    return scene_path
-
-
 def _actuator_ctrl_ranges(model: Any) -> tuple[np.ndarray, np.ndarray]:
     ranges = np.asarray(model.actuator_ctrlrange, dtype=np.float32)
     return ranges[:, 0], ranges[:, 1]
@@ -466,81 +453,3 @@ def _find_parent(root: ET.Element, child: ET.Element) -> ET.Element | None:
         if child in list(parent):
             return parent
     return None
-
-
-_SO101_REACH_XML = """
-<mujoco model="autoresearch_so101_reach">
-  <compiler angle="radian" autolimits="true"/>
-  <option timestep="0.002" integrator="implicitfast"/>
-  <visual>
-    <global offwidth="1024" offheight="768"/>
-  </visual>
-  <asset>
-    <material name="printed_yellow" rgba="1.0 0.82 0.12 1"/>
-    <material name="servo_black" rgba="0.08 0.08 0.08 1"/>
-    <material name="target_green" rgba="0.1 0.8 0.25 0.55"/>
-    <material name="table_mat" rgba="0.55 0.58 0.62 1"/>
-  </asset>
-  <default>
-    <joint damping="0.60" frictionloss="0.052" armature="0.028"/>
-    <position kp="60" kv="2.0" forcerange="-3.35 3.35"/>
-    <geom condim="3" friction="1.0 0.005 0.0001"/>
-  </default>
-  <worldbody>
-    <light name="key" pos="0 -0.8 1.2" dir="0 0.7 -1" diffuse="0.9 0.9 0.9"/>
-    <camera name="world" pos="0.55 -0.50 0.43" xyaxes="0.673 0.740 0 -0.329 0.299 0.896" fovy="46"/>
-    <geom name="floor" type="plane" pos="0 0 -0.005" size="0.8 0.8 0.02" material="table_mat"/>
-    <site name="target" type="sphere" pos="-0.18 0 0.11" size="0.018" material="target_green"/>
-    <body name="base" pos="0 0 0">
-      <inertial pos="0.0137179 -0.000052 0.0334843" mass="0.147" fullinertia="0.000114686 0.000136117 0.000130364 -4.59787e-07 4.97151e-06 9.75275e-08"/>
-      <geom name="base_plate" type="cylinder" pos="0 0 0.012" size="0.055 0.012" material="printed_yellow"/>
-      <geom name="base_servo" type="box" pos="0.0263 0 0.0437" size="0.022 0.018 0.022" material="servo_black"/>
-      <body name="shoulder" pos="0.0388353 0 0.0624" quat="0 0 -1 0">
-        <joint axis="0 0 1" name="shoulder_pan" type="hinge" range="-1.9198621771937616 1.9198621771937634"/>
-        <inertial pos="-0.0307604 -0.0000167 -0.0252713" mass="0.100006" fullinertia="8.3759e-05 8.10403e-05 2.39783e-05 7.55525e-08 -1.16342e-06 1.54663e-07"/>
-        <geom name="shoulder_servo" type="box" pos="-0.0303992 0.000422241 -0.0417" size="0.021 0.018 0.022" material="servo_black"/>
-        <geom name="shoulder_bracket" type="capsule" fromto="-0.02 0 0.0 -0.075 0 0.018" size="0.014" material="printed_yellow"/>
-        <body name="upper_arm" pos="-0.0303992 -0.0182778 -0.0542" quat="0.5 -0.5 -0.5 -0.5">
-          <joint axis="0 0 1" name="shoulder_lift" type="hinge" range="-1.7453292519943224 1.7453292519943366"/>
-          <inertial pos="-0.0898471 -0.00838224 0.0184089" mass="0.103" fullinertia="4.08002e-05 0.000147318 0.000142487 -1.97819e-05 -4.03016e-08 8.97326e-09"/>
-          <geom name="upper_servo" type="box" pos="-0.11257 -0.0155 0.0187" size="0.021 0.018 0.022" material="servo_black"/>
-          <geom name="upper_link" type="capsule" fromto="-0.010 0.012 0.0182 -0.112 0.012 0.0182" size="0.012" material="printed_yellow"/>
-          <body name="lower_arm" pos="-0.11257 -0.028 0" quat="0.707107 0 0 0.707107">
-            <joint axis="0 0 1" name="elbow_flex" type="hinge" range="-1.69 1.69"/>
-            <inertial pos="-0.0980701 0.00324376 0.0182831" mass="0.104" fullinertia="2.87438e-05 0.000159844 0.00014529 7.41152e-06 1.26409e-06 -4.90188e-08"/>
-            <geom name="lower_servo" type="box" pos="-0.1224 0.0052 0.0187" size="0.021 0.018 0.022" material="servo_black"/>
-            <geom name="lower_link" type="capsule" fromto="-0.010 -0.032 0.0182 -0.130 -0.032 0.0182" size="0.012" material="printed_yellow"/>
-            <body name="wrist" pos="-0.1349 0.0052 0" quat="0.707107 0 0 -0.707107">
-              <joint axis="0 0 1" name="wrist_flex" type="hinge" range="-1.6580628494556928 1.6580627293335335"/>
-              <inertial pos="-0.000103312 -0.0386143 0.0281156" mass="0.079" fullinertia="3.68263e-05 2.5391e-05 2.1e-05 1.7893e-08 -5.28128e-08 3.6412e-06"/>
-              <geom name="wrist_servo" type="box" pos="0 -0.0424 0.0306" size="0.020 0.018 0.020" material="servo_black"/>
-              <geom name="wrist_link" type="capsule" fromto="0 -0.005 0.018 0 -0.061 0.018" size="0.010" material="printed_yellow"/>
-              <body name="gripper" pos="0 -0.0611 0.0181" quat="0.0172091 -0.0172091 0.706897 0.706897">
-                <joint axis="0 0 1" name="wrist_roll" type="hinge" range="-2.7438472969992493 2.841206309382605"/>
-                <inertial pos="0.000213627 0.000245138 -0.025187" mass="0.087" fullinertia="2.75087e-05 4.33657e-05 3.45059e-05 -3.35241e-07 -5.7352e-06 -5.17847e-08"/>
-                <geom name="gripper_body" type="box" pos="0 0 -0.023" size="0.018 0.018 0.028" material="servo_black"/>
-                <geom name="fixed_finger" type="capsule" fromto="-0.018 0.010 -0.045 -0.018 0.010 -0.095" size="0.004" material="printed_yellow"/>
-                <camera name="wrist" pos="0 0.04 -0.04" euler="-0.5 0.0 6.28" fovy="75"/>
-                <site group="3" name="gripperframe" pos="-0.0079 -0.000218121 -0.0981274" quat="0.707107 0 0.707107 0" size="0.009" rgba="0.1 0.4 1.0 1"/>
-                <body name="moving_jaw_so101_v1" pos="0.0202 0.0188 -0.0234" quat="0.707107 0.707107 0 0">
-                  <joint axis="0 0 1" name="gripper" type="hinge" range="-0.17453297762778586 1.7453291995659765"/>
-                  <inertial pos="-0.00157495 -0.0300244 0.0192755" mass="0.012" fullinertia="6.61427e-06 1.89032e-06 5.28738e-06 -3.19807e-07 -5.90717e-09 -1.09945e-07"/>
-                  <geom name="moving_finger" type="capsule" fromto="0 0 0.018 0 -0.050 0.018" size="0.004" material="printed_yellow"/>
-                </body>
-              </body>
-            </body>
-          </body>
-        </body>
-      </body>
-    </body>
-  </worldbody>
-  <actuator>
-    <position name="shoulder_pan" joint="shoulder_pan" ctrlrange="-1.91986 1.91986"/>
-    <position name="shoulder_lift" joint="shoulder_lift" ctrlrange="-1.74533 1.74533"/>
-    <position name="elbow_flex" joint="elbow_flex" ctrlrange="-1.69 1.69"/>
-    <position name="wrist_flex" joint="wrist_flex" ctrlrange="-1.65806 1.65806"/>
-    <position name="wrist_roll" joint="wrist_roll" ctrlrange="-2.74385 2.84121"/>
-    <position name="gripper" joint="gripper" ctrlrange="-0.17453 1.74533"/>
-  </actuator>
-</mujoco>
-""".strip()

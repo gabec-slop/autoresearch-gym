@@ -4675,6 +4675,16 @@ def test_mujoco_so101_scene_exposes_upstream_joint_names_and_limits() -> None:
         env.close()
 
 
+def test_mujoco_so101_reach_fails_when_real_assets_are_missing(monkeypatch) -> None:
+    pytest.importorskip("mujoco")
+    from autoresearch_gym.envs import mujoco_so101_reach as so101_env
+
+    monkeypatch.setattr(so101_env, "resolve_so101_xml_path", lambda model_path=None: None)
+
+    with pytest.raises(FileNotFoundError, match="real RobotStudio/Menagerie model"):
+        so101_env.AutoresearchMujocoSO101ReachEnv(render_mode="rgb_array")
+
+
 def test_mujoco_so101_reach_fixed_case_reset_step_and_render() -> None:
     pytest.importorskip("mujoco")
 
@@ -4787,6 +4797,16 @@ def test_mujoco_so101_pick_place_fixed_case_reset_step_and_render(
         assert float(np.std(frame)) > 0.0
     finally:
         env.close()
+
+
+def test_mujoco_so101_pick_place_fails_when_real_assets_are_missing(monkeypatch) -> None:
+    pytest.importorskip("mujoco")
+    from autoresearch_gym.envs import mujoco_so101_pick_place as so101_pick_place
+
+    monkeypatch.setattr(so101_pick_place, "resolve_so101_xml_path", lambda model_path=None: None)
+
+    with pytest.raises(FileNotFoundError, match="real RobotStudio/Menagerie model"):
+        so101_pick_place.AutoresearchMujocoSO101CubeToBinEnv(render_mode="rgb_array")
 
 
 @pytest.mark.parametrize(

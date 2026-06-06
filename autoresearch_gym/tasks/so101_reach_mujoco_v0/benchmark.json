@@ -23,7 +23,7 @@
     "seed_start": 901000
   },
   "notes": [
-    "The SO-101 task resolves MuJoCo Menagerie robotstudio_so101/so101.xml from AUTORESEARCH_SO101_MJCF, MUJOCO_MENAGERIE_PATH, or .external/mujoco_menagerie. A primitive fallback exists only for minimal smoke installs.",
+    "The SO-101 task requires MuJoCo Menagerie robotstudio_so101/so101.xml from AUTORESEARCH_SO101_MJCF, MUJOCO_MENAGERIE_PATH, or .external/mujoco_menagerie and fails closed if the real RobotStudio/Menagerie model is missing.",
     "This first benchmark is a deterministic reach-to-target control surface; grasping/manipulation tasks should be added as separate benchmarks after the reach task is stable."
   ]
 }

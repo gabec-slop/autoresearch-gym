@@ -23,7 +23,7 @@
     "seed_start": 902000
   },
   "notes": [
-    "Uses MuJoCo Menagerie robotstudio_so101/so101.xml when available and a primitive SO-101 fallback for minimal smoke installs.",
+    "Requires MuJoCo Menagerie robotstudio_so101/so101.xml from AUTORESEARCH_SO101_MJCF, MUJOCO_MENAGERIE_PATH, or .external/mujoco_menagerie and fails closed if the real RobotStudio/Menagerie model is missing.",
     "The achieved goal is the cube center; success means the cube center is inside the bin tolerance."
   ]
 }

@@ -77,9 +77,10 @@ Bundled tasks:
 The SO-101 MuJoCo tasks use MuJoCo Menagerie's `robotstudio_so101` model when
 available. Set `AUTORESEARCH_SO101_MJCF`, set `MUJOCO_MENAGERIE_PATH`, or clone
 Menagerie into `.external/mujoco_menagerie` so
-`.external/mujoco_menagerie/robotstudio_so101/so101.xml` exists. A primitive
-fallback remains available for minimal smoke installs; the manipulation tasks
-add simple MuJoCo cube, bin, vial, and rack geometry around the arm.
+`.external/mujoco_menagerie/robotstudio_so101/so101.xml` exists. These tasks
+fail closed when the real RobotStudio/Menagerie SO-101 assets are missing; the
+manipulation tasks add simple MuJoCo cube, bin, vial, and rack geometry around
+the real arm model.
 
 External Unitree tasks use an `execution_backend` plus an `execution_target`.
 Bundled task files default to `execution_target = "local"` so a Windows or
