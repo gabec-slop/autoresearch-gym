@@ -10,7 +10,7 @@ import time
 import urllib.error
 import urllib.request
 from pathlib import Path
-from urllib.parse import quote
+from urllib.parse import quote, urlparse
 
 
 DASHBOARD_MANAGER = "autoresearch_gym.session_dashboard"
@@ -24,18 +24,40 @@ def dashboard_url(host: str, port: int, session: str | None = None) -> str:
     return url
 
 
+def dashboard_identity_url(host: str, port: int) -> str:
+    display_host = "127.0.0.1" if host in {"", "0.0.0.0", "::"} else host
+    return f"http://{display_host}:{port}/_autoresearch/identity"
+
+
+def read_dashboard_identity(host: str, port: int, *, timeout_seconds: float = 0.5) -> dict | None:
+    try:
+        with urllib.request.urlopen(dashboard_identity_url(host, port), timeout=timeout_seconds) as response:
+            if int(response.status) >= 500:
+                return None
+            payload = json.loads(response.read().decode("utf-8"))
+    except (OSError, urllib.error.URLError, json.JSONDecodeError, UnicodeDecodeError):
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+def port_is_available(host: str, port: int) -> bool:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        try:
+            sock.bind((host, port))
+        except OSError:
+            return False
+        return True
+
+
 def find_available_port(host: str, start: int, end: int | None = None) -> int:
     last = start if end is None else end
     if start <= 0 or last < start:
         raise ValueError("dashboard port range must be positive and ordered")
     for port in range(start, last + 1):
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-            try:
-                sock.bind((host, port))
-            except OSError:
-                continue
-            return port
+        if not port_is_available(host, port):
+            continue
+        return port
     raise RuntimeError(f"no available dashboard port in range {start}-{last} on {host}")
 
 
@@ -94,6 +116,54 @@ def dashboard_pointer_ready(pointer: dict | None, *, timeout_seconds: float = 1.
     return wait_for_dashboard(str(pointer["url"]), timeout_seconds=timeout_seconds)
 
 
+def dashboard_pointer_port(pointer: dict | None) -> int | None:
+    if not pointer:
+        return None
+    try:
+        return int(pointer.get("port"))
+    except (TypeError, ValueError):
+        pass
+    raw_url = pointer.get("url")
+    if not raw_url:
+        return None
+    try:
+        return urlparse(str(raw_url)).port
+    except ValueError:
+        return None
+
+
+def dashboard_pointer_root_matches(pointer: dict | None, root: Path) -> bool:
+    if not pointer or not pointer.get("root"):
+        return True
+    try:
+        return Path(str(pointer["root"])).resolve() == root.resolve()
+    except (OSError, RuntimeError):
+        return False
+
+
+def dashboard_identity_root_matches(identity: dict | None, root: Path) -> bool:
+    if not identity or identity.get("managed_by") != DASHBOARD_MANAGER or not identity.get("root"):
+        return False
+    try:
+        return Path(str(identity["root"])).resolve() == root.resolve()
+    except (OSError, RuntimeError):
+        return False
+
+
+def terminate_managed_dashboard_identity(identity: dict, *, wait_seconds: float = 3.0) -> dict:
+    if identity.get("managed_by") != DASHBOARD_MANAGER:
+        return {"ok": False, "action": "none", "reason": "unmanaged_identity", "identity": identity}
+    pid = identity.get("pid")
+    if not is_process_alive(pid):
+        return {"ok": True, "action": "already_stopped", "pid": pid, "identity": identity}
+    os.kill(int(pid), signal.SIGTERM)
+    deadline = time.monotonic() + max(0.0, wait_seconds)
+    while time.monotonic() < deadline and is_process_alive(pid):
+        time.sleep(0.1)
+    stopped = not is_process_alive(pid)
+    return {"ok": stopped, "action": "terminated", "pid": pid, "identity": identity}
+
+
 def terminate_session_dashboard(session_dir: Path, *, wait_seconds: float = 3.0) -> dict:
     pointer = read_dashboard_pointer(session_dir)
     if not pointer:
@@ -139,7 +209,12 @@ def ensure_session_dashboard(
     root = root.resolve()
     session_path = session_dir.relative_to(root).as_posix() if session_dir.is_relative_to(root) else str(session_dir)
     existing = read_dashboard_pointer(session_dir)
-    if not force_restart and dashboard_pointer_ready(existing, timeout_seconds=1.0):
+    if (
+        not force_restart
+        and dashboard_pointer_port(existing) == port
+        and dashboard_pointer_root_matches(existing, root)
+        and dashboard_pointer_ready(existing, timeout_seconds=1.0)
+    ):
         assert existing is not None
         payload = {
             **existing,
@@ -153,7 +228,30 @@ def ensure_session_dashboard(
     if existing and existing.get("managed_by") == DASHBOARD_MANAGER and is_process_alive(existing.get("pid")):
         terminate_session_dashboard(session_dir)
 
-    selected_port = find_available_port(host, port, port_end)
+    identity = None if force_restart else read_dashboard_identity(host, port, timeout_seconds=1.0)
+    if identity and identity.get("managed_by") == DASHBOARD_MANAGER:
+        if dashboard_identity_root_matches(identity, root):
+            payload = {
+                "url": dashboard_url(host, port, session_path),
+                "host": host,
+                "port": port,
+                "pid": identity.get("pid"),
+                "ready": True,
+                "reused": True,
+                "shared": True,
+                "managed_by": DASHBOARD_MANAGER,
+                "updated_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+                "session_path": session_path,
+                "root": str(root),
+                "source": "preferred_port_identity",
+            }
+            if existing and existing.get("pid") == identity.get("pid") and existing.get("log_path"):
+                payload["log_path"] = existing.get("log_path")
+            write_dashboard_pointer(session_dir, payload)
+            return payload
+        terminate_managed_dashboard_identity(identity)
+
+    selected_port = port if port_is_available(host, port) else find_available_port(host, port, port_end)
     url = dashboard_url(host, selected_port, session_path)
     log_path = session_dir / "live" / "dashboard.log"
     log_path.parent.mkdir(parents=True, exist_ok=True)

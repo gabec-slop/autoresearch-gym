@@ -3205,6 +3205,112 @@ def test_session_dashboard_ensure_reuses_ready_pointer(tmp_path, monkeypatch) ->
     assert dashboard_server.read_dashboard_pointer(session_dir)["reused"] is True
 
 
+def test_session_dashboard_reuses_preferred_port_identity_for_same_root(tmp_path, monkeypatch) -> None:
+    from autoresearch_gym.runner import dashboard_server
+
+    session_dir = tmp_path / "autoresearch_runs" / "sessions" / "new-session"
+    launched: list[list[str]] = []
+    monkeypatch.setattr(
+        dashboard_server,
+        "read_dashboard_identity",
+        lambda host, port, *, timeout_seconds=1.0: {
+            "ok": True,
+            "managed_by": dashboard_server.DASHBOARD_MANAGER,
+            "root": str(tmp_path.resolve()),
+            "pid": 777,
+        },
+    )
+    monkeypatch.setattr(dashboard_server.subprocess, "Popen", lambda cmd, **kwargs: launched.append(list(cmd)))
+
+    payload = dashboard_server.ensure_session_dashboard(
+        session_dir,
+        host="127.0.0.1",
+        port=4174,
+        port_end=4199,
+        root=tmp_path,
+    )
+
+    assert payload["reused"] is True
+    assert payload["shared"] is True
+    assert payload["pid"] == 777
+    assert payload["port"] == 4174
+    assert payload["url"].endswith("?session=autoresearch_runs/sessions/new-session")
+    assert launched == []
+    assert dashboard_server.read_dashboard_pointer(session_dir)["source"] == "preferred_port_identity"
+
+
+def test_session_dashboard_restarts_wrong_root_dashboard_on_preferred_port(tmp_path, monkeypatch) -> None:
+    from autoresearch_gym.runner import dashboard_server
+
+    session_dir = tmp_path / "autoresearch_runs" / "sessions" / "example"
+    terminated: list[dict[str, object]] = []
+    launched: list[list[str]] = []
+
+    class FakeProcess:
+        pid = 888
+
+    monkeypatch.setattr(
+        dashboard_server,
+        "read_dashboard_identity",
+        lambda host, port, *, timeout_seconds=1.0: {
+            "ok": True,
+            "managed_by": dashboard_server.DASHBOARD_MANAGER,
+            "root": str((tmp_path / "other-checkout").resolve()),
+            "pid": 444,
+        },
+    )
+    monkeypatch.setattr(
+        dashboard_server,
+        "terminate_managed_dashboard_identity",
+        lambda identity: terminated.append(dict(identity)) or {"ok": True, "action": "terminated", "pid": identity.get("pid")},
+    )
+    monkeypatch.setattr(dashboard_server, "port_is_available", lambda host, port: port == 4174)
+    monkeypatch.setattr(dashboard_server, "wait_for_dashboard", lambda url, *, timeout_seconds=1.0: True)
+    monkeypatch.setattr(dashboard_server.subprocess, "Popen", lambda cmd, **kwargs: launched.append(list(cmd)) or FakeProcess())
+
+    payload = dashboard_server.ensure_session_dashboard(
+        session_dir,
+        host="127.0.0.1",
+        port=4174,
+        port_end=4199,
+        root=tmp_path,
+    )
+
+    assert terminated and terminated[0]["pid"] == 444
+    assert payload["reused"] is False
+    assert payload["port"] == 4174
+    assert launched[0][launched[0].index("--port") + 1] == "4174"
+    assert launched[0][launched[0].index("--port-end") + 1] == "4174"
+
+
+def test_session_dashboard_falls_back_when_preferred_port_is_unmanaged(tmp_path, monkeypatch) -> None:
+    from autoresearch_gym.runner import dashboard_server
+
+    session_dir = tmp_path / "autoresearch_runs" / "sessions" / "example"
+    launched: list[list[str]] = []
+
+    class FakeProcess:
+        pid = 999
+
+    monkeypatch.setattr(dashboard_server, "read_dashboard_identity", lambda host, port, *, timeout_seconds=1.0: None)
+    monkeypatch.setattr(dashboard_server, "port_is_available", lambda host, port: port == 4175)
+    monkeypatch.setattr(dashboard_server, "wait_for_dashboard", lambda url, *, timeout_seconds=1.0: True)
+    monkeypatch.setattr(dashboard_server.subprocess, "Popen", lambda cmd, **kwargs: launched.append(list(cmd)) or FakeProcess())
+
+    payload = dashboard_server.ensure_session_dashboard(
+        session_dir,
+        host="127.0.0.1",
+        port=4174,
+        port_end=4199,
+        root=tmp_path,
+    )
+
+    assert payload["reused"] is False
+    assert payload["port"] == 4175
+    assert launched[0][launched[0].index("--port") + 1] == "4175"
+    assert launched[0][launched[0].index("--port-end") + 1] == "4175"
+
+
 def test_session_dashboard_child_command_uses_selected_port_end(tmp_path, monkeypatch) -> None:
     from autoresearch_gym.runner import dashboard_server
 
