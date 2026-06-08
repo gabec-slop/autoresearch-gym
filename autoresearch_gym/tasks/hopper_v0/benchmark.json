@@ -3,8 +3,7 @@
   "description": "Canonical MuJoCo Hopper continuous-control benchmark for validating generic RL autoresearch loops.",
   "env_id": "Hopper-v5",
   "env_kwargs": {
-    "render_mode": "rgb_array",
-    "max_episode_steps": 1000
+    "render_mode": "rgb_array"
   },
   "train_episodes": 100,
   "eval_episodes": 10,

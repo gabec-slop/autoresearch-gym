@@ -3,8 +3,7 @@
   "description": "Canonical MuJoCo cart-pendulum balance benchmark using Gymnasium InvertedPendulum-v5.",
   "env_id": "InvertedPendulum-v5",
   "env_kwargs": {
-    "render_mode": "rgb_array",
-    "max_episode_steps": 1000
+    "render_mode": "rgb_array"
   },
   "train_episodes": 100,
   "eval_episodes": 10,

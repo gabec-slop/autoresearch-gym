@@ -257,6 +257,7 @@ def run_remote_in_process_experiment(
         "--out-dir",
         target._remote_display_path(remote_out_dir),
         "--no-record",
+        "--no-dashboard",
     ]
     if remote_session is not None:
         argv.extend(["--session-dir", target._remote_display_path(remote_session)])

@@ -100,7 +100,17 @@ def load_benchmark(path: Path) -> BenchmarkSpec:
         env_kwargs.setdefault("render_mode", payload["render_mode"])
     if "reward_type" in payload:
         env_kwargs.setdefault("reward_type", payload["reward_type"])
-    max_steps = int(payload.get("max_steps", env_kwargs.get("max_steps", 0)))
+    if "max_steps" not in payload:
+        raise ValueError(f"Benchmark {path} must define top-level max_steps")
+    max_steps = int(payload["max_steps"])
+    for horizon_key in ("max_steps", "max_episode_steps"):
+        if horizon_key in env_kwargs and int(env_kwargs[horizon_key]) != max_steps:
+            raise ValueError(
+                f"Benchmark {path} has conflicting env_kwargs.{horizon_key}={env_kwargs[horizon_key]} "
+                f"and top-level max_steps={max_steps}. Keep the episode horizon in benchmark max_steps."
+            )
+    env_kwargs.pop("max_steps", None)
+    env_kwargs.pop("max_episode_steps", None)
     probe_payload = payload.get("train_probe") or {}
     train_probe = TrainProbeSpec(
         enabled=bool(probe_payload.get("enabled", True)),
@@ -139,6 +149,19 @@ PYBULLET_RENDER_REQUIRED_ENV_IDS = {
     "AutoresearchPandaPickAndPlaceDense-v0",
     "PandaBatToGoal-v0",
 }
+
+MAX_STEPS_KWARG_ENV_IDS = {
+    "PandaBatToGoal-v0",
+}
+
+MAX_STEPS_KWARG_ENV_PREFIXES = (
+    "AutoresearchMujoco",
+)
+
+
+def env_accepts_max_steps_kwarg(env_id: str) -> bool:
+    return env_id in MAX_STEPS_KWARG_ENV_IDS or any(env_id.startswith(prefix) for prefix in MAX_STEPS_KWARG_ENV_PREFIXES)
+
 
 def apply_headless_env_override(benchmark: BenchmarkSpec) -> dict[str, Any]:
     if benchmark.env_id in PYBULLET_RENDER_REQUIRED_ENV_IDS:
@@ -210,7 +233,10 @@ def env_kwargs_for_candidate(benchmark: BenchmarkSpec, control_type: str | None 
     if control_type is not None:
         env_kwargs.setdefault("control_type", control_type)
     if benchmark.max_steps > 0:
-        env_kwargs.setdefault("max_episode_steps", int(benchmark.max_steps))
+        horizon = int(benchmark.max_steps)
+        env_kwargs["max_episode_steps"] = horizon
+        if env_accepts_max_steps_kwarg(benchmark.env_id):
+            env_kwargs["max_steps"] = horizon
     return env_kwargs
 
 
@@ -715,6 +741,9 @@ def make_live_writer(
     latest_trajectory_index: int | None = None
     latest_trajectory_manifest_path: Path | None = None
     latest_trajectory_frame_path: Path | None = None
+    latest_completed_trajectory_index: int | None = None
+    latest_completed_trajectory_manifest_path: Path | None = None
+    latest_completed_trajectory_frame_path: Path | None = None
     visual_episode = 0
     visual_sampling_eligible = False
     last_sampled_elapsed: float | None = None
@@ -843,8 +872,26 @@ def make_live_writer(
     def stop_sampled_episode(status: str, reason: str | None = None) -> None:
         nonlocal sampled_episode, sampled_manifest_path, sampled_frames, sampled_steps, sampled_feed_specs
         nonlocal sampled_status, sampled_last_step, sampled_env_id, sampled_trajectory_index
+        nonlocal latest_trajectory_index, latest_trajectory_manifest_path, latest_trajectory_frame_path
+        nonlocal latest_completed_trajectory_index, latest_completed_trajectory_manifest_path
+        nonlocal latest_completed_trajectory_frame_path
+        stopped_index = sampled_trajectory_index
+        stopped_manifest = sampled_manifest_path
+        stopped_latest_frame = latest_trajectory_frame_path if latest_trajectory_index == sampled_trajectory_index else None
         if sampled_episode is not None:
             write_sampled_manifest(status, sampled_episode, reason)
+        if status == "completed" and sampled_frames:
+            latest_completed_trajectory_index = stopped_index
+            latest_completed_trajectory_manifest_path = stopped_manifest
+            latest_completed_trajectory_frame_path = stopped_latest_frame
+        elif (
+            latest_trajectory_index == stopped_index
+            and latest_completed_trajectory_manifest_path is not None
+            and latest_completed_trajectory_manifest_path.exists()
+        ):
+            latest_trajectory_index = latest_completed_trajectory_index
+            latest_trajectory_manifest_path = latest_completed_trajectory_manifest_path
+            latest_trajectory_frame_path = latest_completed_trajectory_frame_path
         sampled_episode = None
         sampled_manifest_path = None
         sampled_frames = []

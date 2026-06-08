@@ -7,8 +7,7 @@
     "backend": "mujoco_warp",
     "reward_type": "dense",
     "num_envs": 256,
-    "steps_per_env_per_iteration": 32,
-    "max_steps": 200
+    "steps_per_env_per_iteration": 32
   },
   "train_episodes": 100000,
   "train_seconds": 300,

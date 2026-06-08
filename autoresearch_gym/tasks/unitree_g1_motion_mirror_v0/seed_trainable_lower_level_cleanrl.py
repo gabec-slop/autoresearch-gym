@@ -619,7 +619,7 @@ def make_external_env(benchmark: Any, control_type: str | None = None, reward_re
     del control_type
     env = UnitreeG1LowerLevelEnv(
         render_mode=benchmark.env_kwargs.get("render_mode"),
-        max_steps=int(getattr(benchmark, "max_steps", 80)),
+        max_steps=int(benchmark.max_steps),
     )
     return RewardRecipeWrapper(env, reward_recipe)
 

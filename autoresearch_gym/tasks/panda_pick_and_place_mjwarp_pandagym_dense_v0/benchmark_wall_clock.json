@@ -12,7 +12,6 @@
     "obj_xy_range": 0.3,
     "tabletop_goal_probability": 0.3,
     "reject_initial_success": false,
-    "max_steps": 400,
     "num_envs": 256,
     "steps_per_env_per_iteration": 32
   },

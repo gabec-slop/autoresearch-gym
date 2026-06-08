@@ -4,8 +4,7 @@
   "env_id": "PandaBatToGoal-v0",
   "env_kwargs": {
     "render_mode": "rgb_array",
-    "reward_type": "dense",
-    "max_steps": 120
+    "reward_type": "dense"
   },
   "train_episodes": 100000,
   "train_seconds": 300,

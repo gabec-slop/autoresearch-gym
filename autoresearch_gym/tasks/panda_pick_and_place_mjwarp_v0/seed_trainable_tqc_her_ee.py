@@ -720,7 +720,7 @@ def _sample_policy_trajectory(
     episode = int(request.get("episode") or 0)
     sample_index = int(request.get("sample_index") or 0)
     stride = max(1, int(request.get("frame_stride") or 2))
-    max_steps = int(getattr(benchmark, "max_steps", 50))
+    max_steps = int(benchmark.max_steps)
     seed = int(getattr(benchmark, "eval_seed_start", getattr(benchmark, "train_seed", 0))) + max(sample_index - 1, 0)
     try:
         obs, _info = env.reset(seed=seed)

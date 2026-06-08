@@ -3,8 +3,7 @@
   "description": "Canonical Gymnasium-Robotics Fetch manipulation benchmark where the robot pushes a block to a target on the table.",
   "env_id": "FetchPushDense-v4",
   "env_kwargs": {
-    "render_mode": "rgb_array",
-    "max_episode_steps": 50
+    "render_mode": "rgb_array"
   },
   "train_episodes": 200,
   "eval_episodes": 25,

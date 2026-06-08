@@ -295,6 +295,7 @@ def train_agent(
         def thunk():
             env_kwargs = dict(getattr(benchmark, "env_kwargs", {}))
             env_kwargs["render_mode"] = None
+            env_kwargs["max_episode_steps"] = int(getattr(benchmark, "max_steps"))
             env = gym.make(benchmark.env_id, **env_kwargs)
             wrapped = RewardRecipeWrapper(env, REWARD_RECIPE)
             wrapped.action_space.seed(benchmark.train_seed + seed_offset)

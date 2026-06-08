@@ -70,6 +70,9 @@ def _action_batch(agent: Any, obs: np.ndarray, deterministic: bool = False) -> n
 def _make_training_env(benchmark: Any, candidate: CandidateSpec, seed_offset: int):
     def thunk():
         env_kwargs = dict(getattr(benchmark, "env_kwargs", {}))
+        horizon = int(getattr(benchmark, "max_steps"))
+        env_kwargs["max_steps"] = horizon
+        env_kwargs["max_episode_steps"] = horizon
         if candidate.control_type is not None:
             env_kwargs.setdefault("control_type", candidate.control_type)
         env = gym.make(benchmark.env_id, **env_kwargs)
