@@ -8,7 +8,7 @@
   },
   "train_episodes": 50,
   "eval_episodes": 10,
-  "max_steps": 120,
+  "max_steps": 512,
   "render_mode": "rgb_array",
   "primary_metric": "eval_success_rate",
   "primary_metric_mode": "maximize",
@@ -24,6 +24,7 @@
   },
   "notes": [
     "Requires MuJoCo Menagerie robotstudio_so101/so101.xml from AUTORESEARCH_SO101_MJCF, MUJOCO_MENAGERIE_PATH, or .external/mujoco_menagerie and fails closed if the real RobotStudio/Menagerie model is missing.",
-    "The achieved goal is the vial center suspended in the rack slot; success requires center tolerance, uprightness, and rack-height tolerance."
+    "The achieved goal is the vial center suspended in the rack slot; success requires center tolerance, uprightness, and rack-height tolerance.",
+    "Dense reward shaping follows the SO101-Nexus v0.3.12 PickAndPlaceEnv/RewardConfig structure: reach progress, grasp signal, grasp-gated placement progress, and completion bonus. Credit: https://pypi.org/project/so101-nexus-mujoco/"
   ]
 }

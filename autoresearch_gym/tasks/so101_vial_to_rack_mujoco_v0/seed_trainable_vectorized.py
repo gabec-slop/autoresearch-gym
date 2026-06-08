@@ -27,7 +27,7 @@ from autoresearch_gym.tasks.so101_reach_mujoco_v0.seed_trainable import (
 )
 
 
-EXP_NAME = "so101_mujoco_reach_vectorized_sac_seed"
+EXP_NAME = "so101_mujoco_vial_to_rack_vectorized_sac_seed"
 MJWARP_PHYSICS_PROFILE_NAME = "so101_follower_feetech_plastic_guess_v0"
 NUM_ENVS = 8
 MJWARP_NUM_ENVS = 64
@@ -64,13 +64,20 @@ def _benchmark_max_steps(benchmark: Any) -> int:
 def get_candidate() -> dict[str, Any]:
     return {
         "description": (
-            "SO-101 MuJoCo reach vectorized SAC baseline. Uses headless SyncVectorEnv "
-            "workers by default and switches to a MuJoCo Warp batched collector when "
-            "the benchmark requests backend=mujoco_warp. Sampled dashboard trajectories "
-            "are candidate-rendered so MJWarp Feetech delta-control runs are visualized "
-            "with the same guessed actuator dynamics used for collection."
+            "SO-101 MuJoCo vial-to-rack vectorized SAC baseline. Uses headless "
+            "SyncVectorEnv workers by default and switches to a MuJoCo Warp batched "
+            "collector when the benchmark requests backend=mujoco_warp. Sampled "
+            "dashboard trajectories are candidate-rendered so MJWarp Feetech "
+            "delta-control runs are visualized with the same guessed joint and "
+            "printed-plastic gripper contact dynamics used for collection."
         ),
-        "recipe": RECIPE,
+        "recipe": {
+            **RECIPE,
+            "task": "vial_to_rack",
+            "control": "mjwarp_feetech_delta_targets",
+            "printed_gripper_profile": "so101_printed_plastic_gripper_guess_v0",
+            "success_requires": ["slot_center", "upright", "rack_height"],
+        },
     }
 
 

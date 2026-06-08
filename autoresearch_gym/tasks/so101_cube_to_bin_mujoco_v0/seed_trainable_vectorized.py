@@ -11,7 +11,12 @@ from autoresearch_gym.envs.mujoco_so101_reach import (
     SO101_FEETECH_ACTUATOR_GUESS_PROFILE,
     SO101_MJWARP_GUESSED_PHYSICS_PROFILE,
 )
-from autoresearch_gym.runner.curves import elapsed_seconds_since, make_train_episode_record, scalar_info_metrics
+from autoresearch_gym.runner.curves import (
+    elapsed_seconds_since,
+    make_train_collection_window_record,
+    make_train_episode_record,
+    scalar_info_metrics,
+)
 from autoresearch_gym.runner.experiment import SAMPLE_TRAJECTORY_SOURCE_CANDIDATE_PROVIDED
 from autoresearch_gym.tasks.so101_reach_mujoco_v0.seed_trainable import (
     ALGORITHM,
@@ -27,7 +32,7 @@ from autoresearch_gym.tasks.so101_reach_mujoco_v0.seed_trainable import (
 )
 
 
-EXP_NAME = "so101_mujoco_reach_vectorized_sac_seed"
+EXP_NAME = "so101_mujoco_cube_to_bin_vectorized_sac_seed"
 MJWARP_PHYSICS_PROFILE_NAME = "so101_follower_feetech_plastic_guess_v0"
 NUM_ENVS = 8
 MJWARP_NUM_ENVS = 64
@@ -36,6 +41,7 @@ LEARNING_STARTS = 1_024
 UPDATE_AFTER = 1_024
 GRADIENT_UPDATES_PER_VECTOR_STEP = 4
 LIVE_CALLBACK_EVERY_STEPS = 512
+TRAIN_COLLECTION_WINDOW_STEPS = 8_192
 RENDER_SIDECAR_ENABLED = True
 VECTOR_ENV_MODE = "sync_or_mujoco_warp"
 MAX_ENV_STEPS_SAFETY_CAP = 2_000_000
@@ -47,6 +53,7 @@ RECIPE = {
     "mjwarp_vector_envs": MJWARP_NUM_ENVS,
     "batch_size": BATCH_SIZE,
     "gradient_updates_per_vector_step": GRADIENT_UPDATES_PER_VECTOR_STEP,
+    "train_collection_window_steps": TRAIN_COLLECTION_WINDOW_STEPS,
     "mjwarp_physics_profile": MJWARP_PHYSICS_PROFILE_NAME,
     "runner": {
         "sample_trajectory_source": SAMPLE_TRAJECTORY_SOURCE_CANDIDATE_PROVIDED,
@@ -64,13 +71,19 @@ def _benchmark_max_steps(benchmark: Any) -> int:
 def get_candidate() -> dict[str, Any]:
     return {
         "description": (
-            "SO-101 MuJoCo reach vectorized SAC baseline. Uses headless SyncVectorEnv "
-            "workers by default and switches to a MuJoCo Warp batched collector when "
-            "the benchmark requests backend=mujoco_warp. Sampled dashboard trajectories "
-            "are candidate-rendered so MJWarp Feetech delta-control runs are visualized "
-            "with the same guessed actuator dynamics used for collection."
+            "SO-101 MuJoCo cube-to-bin vectorized SAC baseline. Uses headless "
+            "SyncVectorEnv workers by default and switches to a MuJoCo Warp batched "
+            "collector when the benchmark requests backend=mujoco_warp. Sampled "
+            "dashboard trajectories are candidate-rendered so MJWarp Feetech "
+            "delta-control runs are visualized with the same guessed joint and "
+            "printed-plastic gripper contact dynamics used for collection."
         ),
-        "recipe": RECIPE,
+        "recipe": {
+            **RECIPE,
+            "task": "cube_to_bin",
+            "control": "mjwarp_feetech_delta_targets",
+            "printed_gripper_profile": "so101_printed_plastic_gripper_guess_v0",
+        },
     }
 
 
@@ -160,6 +173,27 @@ def _info_for_env(infos: Any, index: int, num_envs: int) -> dict[str, Any]:
         except TypeError:
             continue
     return env_info
+
+
+def _mean_vector_info_metrics(infos: Any, num_envs: int) -> dict[str, float | bool]:
+    if not isinstance(infos, dict):
+        return {}
+    metrics: dict[str, float | bool] = {}
+    for key, value in infos.items():
+        if key.startswith("_") or key in {"final_info", "reward_source", "reward_source_url"}:
+            continue
+        if isinstance(value, np.ndarray) and value.shape[:1] == (num_envs,):
+            if value.dtype == np.bool_:
+                metrics[f"{key}_rate"] = float(np.mean(value.astype(np.float32)))
+            elif np.issubdtype(value.dtype, np.number):
+                metrics[f"avg_{key}"] = float(np.mean(value.astype(np.float32)))
+        elif isinstance(value, (list, tuple)) and len(value) == num_envs and value:
+            first = value[0]
+            if isinstance(first, (bool, np.bool_)):
+                metrics[f"{key}_rate"] = float(np.mean(np.asarray(value, dtype=np.float32)))
+            elif isinstance(first, (int, float, np.integer, np.floating)):
+                metrics[f"avg_{key}"] = float(np.mean(np.asarray(value, dtype=np.float32)))
+    return metrics
 
 
 def _render_env_kwargs(benchmark: Any) -> dict[str, Any]:
@@ -487,6 +521,7 @@ def train_agent(
 
     global_step = 0
     gradient_updates = 0
+    completed_episodes = 0
     started_at = time.time()
     budget_seconds = getattr(benchmark, "train_seconds", None)
     deadline = started_at + float(budget_seconds) if budget_seconds is not None else None
@@ -495,11 +530,13 @@ def train_agent(
     active_returns = np.zeros(num_envs, dtype=np.float64)
     active_lengths = np.zeros(num_envs, dtype=np.int64)
     live_step = 0
+    collection_window_step = 0
+    collection_window_rewards: list[float] = []
     render_episode_return = 0.0
     render_episode_length = 0
 
     def should_continue() -> bool:
-        if len(episode_records) >= int(benchmark.train_episodes):
+        if completed_episodes >= int(benchmark.train_episodes):
             return False
         if global_step >= MAX_ENV_STEPS_SAFETY_CAP:
             return False
@@ -526,9 +563,9 @@ def train_agent(
             finished_return = render_episode_return
             finished_length = render_episode_length
             if render_stepper is None:
-                render_obs, _ = render_env.reset(seed=int(benchmark.train_seed) + 900_000 + len(episode_records))
+                render_obs, _ = render_env.reset(seed=int(benchmark.train_seed) + 900_000 + completed_episodes)
             else:
-                render_obs, _ = render_stepper.reset(seed=int(benchmark.train_seed) + 900_000 + len(episode_records))
+                render_obs, _ = render_stepper.reset(seed=int(benchmark.train_seed) + 900_000 + completed_episodes)
             render_episode_return = 0.0
             render_episode_length = 0
             return finished_return, finished_length
@@ -585,6 +622,7 @@ def train_agent(
             active_returns += rewards.astype(np.float64)
             active_lengths += 1
             global_step += num_envs
+            collection_window_rewards.extend(float(value) for value in rewards)
             sidecar_return, sidecar_length = advance_render_env()
 
             for env_index in np.flatnonzero(dones):
@@ -600,10 +638,39 @@ def train_agent(
                     env_index=int(env_index),
                 )
                 episode_records.append(record)
+                completed_episodes += 1
                 active_returns[env_index] = 0.0
                 active_lengths[env_index] = 0
-                if len(episode_records) >= int(benchmark.train_episodes):
+                if completed_episodes >= int(benchmark.train_episodes):
                     break
+
+            if global_step - collection_window_step >= TRAIN_COLLECTION_WINDOW_STEPS:
+                info_metrics = _mean_vector_info_metrics(infos, num_envs)
+                info_metrics.update(
+                    {
+                        "avg_step_reward": float(np.mean(collection_window_rewards))
+                        if collection_window_rewards
+                        else 0.0,
+                        "avg_active_return": float(np.mean(active_returns)) if active_returns.size else 0.0,
+                        "avg_active_length": float(np.mean(active_lengths)) if active_lengths.size else 0.0,
+                    }
+                )
+                episode_records.append(
+                    make_train_collection_window_record(
+                        episode=len(episode_records) + 1,
+                        step=global_step,
+                        return_value=float(info_metrics["avg_active_return"]),
+                        length=float(info_metrics["avg_active_length"]),
+                        episodes_in_window=0,
+                        env_steps_in_window=global_step - collection_window_step,
+                        success=bool(float(info_metrics.get("is_success_rate", 0.0)) > 0.0),
+                        elapsed_seconds=elapsed_seconds_since(started_at),
+                        info_metrics=info_metrics,
+                        window_kind="active_collection_heartbeat",
+                    )
+                )
+                collection_window_step = global_step
+                collection_window_rewards.clear()
 
             if global_step >= UPDATE_AFTER and replay.size >= BATCH_SIZE:
                 for _ in range(GRADIENT_UPDATES_PER_VECTOR_STEP):
@@ -629,7 +696,7 @@ def train_agent(
                     total_steps=global_step,
                     last_metrics=last_metrics,
                     env=render_env,
-                    current_episode=len(episode_records) + 1,
+                    current_episode=completed_episodes + 1,
                     episode_return=sidecar_return,
                     episode_length=sidecar_length,
                     agent=agent,
@@ -654,28 +721,29 @@ def train_agent(
     wall_clock = time.time() - started_at
     stop_reason = (
         "episode_cap_reached"
-        if len(episode_records) >= int(benchmark.train_episodes)
+        if completed_episodes >= int(benchmark.train_episodes)
         else "max_env_steps_safety_cap_reached"
         if global_step >= MAX_ENV_STEPS_SAFETY_CAP
         else "time_budget_exhausted"
         if deadline is not None and time.time() >= deadline
         else "loop_exited"
     )
-    returns = [float(record["return"]) for record in episode_records]
-    successes = [1.0 if record.get("success") else 0.0 for record in episode_records]
+    completed_records = [record for record in episode_records if record.get("record_type") == "train_episode"]
+    returns = [float(record["return"]) for record in completed_records]
+    successes = [1.0 if record.get("success") else 0.0 for record in completed_records]
     return agent, {
         "algorithm": ALGORITHM,
         "episodes": int(benchmark.train_episodes),
-        "episodes_completed": len(episode_records),
+        "episodes_completed": completed_episodes,
         "time_budget_seconds": float(budget_seconds) if budget_seconds is not None else None,
         "stop_reason": stop_reason,
         "total_steps": global_step,
         "env_steps": global_step,
-        "completed_episodes": len(episode_records),
+        "completed_episodes": completed_episodes,
         "episode_batches": len(episode_records),
         "avg_return": float(np.mean(returns)) if returns else 0.0,
         "success_rate": float(np.mean(successes)) if successes else 0.0,
-        "avg_length": float(np.mean([record["length"] for record in episode_records])) if episode_records else 0.0,
+        "avg_length": float(np.mean([record["length"] for record in completed_records])) if completed_records else 0.0,
         "last_metrics": last_metrics,
         "gradient_updates": gradient_updates,
         "episode_records": episode_records,

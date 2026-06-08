@@ -11,7 +11,7 @@
   },
   "train_episodes": 20,
   "eval_episodes": 5,
-  "max_steps": 120,
+  "max_steps": 512,
   "render_mode": "rgb_array",
   "primary_metric": "eval_success_rate",
   "primary_metric_mode": "maximize",
@@ -21,6 +21,7 @@
   "eval_case_bank": "eval_cases.json",
   "notes": [
     "Vision training is opt-in via the pixel actor-critic seed; existing state-based SO-101 vial-to-rack benchmarks are unchanged.",
-    "The policy input feed is the low-resolution wrist camera plus proprioception. The world feed is debug-only and appears in synchronized sampled trajectory artifacts."
+    "The policy input feed is the low-resolution wrist camera plus proprioception. The world feed is debug-only and appears in synchronized sampled trajectory artifacts.",
+    "Dense reward shaping follows the SO101-Nexus v0.3.12 PickAndPlaceEnv/RewardConfig structure: reach progress, grasp signal, grasp-gated placement progress, and completion bonus. Credit: https://pypi.org/project/so101-nexus-mujoco/"
   ]
 }

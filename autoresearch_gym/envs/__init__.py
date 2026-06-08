@@ -40,19 +40,19 @@ def register_envs() -> None:
         register(
             id="AutoresearchMujocoSO101Reach-v0",
             entry_point="autoresearch_gym.envs.mujoco_so101_reach:AutoresearchMujocoSO101ReachEnv",
-            max_episode_steps=80,
+            max_episode_steps=150,
         )
     if "AutoresearchMujocoSO101CubeToBin-v0" not in registry:
         register(
             id="AutoresearchMujocoSO101CubeToBin-v0",
             entry_point="autoresearch_gym.envs.mujoco_so101_pick_place:AutoresearchMujocoSO101CubeToBinEnv",
-            max_episode_steps=120,
+            max_episode_steps=512,
         )
     if "AutoresearchMujocoSO101VialToRack-v0" not in registry:
         register(
             id="AutoresearchMujocoSO101VialToRack-v0",
             entry_point="autoresearch_gym.envs.mujoco_so101_pick_place:AutoresearchMujocoSO101VialToRackEnv",
-            max_episode_steps=120,
+            max_episode_steps=512,
         )
 
 

@@ -14,27 +14,76 @@ from autoresearch_gym.envs.mujoco_so101_reach import (
     DEFAULT_FRAME_SKIP,
     JOINT_NAMES,
     RENDER_CAMERA_LOOKAT,
+    SO101_FEETECH_ACTUATOR_GUESS_PROFILE,
     SO101_HOME,
+    SO101_MJWARP_GUESSED_PHYSICS_PROFILE,
+    SO101_PRINTED_GRIPPER_CONTACT_GUESS_PROFILE,
     _actuator_ctrl_ranges,
     _denormalize_action,
+    _find_body_id,
     _joint_qpos_adrs,
     _joint_qvel_adrs,
+    _prepare_model_for_mujoco_warp,
     resolve_so101_xml_path,
 )
 
 
 TaskKind = Literal["cube_to_bin", "vial_to_rack"]
 
+SO101_MANIP_MAX_STEPS = 512
 CUBE_SUCCESS_THRESHOLD = 0.055
 VIAL_SUCCESS_THRESHOLD = 0.035
 VIAL_UPRIGHTNESS_THRESHOLD = 0.90
 VIAL_HEIGHT_THRESHOLD = 0.026
-CUBE_OBJECT_CENTER = np.asarray([0.27, -0.06, 0.025], dtype=np.float32)
+NEXUS_REWARD_SOURCE = "SO101-Nexus v0.3.12 PickAndPlaceEnv/RewardConfig"
+NEXUS_REWARD_SOURCE_URL = "https://pypi.org/project/so101-nexus-mujoco/"
+NEXUS_REWARD_REACHING = 0.25
+NEXUS_REWARD_GRASPING = 0.25
+NEXUS_REWARD_TASK_OBJECTIVE = 0.40
+NEXUS_REWARD_COMPLETION_BONUS = 0.10
+NEXUS_REWARD_TANH_SCALE = 5.0
+NEXUS_GRASP_FORCE_THRESHOLD = 0.5
+NEXUS_STATIC_VEL_THRESHOLD = 0.2
+MJWARP_GRASP_PROXY_DISTANCE = 0.035
+CUBE_HALF_EXTENTS = np.asarray([0.0125, 0.0125, 0.0125], dtype=np.float32)
+CUBE_MASS = 0.035 / 8.0
+CUBE_OBJECT_CENTER = np.asarray([0.27, -0.06, float(CUBE_HALF_EXTENTS[2])], dtype=np.float32)
 CUBE_TARGET_CENTER = np.asarray([0.36, 0.065, 0.03], dtype=np.float32)
 VIAL_OBJECT_CENTER = np.asarray([0.28, -0.055, 0.045], dtype=np.float32)
 VIAL_TARGET_CENTER = np.asarray([0.35, 0.055, 0.104], dtype=np.float32)
 OBJECT_RANGE = np.asarray([0.035, 0.025, 0.0], dtype=np.float32)
 TARGET_RANGE = np.asarray([0.025, 0.020, 0.0], dtype=np.float32)
+
+
+def _nexus_reach_progress(distance: np.ndarray | float) -> np.ndarray:
+    return 1.0 - np.tanh(NEXUS_REWARD_TANH_SCALE * np.maximum(0.0, np.asarray(distance, dtype=np.float32)))
+
+
+def _nexus_pick_place_reward(
+    *,
+    tcp_to_obj_dist: np.ndarray | float,
+    obj_to_target_dist: np.ndarray | float,
+    is_grasped: np.ndarray | bool | float,
+    is_complete: np.ndarray | bool | float,
+) -> np.ndarray:
+    """SO101-Nexus-style normalized pick-and-place reward.
+
+    Mirrors the SO101-Nexus v0.3.12 pick-and-place reward budget:
+    reach-to-object progress, binary grasp, grasp-gated placement progress, and
+    completion bonus. See ``NEXUS_REWARD_SOURCE_URL`` for the upstream project.
+    """
+
+    grasp = np.asarray(is_grasped, dtype=np.float32)
+    complete = np.asarray(is_complete, dtype=np.float32)
+    reach_progress = _nexus_reach_progress(tcp_to_obj_dist)
+    task_progress = _nexus_reach_progress(obj_to_target_dist) * grasp
+    reward = (
+        NEXUS_REWARD_REACHING * reach_progress
+        + NEXUS_REWARD_GRASPING * grasp
+        + NEXUS_REWARD_TASK_OBJECTIVE * task_progress
+        + NEXUS_REWARD_COMPLETION_BONUS * complete
+    )
+    return reward.astype(np.float32, copy=False)
 
 
 class _AutoresearchMujocoSO101PickPlaceEnv(gym.Env[dict[str, np.ndarray], np.ndarray]):
@@ -51,7 +100,7 @@ class _AutoresearchMujocoSO101PickPlaceEnv(gym.Env[dict[str, np.ndarray], np.nda
     def __init__(
         self,
         render_mode: str | None = "rgb_array",
-        max_steps: int = 120,
+        max_steps: int = SO101_MANIP_MAX_STEPS,
         frame_skip: int = DEFAULT_FRAME_SKIP,
         reward_type: str = "dense",
         render_width: int = 720,
@@ -110,6 +159,15 @@ class _AutoresearchMujocoSO101PickPlaceEnv(gym.Env[dict[str, np.ndarray], np.nda
             raise RuntimeError("generated SO-101 manipulation scene is missing required sites or freejoint")
         self.object_qpos_adr = int(self.model.jnt_qposadr[object_joint_id])
         self.object_qvel_adr = int(self.model.jnt_dofadr[object_joint_id])
+        self.object_geom_ids = self._collision_geoms_for_body(self.object_body_id)
+        static_body_id = _find_body_id(self.mujoco, self.model, ("gripper", "fixed_jaw_so101_v1", "static_jaw"))
+        moving_body_id = _find_body_id(self.mujoco, self.model, ("moving_jaw_so101_v1", "moving_jaw", "jaw"))
+        self.static_finger_geom_ids = self._collision_geoms_for_body(static_body_id) | self._matching_geom_ids(
+            ("static_finger_pad", "static")
+        )
+        self.moving_finger_geom_ids = self._collision_geoms_for_body(moving_body_id) | self._matching_geom_ids(
+            ("moving_finger_pad", "moving_jaw", "moving")
+        )
 
         self.home_qpos = np.asarray(self.model.qpos0, dtype=np.float64).copy()
         self.home_qpos[self.joint_qpos_adrs] = SO101_HOME
@@ -117,6 +175,7 @@ class _AutoresearchMujocoSO101PickPlaceEnv(gym.Env[dict[str, np.ndarray], np.nda
         self.target = self.target_center.copy()
         self.initial_distance = 0.0
         self.initial_ee_to_object = 0.0
+        self.initial_object_z = float(self.object_center[2])
         self.last_action = np.zeros(self.model.nu, dtype=np.float32)
 
         self.action_space = spaces.Box(low=-1.0, high=1.0, shape=(self.model.nu,), dtype=np.float32)
@@ -178,6 +237,7 @@ class _AutoresearchMujocoSO101PickPlaceEnv(gym.Env[dict[str, np.ndarray], np.nda
         info = self._info(obs)
         self.initial_distance = float(info[f"{self.object_metric_name}_distance"])
         self.initial_ee_to_object = float(info[f"{self.ee_metric_name}_distance"])
+        self.initial_object_z = float(obs["achieved_goal"][2])
         info[f"initial_{self.object_metric_name}_distance"] = self.initial_distance
         info[f"{self.object_metric_name}_progress"] = 0.0
         info[f"initial_{self.ee_metric_name}_distance"] = self.initial_ee_to_object
@@ -211,9 +271,14 @@ class _AutoresearchMujocoSO101PickPlaceEnv(gym.Env[dict[str, np.ndarray], np.nda
         success_array = np.asarray(success, dtype=bool)
         if self.reward_type == "sparse":
             return -(~success_array).astype(np.float32)
-        ee_distance = 0.0 if info is None else float(info.get(f"{self.ee_metric_name}_distance", 0.0))
-        progress = 0.0 if info is None else float(info.get(f"{self.object_metric_name}_progress", 0.0))
-        return np.where(success_array, 1.0, -object_distance - 0.15 * ee_distance + 0.25 * progress).astype(np.float32)
+        ee_distance = 0.0 if info is None else info.get(f"{self.ee_metric_name}_distance", 0.0)
+        is_grasped = False if info is None else info.get("is_grasped", False)
+        return _nexus_pick_place_reward(
+            tcp_to_obj_dist=ee_distance,
+            obj_to_target_dist=object_distance,
+            is_grasped=is_grasped,
+            is_complete=success_array,
+        )
 
     def _get_obs(self) -> dict[str, np.ndarray]:
         ee = np.asarray(self.data.site_xpos[self.ee_site_id], dtype=np.float32)
@@ -261,8 +326,15 @@ class _AutoresearchMujocoSO101PickPlaceEnv(gym.Env[dict[str, np.ndarray], np.nda
         ee = np.asarray(self.data.site_xpos[self.ee_site_id], dtype=np.float32)
         ee_distance = float(np.linalg.norm(obs["achieved_goal"] - ee))
         is_success = bool(object_distance < self.success_threshold)
+        is_grasped = self._is_grasped()
+        is_robot_static = self._is_robot_static()
+        lift_height = float(obs["achieved_goal"][2] - self.initial_object_z)
         info = {
             "is_success": is_success,
+            "success": is_success,
+            "is_grasped": is_grasped,
+            "is_robot_static": is_robot_static,
+            "lift_height": lift_height,
             f"{self.object_metric_name}_distance": object_distance,
             f"initial_{self.object_metric_name}_distance": self.initial_distance,
             f"{self.object_metric_name}_progress": self.initial_distance - object_distance,
@@ -271,7 +343,11 @@ class _AutoresearchMujocoSO101PickPlaceEnv(gym.Env[dict[str, np.ndarray], np.nda
             f"{self.ee_metric_name}_progress": self.initial_ee_to_object - ee_distance,
             "object_to_target_distance": object_distance,
             "ee_to_object_distance": ee_distance,
+            "tcp_to_obj_dist": ee_distance,
+            "obj_to_target_dist": object_distance,
             "success_threshold": self.success_threshold,
+            "reward_source": NEXUS_REWARD_SOURCE,
+            "reward_source_url": NEXUS_REWARD_SOURCE_URL,
             "physics_backend": self.model_source,
             "task_kind": self.task_kind,
         }
@@ -286,6 +362,7 @@ class _AutoresearchMujocoSO101PickPlaceEnv(gym.Env[dict[str, np.ndarray], np.nda
             info.update(
                 {
                     "is_success": is_success,
+                    "success": is_success,
                     "vial_uprightness": uprightness,
                     "vial_height_error": height_error,
                     "vial_uprightness_threshold": VIAL_UPRIGHTNESS_THRESHOLD,
@@ -293,6 +370,50 @@ class _AutoresearchMujocoSO101PickPlaceEnv(gym.Env[dict[str, np.ndarray], np.nda
                 }
             )
         return info
+
+    def _collision_geoms_for_body(self, body_id: int) -> set[int]:
+        if body_id < 0:
+            return set()
+        return {
+            geom_id
+            for geom_id in range(int(self.model.ngeom))
+            if int(self.model.geom_bodyid[geom_id]) == int(body_id) and int(self.model.geom_contype[geom_id]) != 0
+        }
+
+    def _matching_geom_ids(self, name_terms: tuple[str, ...]) -> set[int]:
+        matches: set[int] = set()
+        for geom_id in range(int(self.model.ngeom)):
+            name = self.mujoco.mj_id2name(self.model, self.mujoco.mjtObj.mjOBJ_GEOM, geom_id) or ""
+            if any(term in name for term in name_terms) and int(self.model.geom_contype[geom_id]) != 0:
+                matches.add(geom_id)
+        return matches
+
+    def _is_grasped(self) -> float:
+        if not self.object_geom_ids or not self.static_finger_geom_ids or not self.moving_finger_geom_ids:
+            return 0.0
+        static_contact = False
+        moving_contact = False
+        force_buf = np.zeros(6, dtype=np.float64)
+        for contact_index in range(int(self.data.ncon)):
+            contact = self.data.contact[contact_index]
+            geom1 = int(contact.geom1)
+            geom2 = int(contact.geom2)
+            object_involved = geom1 in self.object_geom_ids or geom2 in self.object_geom_ids
+            if not object_involved:
+                continue
+            other = geom2 if geom1 in self.object_geom_ids else geom1
+            self.mujoco.mj_contactForce(self.model, self.data, contact_index, force_buf)
+            if abs(float(force_buf[0])) < NEXUS_GRASP_FORCE_THRESHOLD:
+                continue
+            static_contact = static_contact or other in self.static_finger_geom_ids
+            moving_contact = moving_contact or other in self.moving_finger_geom_ids
+            if static_contact and moving_contact:
+                return 1.0
+        return 0.0
+
+    def _is_robot_static(self) -> bool:
+        joint_vel = np.asarray(self.data.qvel[self.joint_qvel_adrs], dtype=np.float32)
+        return bool(np.all(np.abs(joint_vel) < NEXUS_STATIC_VEL_THRESHOLD))
 
     def _object_uprightness(self) -> float:
         body_xmat = np.asarray(self.data.xmat[self.object_body_id], dtype=np.float64).reshape(3, 3)
@@ -412,6 +533,333 @@ class AutoresearchMujocoSO101VialToRackEnv(_AutoresearchMujocoSO101PickPlaceEnv)
     target_center = VIAL_TARGET_CENTER
 
 
+class AutoresearchMujocoSO101PickPlaceWarpVectorEnv:
+    """Batched SO-101 manipulation collector backed by MuJoCo Warp.
+
+    The robot asset is still the real RobotStudio/Menagerie SO-101 MJCF. Servo
+    response, backlash, and printed-plastic gripper contact values are explicit
+    engineering guesses for training throughput experiments and should be
+    treated as sim-to-real gap parameters.
+    """
+
+    def __init__(
+        self,
+        *,
+        task_kind: TaskKind,
+        num_envs: int,
+        seed: int,
+        model_path: str | None = None,
+        max_steps: int = SO101_MANIP_MAX_STEPS,
+        frame_skip: int = DEFAULT_FRAME_SKIP,
+        reward_type: str = "dense",
+        actuator_lag_alpha: float | None = None,
+        max_arm_delta: float | None = None,
+        max_gripper_delta: float | None = None,
+        joint_deadband: float | None = None,
+        backlash_half_width: float | None = None,
+        warp_nconmax: int = 128,
+        warp_njmax: int = 512,
+        **_: Any,
+    ) -> None:
+        try:
+            import mujoco  # type: ignore
+            import mujoco_warp  # type: ignore
+        except ModuleNotFoundError as exc:  # pragma: no cover - optional extra.
+            raise ModuleNotFoundError("SO-101 MuJoCo Warp manipulation training requires `mujoco` and `mujoco_warp`.") from exc
+
+        if task_kind not in ("cube_to_bin", "vial_to_rack"):
+            raise ValueError(f"unknown SO-101 MJWarp manipulation task_kind: {task_kind}")
+        self.mujoco = mujoco
+        self.mujoco_warp = mujoco_warp
+        self.task_kind: TaskKind = task_kind
+        self.num_envs = int(num_envs)
+        self.max_steps = int(max_steps)
+        self.frame_skip = int(frame_skip)
+        self.reward_type = reward_type
+        self.warp_nconmax = int(warp_nconmax)
+        self.warp_njmax = int(warp_njmax)
+        if task_kind == "cube_to_bin":
+            self.object_metric_name = "cube_to_bin"
+            self.ee_metric_name = "ee_to_cube"
+            self.success_threshold = CUBE_SUCCESS_THRESHOLD
+            self.object_center = CUBE_OBJECT_CENTER
+            self.target_center = CUBE_TARGET_CENTER
+        else:
+            self.object_metric_name = "vial_to_slot"
+            self.ee_metric_name = "ee_to_vial"
+            self.success_threshold = VIAL_SUCCESS_THRESHOLD
+            self.object_center = VIAL_OBJECT_CENTER
+            self.target_center = VIAL_TARGET_CENTER
+
+        actuator_profile = SO101_FEETECH_ACTUATOR_GUESS_PROFILE
+        self.actuator_lag_alpha = float(
+            actuator_profile["actuator_lag_alpha"] if actuator_lag_alpha is None else actuator_lag_alpha
+        )
+        self.max_arm_delta = float(
+            actuator_profile["max_arm_delta_rad_per_policy_step"] if max_arm_delta is None else max_arm_delta
+        )
+        self.max_gripper_delta = float(
+            actuator_profile["max_gripper_delta_rad_per_policy_step"] if max_gripper_delta is None else max_gripper_delta
+        )
+        self.joint_deadband = float(actuator_profile["joint_deadband_rad"] if joint_deadband is None else joint_deadband)
+        self.backlash_half_width = float(
+            actuator_profile["backlash_half_width_rad"] if backlash_half_width is None else backlash_half_width
+        )
+        self.rng = np.random.default_rng(seed)
+
+        self.so101_xml_path = resolve_so101_xml_path(model_path)
+        if self.so101_xml_path is None:
+            raise FileNotFoundError(
+                "Could not find MuJoCo Menagerie robotstudio_so101/so101.xml. "
+                "SO-101 MuJoCo Warp support requires the real RobotStudio/Menagerie model."
+            )
+        self.scene_xml_path = write_so101_pick_place_scene_xml(self.so101_xml_path, task_kind)
+        self.model_source = "mujoco_menagerie_robotstudio_so101"
+        self.model = self.mujoco.MjModel.from_xml_path(str(self.scene_xml_path))
+        _apply_printed_gripper_contact_guess(self.mujoco, self.model)
+        _prepare_model_for_mujoco_warp(self.mujoco, self.model)
+        self.data0 = self.mujoco.MjData(self.model)
+        self.ctrl_low, self.ctrl_high = _actuator_ctrl_ranges(self.model)
+        self.joint_qpos_adrs = _joint_qpos_adrs(self.mujoco, self.model, JOINT_NAMES)
+        self.joint_qvel_adrs = _joint_qvel_adrs(self.mujoco, self.model, JOINT_NAMES)
+        self.ee_site_id = self.mujoco.mj_name2id(self.model, self.mujoco.mjtObj.mjOBJ_SITE, "gripperframe")
+        self.ee_body_id = _find_body_id(
+            self.mujoco,
+            self.model,
+            ("gripper", "camera_mount", "moving_jaw_so101_v1", "wrist", "lower_arm"),
+        )
+        self.object_site_id = self.mujoco.mj_name2id(self.model, self.mujoco.mjtObj.mjOBJ_SITE, "object_site")
+        self.object_body_id = self.mujoco.mj_name2id(self.model, self.mujoco.mjtObj.mjOBJ_BODY, "object")
+        object_joint_id = self.mujoco.mj_name2id(self.model, self.mujoco.mjtObj.mjOBJ_JOINT, "object_freejoint")
+        if min(self.object_site_id, self.object_body_id, object_joint_id) < 0:
+            raise RuntimeError("generated SO-101 MJWarp manipulation scene is missing the object freejoint")
+        if self.ee_site_id < 0 and self.ee_body_id < 0:
+            raise RuntimeError("SO-101 scene is missing gripperframe site and gripper body fallback")
+        self.object_qpos_adr = int(self.model.jnt_qposadr[object_joint_id])
+        self.object_qvel_adr = int(self.model.jnt_dofadr[object_joint_id])
+
+        self.home_qpos = np.asarray(self.model.qpos0, dtype=np.float32).copy()
+        self.home_qpos[self.joint_qpos_adrs] = SO101_HOME.astype(np.float32)
+        self.home_ctrl = np.clip(self.home_qpos[self.joint_qpos_adrs], self.ctrl_low, self.ctrl_high).astype(np.float32)
+        self.delta_limits = np.full(self.model.nu, self.max_arm_delta, dtype=np.float32)
+        if self.delta_limits.size:
+            self.delta_limits[-1] = self.max_gripper_delta
+        self.last_actions = np.zeros((self.num_envs, self.model.nu), dtype=np.float32)
+        self.ctrl_targets = np.repeat(self.home_ctrl[None, :], self.num_envs, axis=0).astype(np.float32)
+        self.applied_ctrl = self.ctrl_targets.copy()
+        self.control_error_sign = np.zeros_like(self.applied_ctrl, dtype=np.float32)
+        self.objects = np.zeros((self.num_envs, 3), dtype=np.float32)
+        self.targets = np.zeros((self.num_envs, 3), dtype=np.float32)
+        self.initial_object_distances = np.zeros(self.num_envs, dtype=np.float32)
+        self.initial_ee_distances = np.zeros(self.num_envs, dtype=np.float32)
+        self.initial_object_z = np.zeros(self.num_envs, dtype=np.float32)
+        self.step_counts = np.zeros(self.num_envs, dtype=np.int32)
+
+        self.warp_model = self.mujoco_warp.put_model(self.model)
+        self.warp_data = self.mujoco_warp.put_data(
+            self.model,
+            self.data0,
+            nworld=self.num_envs,
+            nconmax=self.warp_nconmax,
+            njmax=self.warp_njmax,
+        )
+        self.action_space = spaces.Box(low=-1.0, high=1.0, shape=(self.model.nu,), dtype=np.float32)
+        obs_dim = 3 + 3 + 3 + 3 + 3 + self.joint_qpos_adrs.size + self.joint_qvel_adrs.size + self.model.nu
+        self.observation_space = spaces.Box(low=-np.inf, high=np.inf, shape=(obs_dim + 6,), dtype=np.float32)
+        self.physics_backend = f"mujoco_warp_so101_{task_kind}_feetech_plastic_guess"
+
+    def physics_profile_metadata(self) -> dict[str, Any]:
+        return {
+            **SO101_MJWARP_GUESSED_PHYSICS_PROFILE,
+            "physics_backend": self.physics_backend,
+            "task_kind": self.task_kind,
+            "num_envs": self.num_envs,
+            "frame_skip": self.frame_skip,
+            "warp_nconmax": self.warp_nconmax,
+            "warp_njmax": self.warp_njmax,
+            "printed_gripper_profile": SO101_PRINTED_GRIPPER_CONTACT_GUESS_PROFILE,
+        }
+
+    def reset(self, seed: int | None = None) -> np.ndarray:
+        if seed is not None:
+            self.rng = np.random.default_rng(seed)
+        mask = np.ones(self.num_envs, dtype=bool)
+        obs = self._reset_mask(mask)
+        self._set_initial_distance_metrics(obs, mask)
+        return obs
+
+    def reset_worlds(self, mask: np.ndarray) -> np.ndarray:
+        mask = np.asarray(mask, dtype=bool)
+        if not np.any(mask):
+            return self._obs_from_arrays(self.warp_data.qpos.numpy(), self.warp_data.qvel.numpy())
+        obs = self._reset_mask(mask)
+        self._set_initial_distance_metrics(obs, mask)
+        return obs
+
+    def _sample_object_pos(self, count: int) -> np.ndarray:
+        return (self.object_center + self.rng.uniform(-OBJECT_RANGE, OBJECT_RANGE, size=(int(count), 3))).astype(np.float32)
+
+    def _sample_target_pos(self, count: int) -> np.ndarray:
+        return (self.target_center + self.rng.uniform(-TARGET_RANGE, TARGET_RANGE, size=(int(count), 3))).astype(np.float32)
+
+    def _reset_mask(self, mask: np.ndarray) -> np.ndarray:
+        qpos = self.warp_data.qpos.numpy()
+        qvel = self.warp_data.qvel.numpy()
+        qpos[mask] = self.home_qpos[None, :]
+        qvel[mask] = 0.0
+        self.objects[mask] = self._sample_object_pos(int(np.sum(mask)))
+        self.targets[mask] = self._sample_target_pos(int(np.sum(mask)))
+        qpos[mask, self.object_qpos_adr : self.object_qpos_adr + 3] = self.objects[mask]
+        qpos[mask, self.object_qpos_adr + 3 : self.object_qpos_adr + 7] = np.asarray([1.0, 0.0, 0.0, 0.0], dtype=np.float32)
+        qvel[mask, self.object_qvel_adr : self.object_qvel_adr + 6] = 0.0
+        self.ctrl_targets[mask] = self.home_ctrl[None, :]
+        self.applied_ctrl[mask] = self.home_ctrl[None, :]
+        self.control_error_sign[mask] = 0.0
+        self.last_actions[mask] = 0.0
+        self.step_counts[mask] = 0
+        self.warp_data.qpos.assign(qpos.astype(np.float32))
+        self.warp_data.qvel.assign(qvel.astype(np.float32))
+        self.warp_data.ctrl.assign(self.applied_ctrl.astype(np.float32))
+        self.mujoco_warp.forward(self.warp_model, self.warp_data)
+        return self._obs_from_arrays(self.warp_data.qpos.numpy(), self.warp_data.qvel.numpy())
+
+    def step(self, actions: np.ndarray):
+        actions = np.clip(np.asarray(actions, dtype=np.float32), -1.0, 1.0)
+        self._advance_servo_targets(actions)
+        for _ in range(self.frame_skip):
+            self.warp_data.ctrl.assign(self.applied_ctrl.astype(np.float32))
+            self.mujoco_warp.step(self.warp_model, self.warp_data)
+        self.step_counts += 1
+        self.last_actions = actions.astype(np.float32, copy=True)
+        qpos = self.warp_data.qpos.numpy()
+        qvel = self.warp_data.qvel.numpy()
+        obs = self._obs_from_arrays(qpos, qvel)
+        object_pos = obs[:, 3:6]
+        ee = obs[:, 0:3]
+        object_distance = np.linalg.norm(object_pos - self.targets, axis=1).astype(np.float32)
+        ee_distance = np.linalg.norm(object_pos - ee, axis=1).astype(np.float32)
+        uprightness = self._object_uprightness(qpos)
+        height_error = np.abs(object_pos[:, 2] - self.targets[:, 2]).astype(np.float32)
+        success = object_distance < self.success_threshold
+        if self.task_kind == "vial_to_rack":
+            success = success & (uprightness >= VIAL_UPRIGHTNESS_THRESHOLD) & (height_error <= VIAL_HEIGHT_THRESHOLD)
+        object_progress = self.initial_object_distances - object_distance
+        ee_progress = self.initial_ee_distances - ee_distance
+        is_grasped = ee_distance < MJWARP_GRASP_PROXY_DISTANCE
+        lift_height = (object_pos[:, 2] - self.initial_object_z).astype(np.float32)
+        if self.reward_type == "sparse":
+            reward = np.where(success, 0.0, -1.0).astype(np.float32)
+        else:
+            reward = _nexus_pick_place_reward(
+                tcp_to_obj_dist=ee_distance,
+                obj_to_target_dist=object_distance,
+                is_grasped=is_grasped,
+                is_complete=success,
+            )
+        truncated = self.step_counts >= self.max_steps
+        infos: dict[str, np.ndarray] = {
+            "is_success": success.astype(bool),
+            "success": success.astype(bool),
+            "is_grasped": is_grasped.astype(bool),
+            "is_grasped_proxy": is_grasped.astype(bool),
+            "is_robot_static": np.zeros(self.num_envs, dtype=bool),
+            "lift_height": lift_height.astype(np.float32),
+            f"{self.object_metric_name}_distance": object_distance.copy(),
+            f"initial_{self.object_metric_name}_distance": self.initial_object_distances.copy(),
+            f"{self.object_metric_name}_progress": object_progress.astype(np.float32),
+            f"{self.ee_metric_name}_distance": ee_distance.copy(),
+            f"initial_{self.ee_metric_name}_distance": self.initial_ee_distances.copy(),
+            f"{self.ee_metric_name}_progress": ee_progress.astype(np.float32),
+            "object_to_target_distance": object_distance.copy(),
+            "ee_to_object_distance": ee_distance.copy(),
+            "tcp_to_obj_dist": ee_distance.copy(),
+            "obj_to_target_dist": object_distance.copy(),
+            "success_threshold": np.full(self.num_envs, self.success_threshold, dtype=np.float32),
+            "reward_source": np.asarray([NEXUS_REWARD_SOURCE] * self.num_envs, dtype=object),
+            "reward_source_url": np.asarray([NEXUS_REWARD_SOURCE_URL] * self.num_envs, dtype=object),
+            "physics_backend": np.asarray([self.physics_backend] * self.num_envs, dtype=object),
+            "actuator_profile": np.asarray([SO101_FEETECH_ACTUATOR_GUESS_PROFILE["name"]] * self.num_envs, dtype=object),
+            "printed_gripper_profile": np.asarray(
+                [SO101_PRINTED_GRIPPER_CONTACT_GUESS_PROFILE["name"]] * self.num_envs,
+                dtype=object,
+            ),
+            "task_kind": np.asarray([self.task_kind] * self.num_envs, dtype=object),
+        }
+        if self.task_kind == "vial_to_rack":
+            infos.update(
+                {
+                    "vial_uprightness": uprightness.astype(np.float32),
+                    "vial_height_error": height_error.astype(np.float32),
+                    "vial_uprightness_threshold": np.full(self.num_envs, VIAL_UPRIGHTNESS_THRESHOLD, dtype=np.float32),
+                    "vial_height_threshold": np.full(self.num_envs, VIAL_HEIGHT_THRESHOLD, dtype=np.float32),
+                }
+            )
+        return obs, reward, success.astype(bool), truncated.astype(bool), infos
+
+    def _advance_servo_targets(self, actions: np.ndarray) -> None:
+        desired = self.ctrl_targets + actions * self.delta_limits[None, :]
+        self.ctrl_targets = np.clip(desired, self.ctrl_low[None, :], self.ctrl_high[None, :]).astype(np.float32)
+        error = self.ctrl_targets - self.applied_ctrl
+        sign = np.sign(error).astype(np.float32)
+        reversing = (self.control_error_sign != 0.0) & (sign != 0.0) & (sign != self.control_error_sign)
+        stalled_by_backlash = reversing & (np.abs(error) < self.backlash_half_width)
+        active = (np.abs(error) >= self.joint_deadband) & ~stalled_by_backlash
+        self.applied_ctrl[active] += self.actuator_lag_alpha * error[active]
+        self.applied_ctrl = np.clip(self.applied_ctrl, self.ctrl_low[None, :], self.ctrl_high[None, :]).astype(np.float32)
+        self.control_error_sign[active] = sign[active]
+
+    def _set_initial_distance_metrics(self, obs: np.ndarray, mask: np.ndarray) -> None:
+        ee = obs[:, 0:3]
+        object_pos = obs[:, 3:6]
+        self.initial_object_distances[mask] = np.linalg.norm(object_pos[mask] - self.targets[mask], axis=1).astype(np.float32)
+        self.initial_ee_distances[mask] = np.linalg.norm(object_pos[mask] - ee[mask], axis=1).astype(np.float32)
+        self.initial_object_z[mask] = object_pos[mask, 2].astype(np.float32)
+
+    def _obs_from_arrays(self, qpos: np.ndarray, qvel: np.ndarray) -> np.ndarray:
+        ee = self._ee_positions()
+        object_pos = qpos[:, self.object_qpos_adr : self.object_qpos_adr + 3].astype(np.float32)
+        joint_pos = qpos[:, self.joint_qpos_adrs].astype(np.float32)
+        joint_vel = qvel[:, self.joint_qvel_adrs].astype(np.float32)
+        observation = np.concatenate(
+            [
+                ee,
+                object_pos,
+                self.targets,
+                object_pos - ee,
+                self.targets - object_pos,
+                joint_pos,
+                joint_vel,
+                self.last_actions,
+            ],
+            axis=1,
+        ).astype(np.float32)
+        return np.concatenate([observation, object_pos, self.targets], axis=1).astype(np.float32)
+
+    def _ee_positions(self) -> np.ndarray:
+        try:
+            site_xpos = getattr(self.warp_data, "site_xpos")
+            return site_xpos.numpy()[:, self.ee_site_id, :].astype(np.float32)
+        except Exception:
+            pass
+        try:
+            xpos = self.warp_data.xpos.numpy()
+            body_id = self.ee_body_id if self.ee_body_id >= 0 else -1
+            return xpos[:, body_id, :].astype(np.float32)
+        except Exception:
+            qpos = self.warp_data.qpos.numpy()
+            return qpos[:, self.joint_qpos_adrs[:3]].astype(np.float32)
+
+    def _object_uprightness(self, qpos: np.ndarray) -> np.ndarray:
+        quat = qpos[:, self.object_qpos_adr + 3 : self.object_qpos_adr + 7].astype(np.float32)
+        norms = np.linalg.norm(quat, axis=1, keepdims=True)
+        quat = np.divide(quat, np.maximum(norms, 1e-6), out=np.zeros_like(quat), where=norms > 0)
+        _w, x, y, _z = quat[:, 0], quat[:, 1], quat[:, 2], quat[:, 3]
+        return np.clip(1.0 - 2.0 * (x * x + y * y), -1.0, 1.0).astype(np.float32)
+
+    def close(self) -> None:
+        return None
+
+
 def write_so101_pick_place_scene_xml(so101_xml_path: Path, task_kind: TaskKind) -> Path:
     scene_dir = Path(tempfile.gettempdir()) / "autoresearch_gym_so101"
     scene_dir.mkdir(parents=True, exist_ok=True)
@@ -529,8 +977,8 @@ def _add_cube_to_bin_world(worldbody: ET.Element) -> None:
         {
             "name": "cube",
             "type": "box",
-            "size": "0.025 0.025 0.025",
-            "mass": "0.035",
+            "size": _vec(CUBE_HALF_EXTENTS),
+            "mass": f"{CUBE_MASS:.8f}",
             "material": "task_blue",
             "friction": "1.2 0.01 0.0001",
         },
@@ -714,6 +1162,31 @@ def _remove_existing_task_nodes(worldbody: ET.Element) -> None:
     for child in list(worldbody):
         if child.get("name") in names:
             worldbody.remove(child)
+
+
+def _apply_printed_gripper_contact_guess(mujoco: Any, model: Any) -> None:
+    profile = SO101_PRINTED_GRIPPER_CONTACT_GUESS_PROFILE
+    contact_defaults = profile["contact_defaults"]
+    compliant = profile["compliant_surface_friction"]
+    sliding = float(np.mean(compliant["sliding"]))
+    torsional = float(np.mean(profile["pla_plastic_friction"]["torsional"]))
+    rolling = float(np.mean(profile["pla_plastic_friction"]["rolling"]))
+    condim = int(contact_defaults["condim"])
+    gripper_terms = ("jaw", "gripper", "camera_box")
+    for geom_id in range(int(model.ngeom)):
+        name = mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_GEOM, geom_id) or ""
+        if not any(term in name for term in gripper_terms):
+            continue
+        if hasattr(model, "geom_friction"):
+            model.geom_friction[geom_id] = np.asarray([sliding, torsional, rolling], dtype=np.float64)
+        if hasattr(model, "geom_condim"):
+            model.geom_condim[geom_id] = condim
+        if hasattr(model, "geom_solref"):
+            solref = np.fromstring(str(contact_defaults["solref"]), sep=" ")
+            model.geom_solref[geom_id, : solref.size] = solref
+        if hasattr(model, "geom_solimp"):
+            solimp = np.fromstring(str(contact_defaults["solimp"]), sep=" ")
+            model.geom_solimp[geom_id, : solimp.size] = solimp
 
 
 def _ensure_child(parent: ET.Element, tag: str) -> ET.Element:

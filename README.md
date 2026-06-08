@@ -66,8 +66,11 @@ Bundled tasks:
 | Panda-gym dense pick-and-place MuJoCo/MJWarp | `autoresearch_gym/tasks/panda_pick_and_place_mjwarp_pandagym_dense_v0/benchmark_wall_clock.json` | `autoresearch_gym/tasks/panda_pick_and_place_mjwarp_pandagym_dense_v0/seed_trainable_tqc_her_ee.py` or `seed_trainable_guided_warmup.py` |
 | SO-101 reach MuJoCo | `autoresearch_gym/tasks/so101_reach_mujoco_v0/benchmark.json` | `autoresearch_gym/tasks/so101_reach_mujoco_v0/seed_trainable.py` |
 | SO-101 reach MuJoCo vectorized wall-clock | `autoresearch_gym/tasks/so101_reach_mujoco_v0/benchmark_vectorized_wall_clock.json` | `autoresearch_gym/tasks/so101_reach_mujoco_v0/seed_trainable_vectorized.py` |
+| SO-101 reach MuJoCo Warp wall-clock | `autoresearch_gym/tasks/so101_reach_mujoco_v0/benchmark_mjwarp_wall_clock.json` | `autoresearch_gym/tasks/so101_reach_mujoco_v0/seed_trainable_vectorized.py` |
 | SO-101 cube-to-bin MuJoCo | `autoresearch_gym/tasks/so101_cube_to_bin_mujoco_v0/benchmark.json` | `autoresearch_gym/tasks/so101_cube_to_bin_mujoco_v0/seed_trainable.py` |
+| SO-101 cube-to-bin MuJoCo Warp wall-clock | `autoresearch_gym/tasks/so101_cube_to_bin_mujoco_v0/benchmark_mjwarp_wall_clock.json` | `autoresearch_gym/tasks/so101_cube_to_bin_mujoco_v0/seed_trainable_vectorized.py` |
 | SO-101 vial-to-rack MuJoCo | `autoresearch_gym/tasks/so101_vial_to_rack_mujoco_v0/benchmark.json` | `autoresearch_gym/tasks/so101_vial_to_rack_mujoco_v0/seed_trainable.py` |
+| SO-101 vial-to-rack MuJoCo Warp wall-clock | `autoresearch_gym/tasks/so101_vial_to_rack_mujoco_v0/benchmark_mjwarp_wall_clock.json` | `autoresearch_gym/tasks/so101_vial_to_rack_mujoco_v0/seed_trainable_vectorized.py` |
 | Panda bat-to-goal | `autoresearch_gym/tasks/bat_to_goal_v0/benchmark.json` | `autoresearch_gym/tasks/bat_to_goal_v0/seed_trainable.py` |
 | Panda bat-to-goal vectorized wall-clock | `autoresearch_gym/tasks/bat_to_goal_v0/benchmark_vectorized_wall_clock.json` | `autoresearch_gym/tasks/bat_to_goal_v0/seed_trainable_vectorized.py` |
 | Unitree G1 motion mirror external | `autoresearch_gym/tasks/unitree_g1_motion_mirror_v0/benchmark.json` | `autoresearch_gym/tasks/unitree_g1_motion_mirror_v0/seed_trainable.py` |
@@ -81,7 +84,10 @@ Menagerie into `.external/mujoco_menagerie` so
 `.external/mujoco_menagerie/robotstudio_so101/so101.xml` exists. These tasks
 fail closed when the real RobotStudio/Menagerie SO-101 assets are missing; the
 manipulation tasks add simple MuJoCo cube, bin, vial, and rack geometry around
-the real arm model.
+the real arm model. SO-101 manipulation dense rewards follow the normalized
+pick-and-place shaping used by SO101-Nexus v0.3.12: reach progress, grasp
+signal, grasp-gated placement progress, and completion bonus. Credit:
+https://pypi.org/project/so101-nexus-mujoco/
 
 External Unitree tasks use an `execution_backend` plus an `execution_target`.
 Bundled task files default to `execution_target = "local"` so a Windows or

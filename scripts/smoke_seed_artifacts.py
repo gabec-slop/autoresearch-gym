@@ -72,7 +72,7 @@ SEED_CASES: tuple[SeedCase, ...] = (
         required_modules=("mujoco", "robot_descriptions"),
         benchmark_overrides={
             "max_steps": 4,
-            "env_kwargs": {"backend": "mujoco", "max_steps": 4, "num_envs": 1, "steps_per_env_per_iteration": 4},
+            "env_kwargs": {"backend": "mujoco", "num_envs": 1, "steps_per_env_per_iteration": 4},
         },
     ),
     SeedCase(
@@ -85,7 +85,6 @@ SEED_CASES: tuple[SeedCase, ...] = (
             "max_steps": 4,
             "env_kwargs": {
                 "backend": "mujoco_warp",
-                "max_steps": 4,
                 "num_envs": 512,
                 "steps_per_env_per_iteration": 20,
             },
@@ -101,7 +100,6 @@ SEED_CASES: tuple[SeedCase, ...] = (
             "max_steps": 4,
             "env_kwargs": {
                 "backend": "mujoco_warp",
-                "max_steps": 4,
                 "num_envs": 128,
                 "steps_per_env_per_iteration": 8,
             },
@@ -117,7 +115,6 @@ SEED_CASES: tuple[SeedCase, ...] = (
             "max_steps": 4,
             "env_kwargs": {
                 "backend": "mujoco_warp",
-                "max_steps": 4,
                 "num_envs": 128,
                 "steps_per_env_per_iteration": 8,
             },
@@ -133,7 +130,6 @@ SEED_CASES: tuple[SeedCase, ...] = (
             "max_steps": 4,
             "env_kwargs": {
                 "backend": "mujoco_warp",
-                "max_steps": 4,
                 "num_envs": 128,
                 "steps_per_env_per_iteration": 8,
             },
@@ -146,7 +142,6 @@ SEED_CASES: tuple[SeedCase, ...] = (
         required_modules=("mujoco",),
         benchmark_overrides={
             "max_steps": 4,
-            "env_kwargs": {"max_steps": 4},
         },
     ),
     SeedCase(
@@ -158,7 +153,18 @@ SEED_CASES: tuple[SeedCase, ...] = (
             "max_steps": 4,
             "train_seconds": 2,
             "eval_episodes": 1,
-            "env_kwargs": {"max_steps": 4},
+        },
+    ),
+    SeedCase(
+        "so101-reach-mjwarp-mujoco",
+        "autoresearch_gym/tasks/so101_reach_mujoco_v0/benchmark_mjwarp_wall_clock.json",
+        "autoresearch_gym/tasks/so101_reach_mujoco_v0/seed_trainable_vectorized.py",
+        required_modules=("mujoco", "mujoco_warp"),
+        benchmark_overrides={
+            "max_steps": 4,
+            "train_seconds": 2,
+            "eval_episodes": 1,
+            "env_kwargs": {"num_envs": 2},
         },
     ),
     SeedCase(
@@ -170,7 +176,6 @@ SEED_CASES: tuple[SeedCase, ...] = (
             "max_steps": 4,
             "train_episodes": 1,
             "eval_episodes": 1,
-            "env_kwargs": {"max_steps": 4},
         },
     ),
     SeedCase(
@@ -180,7 +185,18 @@ SEED_CASES: tuple[SeedCase, ...] = (
         required_modules=("mujoco",),
         benchmark_overrides={
             "max_steps": 4,
-            "env_kwargs": {"max_steps": 4},
+        },
+    ),
+    SeedCase(
+        "so101-cube-to-bin-mjwarp-mujoco",
+        "autoresearch_gym/tasks/so101_cube_to_bin_mujoco_v0/benchmark_mjwarp_wall_clock.json",
+        "autoresearch_gym/tasks/so101_cube_to_bin_mujoco_v0/seed_trainable_vectorized.py",
+        required_modules=("mujoco", "mujoco_warp"),
+        benchmark_overrides={
+            "max_steps": 4,
+            "train_seconds": 2,
+            "eval_episodes": 1,
+            "env_kwargs": {"num_envs": 2},
         },
     ),
     SeedCase(
@@ -192,7 +208,6 @@ SEED_CASES: tuple[SeedCase, ...] = (
             "max_steps": 4,
             "train_episodes": 1,
             "eval_episodes": 1,
-            "env_kwargs": {"max_steps": 4},
         },
     ),
     SeedCase(
@@ -202,7 +217,18 @@ SEED_CASES: tuple[SeedCase, ...] = (
         required_modules=("mujoco",),
         benchmark_overrides={
             "max_steps": 4,
-            "env_kwargs": {"max_steps": 4},
+        },
+    ),
+    SeedCase(
+        "so101-vial-to-rack-mjwarp-mujoco",
+        "autoresearch_gym/tasks/so101_vial_to_rack_mujoco_v0/benchmark_mjwarp_wall_clock.json",
+        "autoresearch_gym/tasks/so101_vial_to_rack_mujoco_v0/seed_trainable_vectorized.py",
+        required_modules=("mujoco", "mujoco_warp"),
+        benchmark_overrides={
+            "max_steps": 4,
+            "train_seconds": 2,
+            "eval_episodes": 1,
+            "env_kwargs": {"num_envs": 2},
         },
     ),
     SeedCase(
@@ -214,7 +240,6 @@ SEED_CASES: tuple[SeedCase, ...] = (
             "max_steps": 4,
             "train_episodes": 1,
             "eval_episodes": 1,
-            "env_kwargs": {"max_steps": 4},
         },
     ),
     SeedCase(

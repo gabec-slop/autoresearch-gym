@@ -31,6 +31,8 @@ from autoresearch_gym.runner.experiment import (
     apply_headless_env_override,
     candidate_metadata,
     compact_status_line,
+    env_kwargs_for_candidate,
+    load_benchmark,
     make_compact_status_writer,
     make_live_writer,
     make_policy_probe_callback,
@@ -186,6 +188,12 @@ def test_remote_in_process_windows_command_uses_target_python_and_paths() -> Non
     assert "'-m' 'autoresearch_gym.cli' 'run'" in script
     assert "'--benchmark' 'C:/code/autoresearch-gym/tasks/benchmark.json'" in script
     assert "'--tag' 'pass01 author''s baseline'" in script
+
+
+def test_remote_in_process_remote_cli_disables_dashboard() -> None:
+    source = Path("autoresearch_gym/external/in_process.py").read_text(encoding="utf-8")
+
+    assert '"--no-record",\n        "--no-dashboard",' in source
 
 
 def test_remote_environment_fingerprint_windows_command_uses_encoded_python() -> None:
@@ -959,6 +967,15 @@ def test_dashboard_sampled_trajectory_refreshes_when_frame_paths_change() -> Non
     assert "...steps.map((step) => JSON.stringify(step.feeds || {}))," in source
     assert "trajectoryFrameSignature !== frameSignature" in source
     assert "trajectoryFrameIndex = 0;" in source
+
+
+def test_dashboard_buckets_previous_best_return_ghost_line() -> None:
+    source = Path("dashboard/index.html").read_text(encoding="utf-8")
+    ghost_block_start = source.index("drawSeries(returnCtx, chart, ghostValues")
+    ghost_block = source[ghost_block_start : source.index("});", ghost_block_start)]
+
+    assert "bucketDense: true" in ghost_block
+    assert "maxRawPoints: 180" in ghost_block
 
 
 def test_unitree_mjlab_train_context_probes_run_out_of_process() -> None:
@@ -2126,6 +2143,89 @@ def test_headless_env_override_keeps_panda_pybullet_render_mode() -> None:
     assert benchmark.env_kwargs["renderer"] == "Tiny"
 
 
+def test_benchmark_max_steps_is_single_horizon_source() -> None:
+    for path in sorted(Path("autoresearch_gym/tasks").glob("*/benchmark*.json")):
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        assert "max_steps" in payload, f"{path} missing top-level max_steps"
+        env_kwargs = payload.get("env_kwargs") or {}
+        assert "max_steps" not in env_kwargs, f"{path} duplicates max_steps inside env_kwargs"
+        assert "max_episode_steps" not in env_kwargs, f"{path} duplicates max_episode_steps inside env_kwargs"
+
+
+def test_env_kwargs_for_candidate_injects_benchmark_horizon_aliases() -> None:
+    so101_benchmark = BenchmarkSpec(
+        name="test",
+        env_id="AutoresearchMujocoSO101Reach-v0",
+        env_kwargs={"render_mode": "rgb_array"},
+        train_episodes=1,
+        train_seconds=None,
+        eval_episodes=1,
+        max_steps=150,
+        reward_type=None,
+        render_mode="rgb_array",
+        primary_metric="eval_success_rate",
+        primary_metric_mode="maximize",
+        train_seed=1,
+        eval_seed_start=2,
+        device="cpu",
+        eval_case_bank=None,
+    )
+
+    env_kwargs = env_kwargs_for_candidate(so101_benchmark)
+
+    assert env_kwargs["max_steps"] == 150
+    assert env_kwargs["max_episode_steps"] == 150
+
+    hopper_benchmark = BenchmarkSpec(
+        name="test",
+        env_id="Hopper-v5",
+        env_kwargs={"render_mode": "rgb_array"},
+        train_episodes=1,
+        train_seconds=None,
+        eval_episodes=1,
+        max_steps=1000,
+        reward_type=None,
+        render_mode="rgb_array",
+        primary_metric="eval_avg_return",
+        primary_metric_mode="maximize",
+        train_seed=1,
+        eval_seed_start=2,
+        device="cpu",
+        eval_case_bank=None,
+    )
+
+    hopper_kwargs = env_kwargs_for_candidate(hopper_benchmark)
+
+    assert hopper_kwargs["max_episode_steps"] == 1000
+    assert "max_steps" not in hopper_kwargs
+
+
+def test_load_benchmark_rejects_env_horizon_drift(tmp_path: Path) -> None:
+    benchmark_path = tmp_path / "benchmark.json"
+    benchmark_path.write_text(
+        json.dumps(
+            {
+                "name": "drift",
+                "env_id": "Hopper-v5",
+                "env_kwargs": {"render_mode": "rgb_array", "max_episode_steps": 4},
+                "train_episodes": 1,
+                "eval_episodes": 1,
+                "max_steps": 5,
+                "render_mode": "rgb_array",
+                "primary_metric": "eval_avg_return",
+                "primary_metric_mode": "maximize",
+                "train_seed": 1,
+                "eval_seed_start": 2,
+                "device": "cpu",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="conflicting env_kwargs.max_episode_steps"):
+        load_benchmark(benchmark_path)
+
+
 def test_compact_status_writer_uses_stderr(capsys: pytest.CaptureFixture[str]) -> None:
     writer = make_compact_status_writer(10.0)
 
@@ -2670,6 +2770,84 @@ def test_live_writer_finalizes_active_sampled_trajectory_on_finish(tmp_path) -> 
     assert manifest["status"] == "interrupted"
     assert manifest["reason"] == "training_finished"
     assert metrics["visual"]["active_sampled_episode"] is None
+
+
+def test_live_writer_keeps_completed_sample_pointer_after_shutdown_interrupt(tmp_path) -> None:
+    class OneStepVisualEnv(gym.Env):
+        metadata = {"render_modes": ["rgb_array"]}
+
+        def __init__(self) -> None:
+            self.observation_space = gym.spaces.Box(low=0.0, high=1.0, shape=(1,), dtype=np.float32)
+            self.action_space = gym.spaces.Box(low=-1.0, high=1.0, shape=(1,), dtype=np.float32)
+            self.step_count = 0
+
+        def reset(self, *, seed=None, options=None):
+            super().reset(seed=seed)
+            self.step_count = 0
+            return np.zeros(1, dtype=np.float32), {}
+
+        def step(self, action):
+            self.step_count += 1
+            return np.zeros(1, dtype=np.float32), 0.0, False, self.step_count >= 1, {}
+
+        def render(self, *args, **kwargs):
+            return np.full((8, 8, 3), self.step_count * 32, dtype=np.uint8)
+
+    benchmark = BenchmarkSpec(
+        name="test",
+        env_id="OneStepVisual-v0",
+        env_kwargs={"render_mode": "rgb_array"},
+        train_episodes=10,
+        train_seconds=None,
+        eval_episodes=1,
+        max_steps=50,
+        reward_type=None,
+        render_mode="rgb_array",
+        primary_metric="eval_avg_return",
+        primary_metric_mode="maximize",
+        train_seed=1,
+        eval_seed_start=2,
+        device="cpu",
+        eval_case_bank=None,
+        train_probe=TrainProbeSpec(enabled=False),
+    )
+    session_dir = tmp_path / "session"
+    writer = make_live_writer(session_dir, "run-1", "tag-1", benchmark, {"description": "candidate"})
+    assert writer is not None
+    control_path = session_dir / "live" / "control.json"
+    control = json.loads(control_path.read_text(encoding="utf-8"))
+    control["trajectory_sample_rate"] = 1.0
+    control["trajectory_sample_interval_seconds"] = 0.0
+    control["trajectory_target_samples"] = 0
+    control["trajectory_frame_stride"] = 1
+    control_path.write_text(json.dumps(control), encoding="utf-8")
+    env = writer.wrap_env(OneStepVisualEnv())  # type: ignore[attr-defined]
+
+    env.reset()
+    env.step(np.zeros(1, dtype=np.float32))
+    env.reset()
+    writer(
+        status="finished",
+        episode_records=[],
+        total_steps=1,
+        last_metrics=None,
+        env=env,
+        current_episode=2,
+        episode_return=0.0,
+        episode_length=0,
+    )
+
+    metrics = json.loads((session_dir / "live" / "current_run_metrics.json").read_text(encoding="utf-8"))
+    manifest_path = metrics["visual"]["trajectory_manifest_path"]
+    completed_manifest = session_dir / "live" / "trajectories" / "run-1" / "episode_000001" / "manifest.json"
+    interrupted_manifest = session_dir / "live" / "trajectories" / "run-1" / "episode_000002" / "manifest.json"
+    completed = json.loads(completed_manifest.read_text(encoding="utf-8"))
+    interrupted = json.loads(interrupted_manifest.read_text(encoding="utf-8"))
+    assert manifest_path.replace("\\", "/").endswith("episode_000001/manifest.json")
+    assert completed["status"] == "completed"
+    assert completed["frame_count"] >= 2
+    assert interrupted["status"] == "interrupted"
+    assert interrupted["reason"] == "training_finished"
 
 
 def test_compact_status_line_is_token_efficient() -> None:
@@ -4473,7 +4651,8 @@ def test_mujoco_pandagym_dense_port_benchmarks_use_pandagym_contract() -> None:
         assert payload["max_steps"] == 400
         assert kwargs["reward_type"] == "dense"
         assert kwargs["success_requires_lift"] is False
-        assert kwargs["max_steps"] == 400
+        assert "max_steps" not in kwargs
+        assert "max_episode_steps" not in kwargs
         assert kwargs["goal_xy_range"] == pytest.approx(0.30)
         assert kwargs["goal_z_range"] == pytest.approx(0.20)
         assert kwargs["obj_xy_range"] == pytest.approx(0.30)
@@ -4681,12 +4860,14 @@ def test_mujoco_so101_seeds_pass_agent_to_live_callback() -> None:
     seed_paths = [
         Path("autoresearch_gym/tasks/so101_reach_mujoco_v0/seed_trainable.py"),
         Path("autoresearch_gym/tasks/so101_reach_mujoco_v0/seed_trainable_vectorized.py"),
+        Path("autoresearch_gym/tasks/so101_cube_to_bin_mujoco_v0/seed_trainable_vectorized.py"),
+        Path("autoresearch_gym/tasks/so101_vial_to_rack_mujoco_v0/seed_trainable_vectorized.py"),
         Path("autoresearch_gym/tasks/so101_pixel_actor_critic_seed.py"),
     ]
 
     for seed_path in seed_paths:
         seed_source = seed_path.read_text(encoding="utf-8")
-        assert "agent=agent" in seed_source
+        assert "agent=agent" in seed_source or "seed_trainable_vectorized import" in seed_source
 
 
 def test_mujoco_so101_no_scripted_default_seed_remains() -> None:
@@ -4775,6 +4956,411 @@ def test_mujoco_so101_reach_contract_matches_nexus_reach_defaults() -> None:
     np.testing.assert_allclose(so101_env.TARGET_HIGH, np.asarray([0.47, 0.15, 0.33], dtype=np.float32))
 
 
+def test_mujoco_so101_mjwarp_profile_marks_approximations() -> None:
+    from autoresearch_gym.envs import mujoco_so101_reach as so101_env
+
+    profile = so101_env.SO101_MJWARP_GUESSED_PHYSICS_PROFILE
+    assert profile["calibration_source"] == "engineering_guess"
+    assert profile["robot_asset_source"] == "mujoco_menagerie_robotstudio_so101"
+    assert profile["actuator_profile"]["motor_family"].startswith("Feetech")
+    assert profile["printed_gripper_profile"]["material_assumption"].startswith("PLA+")
+    assert profile["printed_gripper_profile"]["contact_defaults"]["condim"] == 4
+
+
+def test_mujoco_so101_mjwarp_benchmark_is_opt_in_and_uses_real_assets() -> None:
+    benchmarks = {
+        "AutoresearchMujocoSO101Reach-v0": Path("autoresearch_gym/tasks/so101_reach_mujoco_v0/benchmark_mjwarp_wall_clock.json"),
+        "AutoresearchMujocoSO101CubeToBin-v0": Path("autoresearch_gym/tasks/so101_cube_to_bin_mujoco_v0/benchmark_mjwarp_wall_clock.json"),
+        "AutoresearchMujocoSO101VialToRack-v0": Path("autoresearch_gym/tasks/so101_vial_to_rack_mujoco_v0/benchmark_mjwarp_wall_clock.json"),
+    }
+
+    for env_id, path in benchmarks.items():
+        benchmark = json.loads(path.read_text(encoding="utf-8"))
+        assert benchmark["env_id"] == env_id
+        assert benchmark["env_kwargs"]["backend"] == "mujoco_warp"
+        assert benchmark["env_kwargs"]["num_envs"] == 64
+        assert benchmark["env_kwargs"]["physics_profile"] == "so101_follower_feetech_plastic_guess_v0"
+        notes = " ".join(benchmark["notes"]).lower()
+        assert "real mujoco menagerie" in notes
+        assert "engineering-guess" in notes
+        assert "cpu mujoco" in notes
+        assert "fake" not in notes
+        if env_id == "AutoresearchMujocoSO101Reach-v0":
+            assert benchmark["max_steps"] == 150
+        else:
+            assert benchmark["max_steps"] == 512
+            assert benchmark["env_kwargs"]["printed_gripper_profile"] == "so101_printed_plastic_gripper_guess_v0"
+            assert "so101-nexus" in notes
+
+
+def test_mujoco_so101_vectorized_seed_wires_mjwarp_collector() -> None:
+    seed = importlib.import_module("autoresearch_gym.tasks.so101_reach_mujoco_v0.seed_trainable_vectorized")
+    source = Path("autoresearch_gym/tasks/so101_reach_mujoco_v0/seed_trainable_vectorized.py").read_text(
+        encoding="utf-8"
+    )
+    candidate = seed.get_candidate()
+
+    assert "AutoresearchMujocoSO101ReachWarpVectorEnv" in source
+    assert "reset_worlds(dones)" in source
+    assert "_FeetechDeltaRenderController" in source
+    assert "cpu_mujoco_feetech_delta_replay" in source
+    assert seed.MJWARP_NUM_ENVS == 64
+    assert candidate["recipe"]["mjwarp_physics_profile"] == "so101_follower_feetech_plastic_guess_v0"
+    assert candidate["recipe"]["runner"]["sample_trajectory_source"] == SAMPLE_TRAJECTORY_SOURCE_CANDIDATE_PROVIDED
+    assert callable(getattr(seed, "_answer_sampled_trajectory_request", None))
+
+
+def test_mujoco_so101_manip_reward_matches_nexus_shape() -> None:
+    from autoresearch_gym.envs.mujoco_so101_pick_place import (
+        NEXUS_REWARD_COMPLETION_BONUS,
+        NEXUS_REWARD_GRASPING,
+        NEXUS_REWARD_REACHING,
+        NEXUS_REWARD_SOURCE,
+        NEXUS_REWARD_TASK_OBJECTIVE,
+        _nexus_pick_place_reward,
+        _nexus_reach_progress,
+    )
+
+    far = float(_nexus_pick_place_reward(tcp_to_obj_dist=10.0, obj_to_target_dist=10.0, is_grasped=False, is_complete=False))
+    reach_only = float(_nexus_pick_place_reward(tcp_to_obj_dist=0.0, obj_to_target_dist=10.0, is_grasped=False, is_complete=False))
+    grasped = float(_nexus_pick_place_reward(tcp_to_obj_dist=0.0, obj_to_target_dist=10.0, is_grasped=True, is_complete=False))
+    placed = float(_nexus_pick_place_reward(tcp_to_obj_dist=0.0, obj_to_target_dist=0.0, is_grasped=True, is_complete=True))
+
+    assert "SO101-Nexus" in NEXUS_REWARD_SOURCE
+    assert far == pytest.approx(0.0, abs=1e-5)
+    assert reach_only == pytest.approx(NEXUS_REWARD_REACHING)
+    assert grasped == pytest.approx(NEXUS_REWARD_REACHING + NEXUS_REWARD_GRASPING)
+    assert placed == pytest.approx(
+        NEXUS_REWARD_REACHING + NEXUS_REWARD_GRASPING + NEXUS_REWARD_TASK_OBJECTIVE + NEXUS_REWARD_COMPLETION_BONUS
+    )
+    assert float(_nexus_reach_progress(0.0)) == pytest.approx(1.0)
+
+
+def test_mujoco_so101_manipulation_vectorized_seeds_use_mjwarp_physics() -> None:
+    task_modules = {
+        "cube_to_bin": "autoresearch_gym.tasks.so101_cube_to_bin_mujoco_v0.seed_trainable_vectorized",
+        "vial_to_rack": "autoresearch_gym.tasks.so101_vial_to_rack_mujoco_v0.seed_trainable_vectorized",
+    }
+    shared_source = Path("autoresearch_gym/tasks/so101_reach_mujoco_v0/seed_trainable_vectorized.py").read_text(
+        encoding="utf-8"
+    )
+
+    assert "AutoresearchMujocoSO101PickPlaceWarpVectorEnv" in shared_source
+    assert "_mjwarp_task_kind" in shared_source
+    for task, module_name in task_modules.items():
+        seed = importlib.import_module(module_name)
+        candidate = seed.get_candidate()
+        assert candidate["recipe"]["algorithm"] == "sac"
+        assert candidate["recipe"]["task"] == task
+        assert candidate["recipe"]["control"] == "mjwarp_feetech_delta_targets"
+        assert candidate["recipe"]["mjwarp_physics_profile"] == "so101_follower_feetech_plastic_guess_v0"
+        assert hasattr(seed.Agent, "update")
+
+
+def test_mujoco_so101_manipulation_vectorized_seeds_are_mutable_task_local_recipes() -> None:
+    for path in (
+        Path("autoresearch_gym/tasks/so101_cube_to_bin_mujoco_v0/seed_trainable_vectorized.py"),
+        Path("autoresearch_gym/tasks/so101_vial_to_rack_mujoco_v0/seed_trainable_vectorized.py"),
+    ):
+        source = path.read_text(encoding="utf-8")
+        assert "def train_agent(" in source
+        assert "def _make_mjwarp_vector_env(" in source
+        assert "from autoresearch_gym.tasks.so101_reach_mujoco_v0.seed_trainable_vectorized import" not in source
+
+
+def test_mujoco_so101_mjwarp_sampled_trajectory_replays_world_and_wrist_feeds(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seed = importlib.import_module("autoresearch_gym.tasks.so101_reach_mujoco_v0.seed_trainable_vectorized")
+
+    class FakeAgent:
+        def act(self, obs, deterministic: bool = False):
+            del obs, deterministic
+            return np.asarray([0.5, -0.25], dtype=np.float32)
+
+    class FakeReplayEnv(gym.Env):
+        metadata = {"render_modes": ["rgb_array"]}
+
+        def __init__(self, **kwargs) -> None:
+            self.kwargs = dict(kwargs)
+            self.observation_space = gym.spaces.Dict(
+                {
+                    "observation": gym.spaces.Box(-np.inf, np.inf, shape=(2,), dtype=np.float32),
+                    "achieved_goal": gym.spaces.Box(-np.inf, np.inf, shape=(3,), dtype=np.float32),
+                    "desired_goal": gym.spaces.Box(-np.inf, np.inf, shape=(3,), dtype=np.float32),
+                }
+            )
+            self.action_space = gym.spaces.Box(-1.0, 1.0, shape=(2,), dtype=np.float32)
+            self.model = types.SimpleNamespace(nu=2)
+            self.data = types.SimpleNamespace(ctrl=np.zeros(2, dtype=np.float32))
+            self.ctrl_low = np.full(2, -1.0, dtype=np.float32)
+            self.ctrl_high = np.full(2, 1.0, dtype=np.float32)
+            self.frame_skip = 1
+            self.max_steps = 3
+            self.step_count = 0
+            self.last_action = np.zeros(2, dtype=np.float32)
+            self.mujoco = types.SimpleNamespace(mj_step=lambda model, data: None)
+            self.closed = False
+
+        def reset(self, *, seed=None, options=None):
+            del seed, options
+            self.step_count = 0
+            self.data.ctrl[:] = 0.0
+            return self._get_obs(), {}
+
+        def _get_obs(self):
+            return {
+                "observation": np.asarray([self.step_count, float(self.data.ctrl[0])], dtype=np.float32),
+                "achieved_goal": np.asarray([0.1 + 0.01 * self.step_count, 0.0, 0.1], dtype=np.float32),
+                "desired_goal": np.asarray([0.2, 0.0, 0.1], dtype=np.float32),
+            }
+
+        def _info(self, obs):
+            distance = float(np.linalg.norm(obs["achieved_goal"] - obs["desired_goal"]))
+            return {
+                "ee_to_target_distance": distance,
+                "is_success": distance < 0.02,
+            }
+
+        def compute_reward(self, achieved_goal, desired_goal, info):
+            del info
+            return -float(np.linalg.norm(achieved_goal - desired_goal))
+
+        def sample_feeds(self):
+            return {
+                "world": np.full((12, 16, 3), 40 + self.step_count, dtype=np.uint8),
+                "wrist": np.full((8, 8, 3), 140 + self.step_count, dtype=np.uint8),
+            }
+
+        def sample_feed_specs(self):
+            return {
+                "world": {"role": "debug", "shape": [12, 16, 3]},
+                "wrist": {"role": "policy_input", "shape": [8, 8, 3]},
+            }
+
+        def render(self, *args, **kwargs):
+            del args, kwargs
+            return np.full((12, 16, 3), 90 + self.step_count, dtype=np.uint8)
+
+        def close(self):
+            self.closed = True
+
+    made_envs: list[FakeReplayEnv] = []
+
+    def fake_make(env_id: str, **kwargs):
+        assert env_id == "AutoresearchMujocoSO101Reach-v0"
+        env = FakeReplayEnv(**kwargs)
+        made_envs.append(env)
+        return env
+
+    def env_factory(*args, **kwargs):
+        raise AssertionError("MJWarp sampled trajectory rendering must use CPU MuJoCo replay, not the training env factory")
+
+    monkeypatch.setattr(seed.gym, "make", fake_make)
+    benchmark = types.SimpleNamespace(
+        env_id="AutoresearchMujocoSO101Reach-v0",
+        env_kwargs={"render_mode": "rgb_array", "backend": "mujoco_warp", "num_envs": 64},
+        max_steps=3,
+        train_seed=101,
+    )
+    request = {
+        "requested": True,
+        "episode": 2,
+        "sample_index": 1,
+        "source": SAMPLE_TRAJECTORY_SOURCE_CANDIDATE_PROVIDED,
+        "frame_stride": 1,
+        "playback_fps": 20.0,
+    }
+
+    payload = seed._make_custom_sampled_trajectory(
+        request=request,
+        agent=FakeAgent(),
+        env_factory=env_factory,
+        benchmark=benchmark,
+    )
+
+    assert payload["source"] == SAMPLE_TRAJECTORY_SOURCE_CANDIDATE_PROVIDED
+    assert payload["metadata"]["sampled_trajectory_render_backend"] == "cpu_mujoco_feetech_delta_replay"
+    assert payload["metadata"]["control"] == "mjwarp_feetech_delta_targets"
+    assert payload["feed_specs"]["world"]["role"] == "debug"
+    assert payload["feed_specs"]["wrist"]["role"] == "policy_input"
+    assert payload["frames"] and payload["frames"][0].shape == (12, 16, 3)
+    assert payload["steps"] and set(payload["steps"][0]["feeds"]) == {"world", "wrist"}
+    assert payload["steps"][0]["feeds"]["world"].shape == (12, 16, 3)
+    assert payload["steps"][0]["feeds"]["wrist"].shape == (8, 8, 3)
+    assert made_envs and made_envs[0].closed
+
+
+def test_mujoco_so101_mjwarp_vector_env_contract_with_stub_runtime(monkeypatch: pytest.MonkeyPatch) -> None:
+    pytest.importorskip("mujoco")
+    from autoresearch_gym.envs.mujoco_so101_reach import AutoresearchMujocoSO101ReachWarpVectorEnv
+
+    class _ArrayField:
+        def __init__(self, value: np.ndarray) -> None:
+            self.value = np.asarray(value, dtype=np.float32).copy()
+
+        def assign(self, value: np.ndarray) -> None:
+            self.value = np.asarray(value, dtype=np.float32).copy()
+
+        def numpy(self) -> np.ndarray:
+            return self.value.copy()
+
+    class _WarpData:
+        def __init__(self, model, data, nworld: int) -> None:
+            self.qpos = _ArrayField(np.repeat(np.asarray(data.qpos, dtype=np.float32)[None, :], nworld, axis=0))
+            self.qvel = _ArrayField(np.zeros((nworld, model.nv), dtype=np.float32))
+            self.ctrl = _ArrayField(np.zeros((nworld, model.nu), dtype=np.float32))
+            site_xpos = np.zeros((nworld, model.nsite, 3), dtype=np.float32)
+            site_xpos[:] = np.asarray([0.22, 0.0, 0.17], dtype=np.float32)
+            self.site_xpos = _ArrayField(site_xpos)
+            self.xpos = _ArrayField(np.zeros((nworld, model.nbody, 3), dtype=np.float32))
+
+    class _StubWarp:
+        @staticmethod
+        def put_model(model):
+            return model
+
+        @staticmethod
+        def put_data(model, data, nworld: int, nconmax: int | None = None, njmax: int | None = None):
+            del nconmax, njmax
+            return _WarpData(model, data, nworld)
+
+        @staticmethod
+        def forward(model, data) -> None:
+            del model, data
+
+        @staticmethod
+        def step(model, data) -> None:
+            del model
+            site_xpos = data.site_xpos.numpy()
+            site_xpos[:, :, 0] += 0.001 * np.tanh(np.sum(data.ctrl.numpy(), axis=1))[:, None]
+            data.site_xpos.assign(site_xpos)
+
+    monkeypatch.setitem(sys.modules, "mujoco_warp", _StubWarp)
+    env = AutoresearchMujocoSO101ReachWarpVectorEnv(num_envs=2, seed=123, max_steps=2, frame_skip=1)
+    try:
+        obs = env.reset(seed=123)
+        assert obs.shape == (2, *env.observation_space.shape)
+        before = env.applied_ctrl.copy()
+        action = np.ones((2, env.action_space.shape[0]), dtype=np.float32)
+        next_obs, reward, terminated, truncated, info = env.step(action)
+        assert next_obs.shape == (2, *env.observation_space.shape)
+        assert reward.shape == (2,)
+        assert terminated.shape == (2,)
+        assert truncated.shape == (2,)
+        assert "ee_to_target_distance" in info
+        assert env.physics_profile_metadata()["calibration_source"] == "engineering_guess"
+        assert np.any(env.applied_ctrl != before)
+        assert np.any(np.abs(env.ctrl_targets - env.applied_ctrl) > 0.0)
+        reset_obs = env.reset_worlds(np.asarray([True, False]))
+        assert reset_obs.shape == (2, *env.observation_space.shape)
+    finally:
+        env.close()
+
+
+def test_mujoco_so101_manipulation_mjwarp_vector_env_contract_with_stub_runtime(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    pytest.importorskip("mujoco")
+    from autoresearch_gym.envs.mujoco_so101_pick_place import AutoresearchMujocoSO101PickPlaceWarpVectorEnv
+
+    class _ArrayField:
+        def __init__(self, value: np.ndarray) -> None:
+            self.value = np.asarray(value, dtype=np.float32).copy()
+
+        def assign(self, value: np.ndarray) -> None:
+            self.value = np.asarray(value, dtype=np.float32).copy()
+
+        def numpy(self) -> np.ndarray:
+            return self.value.copy()
+
+    class _WarpData:
+        def __init__(self, model, data, nworld: int) -> None:
+            self.qpos = _ArrayField(np.repeat(np.asarray(data.qpos, dtype=np.float32)[None, :], nworld, axis=0))
+            self.qvel = _ArrayField(np.zeros((nworld, model.nv), dtype=np.float32))
+            self.ctrl = _ArrayField(np.zeros((nworld, model.nu), dtype=np.float32))
+            site_xpos = np.zeros((nworld, model.nsite, 3), dtype=np.float32)
+            site_xpos[:] = np.asarray([0.22, 0.0, 0.17], dtype=np.float32)
+            self.site_xpos = _ArrayField(site_xpos)
+            self.xpos = _ArrayField(np.zeros((nworld, model.nbody, 3), dtype=np.float32))
+
+    class _StubWarp:
+        @staticmethod
+        def put_model(model):
+            return model
+
+        @staticmethod
+        def put_data(model, data, nworld: int, nconmax: int | None = None, njmax: int | None = None):
+            del nconmax, njmax
+            return _WarpData(model, data, nworld)
+
+        @staticmethod
+        def forward(model, data) -> None:
+            del model, data
+
+        @staticmethod
+        def step(model, data) -> None:
+            del model
+            qpos = data.qpos.numpy()
+            qpos[:, : min(2, qpos.shape[1])] += 0.0005
+            data.qpos.assign(qpos)
+
+    monkeypatch.setitem(sys.modules, "mujoco_warp", _StubWarp)
+    for task_kind, metric_name in (("cube_to_bin", "cube_to_bin_distance"), ("vial_to_rack", "vial_to_slot_distance")):
+        try:
+            env = AutoresearchMujocoSO101PickPlaceWarpVectorEnv(
+                task_kind=task_kind,
+                num_envs=2,
+                seed=123,
+                max_steps=2,
+                frame_skip=1,
+            )
+        except FileNotFoundError as exc:
+            pytest.skip(str(exc))
+        try:
+            obs = env.reset(seed=123)
+            assert obs.shape == (2, *env.observation_space.shape)
+            action = np.zeros((2, env.action_space.shape[0]), dtype=np.float32)
+            next_obs, reward, terminated, truncated, info = env.step(action)
+            assert next_obs.shape == (2, *env.observation_space.shape)
+            assert reward.shape == (2,)
+            assert terminated.shape == (2,)
+            assert truncated.shape == (2,)
+            assert metric_name in info
+            assert info["printed_gripper_profile"][0] == "so101_printed_plastic_gripper_guess_v0"
+            metadata = env.physics_profile_metadata()
+            assert metadata["task_kind"] == task_kind
+            assert metadata["printed_gripper_profile"]["calibration_source"] == "engineering_guess"
+            reset_obs = env.reset_worlds(np.asarray([True, False]))
+            assert reset_obs.shape == (2, *env.observation_space.shape)
+        finally:
+            env.close()
+
+
+def test_mujoco_so101_mjwarp_vector_env_reset_step_when_available() -> None:
+    pytest.importorskip("mujoco")
+    pytest.importorskip("mujoco_warp")
+    from autoresearch_gym.envs.mujoco_so101_reach import AutoresearchMujocoSO101ReachWarpVectorEnv
+
+    try:
+        env = AutoresearchMujocoSO101ReachWarpVectorEnv(num_envs=2, seed=123, max_steps=2, frame_skip=1)
+    except (FileNotFoundError, RuntimeError) as exc:
+        pytest.skip(str(exc))
+    try:
+        obs = env.reset(seed=123)
+        assert obs.shape == (2, *env.observation_space.shape)
+        action = np.zeros((2, env.action_space.shape[0]), dtype=np.float32)
+        next_obs, reward, terminated, truncated, info = env.step(action)
+        assert next_obs.shape == (2, *env.observation_space.shape)
+        assert reward.shape == (2,)
+        assert terminated.shape == (2,)
+        assert truncated.shape == (2,)
+        assert "ee_to_target_distance" in info
+        assert env.physics_profile_metadata()["calibration_source"] == "engineering_guess"
+    finally:
+        env.close()
+
+
 def test_mujoco_so101_reach_fixed_case_reset_step_and_render() -> None:
     pytest.importorskip("mujoco")
 
@@ -4844,7 +5430,7 @@ def test_mujoco_so101_reach_sample_feeds_include_world_and_wrist() -> None:
     [
         (
             "AutoresearchMujocoSO101CubeToBin-v0",
-            {"object_pos": [0.27, -0.06, 0.025], "target_pos": [0.36, 0.065, 0.03]},
+            {"object_pos": [0.27, -0.06, 0.0125], "target_pos": [0.36, 0.065, 0.03]},
             "cube_to_bin",
         ),
         (
@@ -4867,15 +5453,31 @@ def test_mujoco_so101_pick_place_fixed_case_reset_step_and_render(
         assert obs["desired_goal"] == pytest.approx(np.asarray(fixed_case["target_pos"], dtype=np.float32))
         assert obs["achieved_goal"].shape == (3,)
         assert f"{metric_prefix}_distance" in info
+        if env_id == "AutoresearchMujocoSO101CubeToBin-v0":
+            from autoresearch_gym.envs.mujoco_so101_pick_place import CUBE_HALF_EXTENTS, CUBE_MASS
+
+            cube_geom_id = env.unwrapped.mujoco.mj_name2id(
+                env.unwrapped.model,
+                env.unwrapped.mujoco.mjtObj.mjOBJ_GEOM,
+                "cube",
+            )
+            assert cube_geom_id >= 0
+            assert env.unwrapped.model.geom_size[cube_geom_id] == pytest.approx(CUBE_HALF_EXTENTS)
+            assert env.unwrapped.model.body_mass[env.unwrapped.object_body_id] == pytest.approx(CUBE_MASS)
 
         next_obs, reward, terminated, truncated, info = env.step(np.zeros(env.action_space.shape, dtype=np.float32))
         assert next_obs["observation"].shape == env.observation_space["observation"].shape
         assert isinstance(float(reward), float)
+        assert 0.0 <= float(reward) <= 1.0
         assert isinstance(bool(terminated), bool)
         assert isinstance(bool(truncated), bool)
         assert f"{metric_prefix}_progress" in info
         assert "object_to_target_distance" in info
         assert "ee_to_object_distance" in info
+        assert "is_grasped" in info
+        assert "is_robot_static" in info
+        assert "lift_height" in info
+        assert "SO101-Nexus" in info["reward_source"]
         if env_id == "AutoresearchMujocoSO101VialToRack-v0":
             assert "vial_uprightness" in info
             assert "vial_height_error" in info
@@ -4929,6 +5531,7 @@ def test_mujoco_so101_pick_place_seed_task_resets_and_steps_when_mujoco_is_insta
     next_obs, reward, terminated, truncated, info = env.step(action)
     assert next_obs.shape == env.observation_space.shape
     assert isinstance(float(reward), float)
+    assert 0.0 <= float(reward) <= 1.0
     assert isinstance(bool(terminated), bool)
     assert isinstance(bool(truncated), bool)
     assert expected_info_key in info

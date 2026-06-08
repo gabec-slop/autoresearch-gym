@@ -1,0 +1,39 @@
+{
+  "name": "so101_cube_to_bin_mujoco_warp_wall_clock_v0",
+  "description": "Wall-clock SO-101 cube-to-bin benchmark using a MuJoCo Warp batched training collector and CPU MuJoCo reference eval.",
+  "env_id": "AutoresearchMujocoSO101CubeToBin-v0",
+  "env_kwargs": {
+    "render_mode": "rgb_array",
+    "reward_type": "dense",
+    "backend": "mujoco_warp",
+    "num_envs": 64,
+    "control_profile": "feetech_sts3215_delta_guess_v0",
+    "physics_profile": "so101_follower_feetech_plastic_guess_v0",
+    "printed_gripper_profile": "so101_printed_plastic_gripper_guess_v0",
+    "warp_nconmax": 128,
+    "warp_njmax": 512
+  },
+  "train_episodes": 100000,
+  "train_seconds": 300,
+  "eval_episodes": 10,
+  "max_steps": 512,
+  "render_mode": "rgb_array",
+  "primary_metric": "eval_success_rate",
+  "primary_metric_mode": "maximize",
+  "train_seed": 121,
+  "eval_seed_start": 7120,
+  "device": "auto",
+  "eval_case_bank": "eval_cases.json",
+  "train_probe": {
+    "enabled": true,
+    "interval_seconds": 20.0,
+    "episodes": 3,
+    "seed_start": 902000
+  },
+  "notes": [
+    "Use with seed_trainable_vectorized.py on a CUDA host with mujoco_warp installed.",
+    "Training collection uses the real MuJoCo Menagerie RobotStudio SO-101 MJCF and engineering-guess Feetech joint dynamics plus printed-plastic gripper contact.",
+    "Fixed eval remains the CPU MuJoCo cube-to-bin env and eval_cases.json, so approximate MJWarp collector parameters are treated as a train-time sim-to-real gap.",
+    "Dense reward shaping follows the SO101-Nexus v0.3.12 PickAndPlaceEnv/RewardConfig structure: reach progress, grasp signal, grasp-gated placement progress, and completion bonus. Credit: https://pypi.org/project/so101-nexus-mujoco/"
+  ]
+}

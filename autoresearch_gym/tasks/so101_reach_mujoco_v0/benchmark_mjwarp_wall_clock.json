@@ -1,10 +1,16 @@
 {
-  "name": "so101_reach_mujoco_wall_clock_v0",
-  "description": "Wall-clock MuJoCo Menagerie RobotStudio SO-101 reach benchmark with fixed target eval cases.",
+  "name": "so101_reach_mujoco_warp_wall_clock_v0",
+  "description": "Wall-clock SO-101 follower reach benchmark using a MuJoCo Warp batched training collector and CPU MuJoCo reference eval.",
   "env_id": "AutoresearchMujocoSO101Reach-v0",
   "env_kwargs": {
     "render_mode": "rgb_array",
-    "reward_type": "dense"
+    "reward_type": "dense",
+    "backend": "mujoco_warp",
+    "num_envs": 64,
+    "control_profile": "feetech_sts3215_delta_guess_v0",
+    "physics_profile": "so101_follower_feetech_plastic_guess_v0",
+    "warp_nconmax": 64,
+    "warp_njmax": 256
   },
   "train_episodes": 100000,
   "train_seconds": 300,
@@ -24,7 +30,9 @@
     "seed_start": 901000
   },
   "notes": [
-    "Wall-clock benchmark for the MuJoCo Menagerie RobotStudio SO-101 reach task.",
+    "Use with seed_trainable_vectorized.py on a CUDA host with mujoco_warp installed.",
+    "Training collection uses the real MuJoCo Menagerie RobotStudio SO-101 MJCF and an explicit engineering-guess Feetech/plastic-gripper physics profile.",
+    "Fixed eval remains the CPU MuJoCo SO-101 reach env and eval_cases.json, so approximate MJWarp collector parameters are treated as a train-time sim-to-real gap.",
     "Reach success mirrors the SO101-Nexus ReachConfig default success_threshold=0.02 m, with targets sampled from a 0.15 m half-extent 3D workspace around the task center.",
     "Episode horizon is 150 control steps so folded-start/camera-search policies have time to acquire and reach edge/corner fixed eval targets."
   ]

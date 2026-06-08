@@ -33,6 +33,57 @@ JOINT_NAMES = (
 )
 SO101_HOME = np.asarray([0.0, -1.35, 1.69, 0.20, 0.0, -0.16], dtype=np.float64)
 
+SO101_FEETECH_ACTUATOR_GUESS_PROFILE: dict[str, Any] = {
+    "name": "feetech_sts3215_delta_guess_v0",
+    "calibration_source": "engineering_guess",
+    "motor_family": "Feetech STS3215-class serial servos",
+    "control_mode": "delta_position_target",
+    "actuator_lag_alpha": 0.35,
+    "joint_deadband_rad": 0.004,
+    "backlash_half_width_rad": 0.006,
+    "max_arm_delta_rad_per_policy_step": 0.03,
+    "max_gripper_delta_rad_per_policy_step": 0.10,
+    "notes": [
+        "Approximates serial-servo command latency, backlash, and finite target slew for SO-101 follower training.",
+        "Values are intentionally conservative guesses until measured from this specific arm.",
+    ],
+}
+
+SO101_PRINTED_GRIPPER_CONTACT_GUESS_PROFILE: dict[str, Any] = {
+    "name": "so101_printed_plastic_gripper_guess_v0",
+    "calibration_source": "engineering_guess",
+    "material_assumption": "PLA+ low-infill printed fingers with optional TPU/tape contact surface",
+    "pla_plus_density_g_cm3": [1.20, 1.27],
+    "effective_low_infill_density_g_cm3": [0.25, 0.45],
+    "pla_plastic_friction": {
+        "sliding": [0.20, 0.35],
+        "static": [0.25, 0.40],
+        "torsional": [0.005, 0.02],
+        "rolling": [0.0001, 0.001],
+    },
+    "compliant_surface_friction": {
+        "sliding": [0.45, 0.90],
+        "static": [0.60, 1.20],
+    },
+    "contact_defaults": {
+        "condim": 4,
+        "solref": "0.01 1",
+        "solimp": "0.90 0.99 0.001",
+    },
+    "notes": [
+        "Used as metadata for the SO-101 MJWarp support boundary.",
+        "Reach training has no grasp contact, but manipulation variants should treat these values as sim-to-real gap parameters.",
+    ],
+}
+
+SO101_MJWARP_GUESSED_PHYSICS_PROFILE: dict[str, Any] = {
+    "name": "so101_follower_feetech_plastic_guess_v0",
+    "calibration_source": "engineering_guess",
+    "robot_asset_source": "mujoco_menagerie_robotstudio_so101",
+    "actuator_profile": SO101_FEETECH_ACTUATOR_GUESS_PROFILE,
+    "printed_gripper_profile": SO101_PRINTED_GRIPPER_CONTACT_GUESS_PROFILE,
+}
+
 
 class AutoresearchMujocoSO101ReachEnv(gym.Env[dict[str, np.ndarray], np.ndarray]):
     """SO-101 MuJoCo reach task.
@@ -45,7 +96,7 @@ class AutoresearchMujocoSO101ReachEnv(gym.Env[dict[str, np.ndarray], np.ndarray]
     def __init__(
         self,
         render_mode: str | None = "rgb_array",
-        max_steps: int = 80,
+        max_steps: int = 150,
         frame_skip: int = DEFAULT_FRAME_SKIP,
         reward_type: str = "dense",
         render_width: int = 720,
@@ -316,6 +367,237 @@ class AutoresearchMujocoSO101ReachEnv(gym.Env[dict[str, np.ndarray], np.ndarray]
             self.viewer = None
 
 
+class AutoresearchMujocoSO101ReachWarpVectorEnv:
+    """Batched SO-101 reach collector backed by MuJoCo Warp.
+
+    The source model is still the real RobotStudio/Menagerie SO-101 MJCF. The
+    additional servo and printed-gripper physics are explicit engineering
+    guesses so downstream runs can track this sim-to-real gap.
+    """
+
+    def __init__(
+        self,
+        num_envs: int,
+        seed: int,
+        model_path: str | None = None,
+        max_steps: int = 150,
+        frame_skip: int = DEFAULT_FRAME_SKIP,
+        reward_type: str = "dense",
+        actuator_lag_alpha: float | None = None,
+        max_arm_delta: float | None = None,
+        max_gripper_delta: float | None = None,
+        joint_deadband: float | None = None,
+        backlash_half_width: float | None = None,
+        warp_nconmax: int = 64,
+        warp_njmax: int = 256,
+        **_: Any,
+    ) -> None:
+        try:
+            import mujoco  # type: ignore
+            import mujoco_warp  # type: ignore
+        except ModuleNotFoundError as exc:  # pragma: no cover - optional extra.
+            raise ModuleNotFoundError("SO-101 MuJoCo Warp vector training requires `mujoco` and `mujoco_warp`.") from exc
+
+        self.mujoco = mujoco
+        self.mujoco_warp = mujoco_warp
+        self.num_envs = int(num_envs)
+        self.max_steps = int(max_steps)
+        self.frame_skip = int(frame_skip)
+        self.reward_type = reward_type
+        self.warp_nconmax = int(warp_nconmax)
+        self.warp_njmax = int(warp_njmax)
+        actuator_profile = SO101_FEETECH_ACTUATOR_GUESS_PROFILE
+        self.actuator_lag_alpha = float(
+            actuator_profile["actuator_lag_alpha"] if actuator_lag_alpha is None else actuator_lag_alpha
+        )
+        self.max_arm_delta = float(
+            actuator_profile["max_arm_delta_rad_per_policy_step"] if max_arm_delta is None else max_arm_delta
+        )
+        self.max_gripper_delta = float(
+            actuator_profile["max_gripper_delta_rad_per_policy_step"] if max_gripper_delta is None else max_gripper_delta
+        )
+        self.joint_deadband = float(actuator_profile["joint_deadband_rad"] if joint_deadband is None else joint_deadband)
+        self.backlash_half_width = float(
+            actuator_profile["backlash_half_width_rad"] if backlash_half_width is None else backlash_half_width
+        )
+        self.rng = np.random.default_rng(seed)
+
+        self.so101_xml_path = resolve_so101_xml_path(model_path)
+        if self.so101_xml_path is None:
+            raise FileNotFoundError(
+                "Could not find MuJoCo Menagerie robotstudio_so101/so101.xml. "
+                "SO-101 MuJoCo Warp support requires the real RobotStudio/Menagerie model."
+            )
+        self.scene_xml_path = write_so101_reach_scene_xml(self.so101_xml_path)
+        self.model_source = "mujoco_menagerie_robotstudio_so101"
+        self.model = self.mujoco.MjModel.from_xml_path(str(self.scene_xml_path))
+        _prepare_model_for_mujoco_warp(self.mujoco, self.model)
+        self.data0 = self.mujoco.MjData(self.model)
+        self.ctrl_low, self.ctrl_high = _actuator_ctrl_ranges(self.model)
+        self.joint_qpos_adrs = _joint_qpos_adrs(self.mujoco, self.model, JOINT_NAMES)
+        self.joint_qvel_adrs = _joint_qvel_adrs(self.mujoco, self.model, JOINT_NAMES)
+        self.ee_site_id = self.mujoco.mj_name2id(self.model, self.mujoco.mjtObj.mjOBJ_SITE, "gripperframe")
+        self.ee_body_id = _find_body_id(
+            self.mujoco,
+            self.model,
+            ("gripper", "camera_mount", "moving_jaw_so101_v1", "wrist", "lower_arm"),
+        )
+        if self.ee_site_id < 0 and self.ee_body_id < 0:
+            raise RuntimeError("SO-101 scene is missing gripperframe site and gripper body fallback")
+
+        self.home_qpos = np.asarray(self.model.qpos0, dtype=np.float32).copy()
+        self.home_qpos[self.joint_qpos_adrs] = SO101_HOME.astype(np.float32)
+        self.home_ctrl = np.clip(self.home_qpos[self.joint_qpos_adrs], self.ctrl_low, self.ctrl_high).astype(np.float32)
+        self.delta_limits = np.full(self.model.nu, self.max_arm_delta, dtype=np.float32)
+        if self.delta_limits.size:
+            self.delta_limits[-1] = self.max_gripper_delta
+        self.last_actions = np.zeros((self.num_envs, self.model.nu), dtype=np.float32)
+        self.ctrl_targets = np.repeat(self.home_ctrl[None, :], self.num_envs, axis=0).astype(np.float32)
+        self.applied_ctrl = self.ctrl_targets.copy()
+        self.control_error_sign = np.zeros_like(self.applied_ctrl, dtype=np.float32)
+        self.targets = np.zeros((self.num_envs, 3), dtype=np.float32)
+        self.initial_distances = np.zeros(self.num_envs, dtype=np.float32)
+        self.step_counts = np.zeros(self.num_envs, dtype=np.int32)
+
+        self.warp_model = self.mujoco_warp.put_model(self.model)
+        self.warp_data = self.mujoco_warp.put_data(
+            self.model,
+            self.data0,
+            nworld=self.num_envs,
+            nconmax=self.warp_nconmax,
+            njmax=self.warp_njmax,
+        )
+        self.action_space = spaces.Box(low=-1.0, high=1.0, shape=(self.model.nu,), dtype=np.float32)
+        obs_dim = 3 + 3 + 3 + self.joint_qpos_adrs.size + self.joint_qvel_adrs.size + self.model.nu
+        self.observation_space = spaces.Box(low=-np.inf, high=np.inf, shape=(obs_dim + 6,), dtype=np.float32)
+        self.physics_backend = "mujoco_warp_so101_follower_guess"
+
+    def physics_profile_metadata(self) -> dict[str, Any]:
+        return {
+            **SO101_MJWARP_GUESSED_PHYSICS_PROFILE,
+            "physics_backend": self.physics_backend,
+            "num_envs": self.num_envs,
+            "frame_skip": self.frame_skip,
+            "warp_nconmax": self.warp_nconmax,
+            "warp_njmax": self.warp_njmax,
+        }
+
+    def _sample_targets(self, count: int) -> np.ndarray:
+        return self.rng.uniform(TARGET_LOW, TARGET_HIGH, size=(int(count), 3)).astype(np.float32)
+
+    def reset(self, seed: int | None = None) -> np.ndarray:
+        if seed is not None:
+            self.rng = np.random.default_rng(seed)
+        mask = np.ones(self.num_envs, dtype=bool)
+        obs = self._reset_mask(mask)
+        self._set_initial_distance_metrics(obs, mask)
+        return obs
+
+    def reset_worlds(self, mask: np.ndarray) -> np.ndarray:
+        mask = np.asarray(mask, dtype=bool)
+        if not np.any(mask):
+            return self._obs_from_arrays(self.warp_data.qpos.numpy(), self.warp_data.qvel.numpy())
+        obs = self._reset_mask(mask)
+        self._set_initial_distance_metrics(obs, mask)
+        return obs
+
+    def _reset_mask(self, mask: np.ndarray) -> np.ndarray:
+        qpos = self.warp_data.qpos.numpy()
+        qvel = self.warp_data.qvel.numpy()
+        qpos[mask] = self.home_qpos[None, :]
+        qvel[mask] = 0.0
+        self.targets[mask] = self._sample_targets(int(np.sum(mask)))
+        self.ctrl_targets[mask] = self.home_ctrl[None, :]
+        self.applied_ctrl[mask] = self.home_ctrl[None, :]
+        self.control_error_sign[mask] = 0.0
+        self.last_actions[mask] = 0.0
+        self.step_counts[mask] = 0
+        self.warp_data.qpos.assign(qpos.astype(np.float32))
+        self.warp_data.qvel.assign(qvel.astype(np.float32))
+        self.warp_data.ctrl.assign(self.applied_ctrl.astype(np.float32))
+        self.mujoco_warp.forward(self.warp_model, self.warp_data)
+        return self._obs_from_arrays(self.warp_data.qpos.numpy(), self.warp_data.qvel.numpy())
+
+    def step(self, actions: np.ndarray):
+        actions = np.clip(np.asarray(actions, dtype=np.float32), -1.0, 1.0)
+        self._advance_servo_targets(actions)
+        for _ in range(self.frame_skip):
+            self.warp_data.ctrl.assign(self.applied_ctrl.astype(np.float32))
+            self.mujoco_warp.step(self.warp_model, self.warp_data)
+        self.step_counts += 1
+        self.last_actions = actions.astype(np.float32, copy=True)
+        obs = self._obs_from_arrays(self.warp_data.qpos.numpy(), self.warp_data.qvel.numpy())
+        ee = obs[:, 0:3]
+        distance = np.linalg.norm(ee - self.targets, axis=1).astype(np.float32)
+        success = distance < SUCCESS_THRESHOLD
+        progress = self.initial_distances - distance
+        if self.reward_type == "sparse":
+            reward = np.where(success, 0.0, -1.0).astype(np.float32)
+        else:
+            reward = np.where(success, 1.0, -distance + 0.25 * progress).astype(np.float32)
+        truncated = self.step_counts >= self.max_steps
+        infos = {
+            "is_success": success.copy(),
+            "ee_to_target_distance": distance.copy(),
+            "initial_ee_to_target_distance": self.initial_distances.copy(),
+            "ee_to_target_progress": progress.astype(np.float32),
+            "success_threshold": np.full(self.num_envs, SUCCESS_THRESHOLD, dtype=np.float32),
+            "physics_backend": np.asarray([self.physics_backend] * self.num_envs, dtype=object),
+            "actuator_profile": np.asarray([SO101_FEETECH_ACTUATOR_GUESS_PROFILE["name"]] * self.num_envs, dtype=object),
+        }
+        return obs, reward, success.astype(bool), truncated.astype(bool), infos
+
+    def _advance_servo_targets(self, actions: np.ndarray) -> None:
+        desired = self.ctrl_targets + actions * self.delta_limits[None, :]
+        self.ctrl_targets = np.clip(desired, self.ctrl_low[None, :], self.ctrl_high[None, :]).astype(np.float32)
+        error = self.ctrl_targets - self.applied_ctrl
+        sign = np.sign(error).astype(np.float32)
+        reversing = (self.control_error_sign != 0.0) & (sign != 0.0) & (sign != self.control_error_sign)
+        stalled_by_backlash = reversing & (np.abs(error) < self.backlash_half_width)
+        active = (np.abs(error) >= self.joint_deadband) & ~stalled_by_backlash
+        self.applied_ctrl[active] += self.actuator_lag_alpha * error[active]
+        self.applied_ctrl = np.clip(self.applied_ctrl, self.ctrl_low[None, :], self.ctrl_high[None, :]).astype(np.float32)
+        self.control_error_sign[active] = sign[active]
+
+    def _set_initial_distance_metrics(self, obs: np.ndarray, mask: np.ndarray) -> None:
+        ee = obs[:, 0:3]
+        self.initial_distances[mask] = np.linalg.norm(ee[mask] - self.targets[mask], axis=1).astype(np.float32)
+
+    def _obs_from_arrays(self, qpos: np.ndarray, qvel: np.ndarray) -> np.ndarray:
+        ee = self._ee_positions()
+        joint_pos = qpos[:, self.joint_qpos_adrs].astype(np.float32)
+        joint_vel = qvel[:, self.joint_qvel_adrs].astype(np.float32)
+        observation = np.concatenate(
+            [
+                ee,
+                self.targets,
+                self.targets - ee,
+                joint_pos,
+                joint_vel,
+                self.last_actions,
+            ],
+            axis=1,
+        ).astype(np.float32)
+        return np.concatenate([observation, ee, self.targets], axis=1).astype(np.float32)
+
+    def _ee_positions(self) -> np.ndarray:
+        try:
+            site_xpos = getattr(self.warp_data, "site_xpos")
+            return site_xpos.numpy()[:, self.ee_site_id, :].astype(np.float32)
+        except Exception:
+            pass
+        try:
+            xpos = self.warp_data.xpos.numpy()
+            body_id = self.ee_body_id if self.ee_body_id >= 0 else -1
+            return xpos[:, body_id, :].astype(np.float32)
+        except Exception:
+            qpos = self.warp_data.qpos.numpy()
+            return qpos[:, self.joint_qpos_adrs[:3]].astype(np.float32)
+
+    def close(self) -> None:
+        return None
+
+
 def resolve_so101_xml_path(model_path: str | None = None) -> Path | None:
     candidates: list[Path] = []
     if model_path:
@@ -426,6 +708,21 @@ def write_so101_reach_scene_xml(so101_xml_path: Path) -> Path:
 def _actuator_ctrl_ranges(model: Any) -> tuple[np.ndarray, np.ndarray]:
     ranges = np.asarray(model.actuator_ctrlrange, dtype=np.float32)
     return ranges[:, 0], ranges[:, 1]
+
+
+def _prepare_model_for_mujoco_warp(mujoco_module: Any, model: Any) -> None:
+    if hasattr(mujoco_module, "mjtDisableBit") and hasattr(mujoco_module.mjtDisableBit, "mjDSBL_MULTICCD"):
+        model.opt.disableflags |= int(mujoco_module.mjtDisableBit.mjDSBL_MULTICCD.value)
+    if hasattr(model, "geom_margin"):
+        model.geom_margin[:] = 0.0
+
+
+def _find_body_id(mujoco: Any, model: Any, names: tuple[str, ...]) -> int:
+    for name in names:
+        body_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, name)
+        if body_id >= 0:
+            return int(body_id)
+    return -1
 
 
 def _joint_qpos_adrs(mujoco: Any, model: Any, names: tuple[str, ...]) -> np.ndarray:

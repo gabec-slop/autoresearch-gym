@@ -9,7 +9,7 @@
   "train_episodes": 100000,
   "train_seconds": 300,
   "eval_episodes": 10,
-  "max_steps": 120,
+  "max_steps": 512,
   "render_mode": "rgb_array",
   "primary_metric": "eval_success_rate",
   "primary_metric_mode": "maximize",
@@ -24,6 +24,7 @@
     "seed_start": 902000
   },
   "notes": [
-    "Wall-clock benchmark for the SO-101 cube-in-bin MuJoCo task."
+    "Wall-clock benchmark for the SO-101 cube-in-bin MuJoCo task.",
+    "Dense reward shaping follows the SO101-Nexus v0.3.12 PickAndPlaceEnv/RewardConfig structure: reach progress, grasp signal, grasp-gated placement progress, and completion bonus. Credit: https://pypi.org/project/so101-nexus-mujoco/"
   ]
 }
