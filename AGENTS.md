@@ -228,9 +228,16 @@ primary metrics, fixed eval seeds, or benchmark conditions. It is only for
 visual/debug trajectory sampling. If a seed does not opt into custom sampling,
 the framework must fall back to the existing generic sampled trajectory behavior.
 
-Use CleanRL-style explicit code over hidden abstractions. Shared utilities are
-acceptable only when they preserve readability and do not hide the training
-recipe from the autoresearch loop.
+Use CleanRL-style explicit code over hidden abstractions. A seed trainable should
+be self-contained enough for an autoresearch agent to mutate the full learning
+recipe in that one file. Do not create shared training engines, replay buffers,
+model definitions, optimizer loops, HER logic, world-model/MBPO loops, or
+task-specific reward helpers that are imported by multiple seed files. Duplicate
+recipe code across alternate seeds when that keeps the seed readable and locally
+editable. Shared package utilities are acceptable only for stable harness
+contracts and generic serialization/logging/rendering glue, such as
+`autoresearch_gym.runner.curves`; they must not hide the training recipe from
+the autoresearch loop.
 
 External-environment seeds must stay target-agnostic. Do not branch inside a
 seed on local vs remote execution, SSH hostnames, Windows drive paths, private
@@ -305,6 +312,8 @@ Add alternate seeds sparingly. Good alternate seeds include:
 
 - SAC+HER for goal-conditioned manipulation
 - vectorized SAC for wall-clock utilization research
+- SAC+MBPO or another model-based rollout seed for interaction-heavy
+  manipulation when it is self-contained in that seed file
 - TD3 or PPO when they are credible baselines for the task
 
 Avoid shipping many weak variants. A small number of reliable seeds is more

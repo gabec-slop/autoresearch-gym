@@ -66,6 +66,10 @@ LIFT_THRESHOLD = 0.055
 PLACE_THRESHOLD = 0.05
 APPROACH_STEPS = 20_000
 GRASP_LIFT_STEPS = 70_000
+CURRICULUM_WINDOW = 8
+APPROACH_TO_GRASP_NEAR_RATE = 0.30
+GRASP_TO_PLACE_LIFTED_RATE = 0.20
+PHASE_INDEX = {"approach": 0, "grasp_lift": 1, "place": 2}
 
 
 def get_candidate() -> dict[str, Any]:
@@ -125,13 +129,44 @@ def _phase(global_step: int) -> str:
     return "place"
 
 
+class CurriculumState:
+    def __init__(self, window: int = CURRICULUM_WINDOW) -> None:
+        self.window = max(1, int(window))
+        self.phase = "approach"
+        self.near_rates: list[float] = []
+        self.lifted_rates: list[float] = []
+
+    @staticmethod
+    def _rate(values: Any) -> float:
+        arr = np.asarray(values, dtype=np.float32)
+        if arr.size == 0:
+            return 0.0
+        return float(np.mean(arr))
+
+    def update_from_infos(self, infos: dict[str, Any]) -> None:
+        near_rate = self._rate(infos.get("near_cube", False))
+        lifted_rate = self._rate(infos.get("lifted_ever", infos.get("lifted", False)))
+        self.near_rates.append(near_rate)
+        self.lifted_rates.append(lifted_rate)
+        del self.near_rates[:-self.window]
+        del self.lifted_rates[:-self.window]
+        if self.phase == "approach" and float(np.mean(self.near_rates)) >= APPROACH_TO_GRASP_NEAR_RATE:
+            self.phase = "grasp_lift"
+        if self.phase == "grasp_lift" and float(np.mean(self.lifted_rates)) >= GRASP_TO_PLACE_LIFTED_RATE:
+            self.phase = "place"
+
+    @property
+    def phase_index(self) -> float:
+        return float(PHASE_INDEX[self.phase])
+
+
 def _safe_progress_fraction(progress: float, initial_distance: float) -> float:
     if initial_distance <= 1e-6:
         return 0.0
     return float(np.clip(progress / initial_distance, -1.0, 1.0))
 
 
-def _curriculum_reward(raw_reward: float, info: dict[str, Any], global_step: int) -> float:
+def _curriculum_reward(raw_reward: float, info: dict[str, Any], global_step: int, phase: str | None = None) -> float:
     del raw_reward
     ee_to_cube = float(info.get("ee_to_cube_distance", 1.0))
     cube_to_goal = float(info.get("cube_to_goal_distance", 1.0))
@@ -147,21 +182,23 @@ def _curriculum_reward(raw_reward: float, info: dict[str, Any], global_step: int
     placed = bool(info.get("placed_success", False))
     ee_progress_frac = _safe_progress_fraction(ee_progress, initial_ee)
     goal_progress_frac = _safe_progress_fraction(goal_progress, initial_goal)
-    phase = _phase(global_step)
-    shaped = 0.0
+    phase = phase or _phase(global_step)
+    reach_floor = 0.20 * math.exp(-3.0 * ee_to_cube)
+    shaped = reach_floor
     if phase == "approach":
         shaped += 1.25 * ee_progress_frac
         shaped += 0.20 * math.exp(-18.0 * ee_to_cube)
         shaped += 0.35 if near else 0.0
     elif phase == "grasp_lift":
-        shaped += 0.55 * ee_progress_frac
+        shaped += 0.65 * ee_progress_frac
         shaped += 0.15 * math.exp(-16.0 * ee_to_cube)
         shaped += 0.25 if near else 0.0
         shaped += 0.35 if grasp else 0.0
         shaped += 2.25 * min(1.0, lift / max(LIFT_THRESHOLD, 1e-6))
         shaped += 0.70 if lifted else 0.0
     else:
-        shaped += 0.25 if near else 0.0
+        shaped += 0.25 * ee_progress_frac
+        shaped += 0.15 if near else 0.0
         shaped += 0.60 if lifted_ever else 0.0
         shaped += 1.50 * goal_progress_frac if lifted_ever else 0.0
         shaped += 0.20 * math.exp(-14.0 * cube_to_goal) if lifted_ever else 0.0
@@ -180,7 +217,7 @@ def _safe_progress_fraction_vector(progress: np.ndarray, initial_distance: np.nd
     ).clip(-1.0, 1.0)
 
 
-def _curriculum_reward_vector(raw: np.ndarray, infos: dict[str, Any], global_step: int) -> np.ndarray:
+def _curriculum_reward_vector(raw: np.ndarray, infos: dict[str, Any], global_step: int, phase: str | None = None) -> np.ndarray:
     raw = np.asarray(raw, dtype=np.float32)
     ee = np.asarray(infos.get("ee_to_cube_distance", np.ones_like(raw)), dtype=np.float32)
     cube_goal = np.asarray(infos.get("cube_to_goal_distance", np.ones_like(raw)), dtype=np.float32)
@@ -196,27 +233,36 @@ def _curriculum_reward_vector(raw: np.ndarray, infos: dict[str, Any], global_ste
     placed = np.asarray(infos.get("placed_success", np.zeros_like(raw, dtype=bool)), dtype=bool)
     ee_progress_frac = _safe_progress_fraction_vector(ee_progress, initial_ee)
     goal_progress_frac = _safe_progress_fraction_vector(goal_progress, initial_goal)
-    shaped = np.zeros_like(raw, dtype=np.float32)
-    phase = _phase(global_step)
+    shaped = (0.20 * np.exp(-3.0 * ee)).astype(np.float32)
+    phase = phase or _phase(global_step)
     if phase == "approach":
         shaped += 1.25 * ee_progress_frac
         shaped += 0.20 * np.exp(-18.0 * ee)
         shaped += 0.35 * near.astype(np.float32)
     elif phase == "grasp_lift":
-        shaped += 0.55 * ee_progress_frac
+        shaped += 0.65 * ee_progress_frac
         shaped += 0.15 * np.exp(-16.0 * ee)
         shaped += 0.25 * near.astype(np.float32)
         shaped += 0.35 * grasp.astype(np.float32)
         shaped += 2.25 * np.minimum(1.0, lift / max(LIFT_THRESHOLD, 1e-6))
         shaped += 0.70 * lifted.astype(np.float32)
     else:
-        shaped += 0.25 * near.astype(np.float32)
+        shaped += 0.25 * ee_progress_frac
+        shaped += 0.15 * near.astype(np.float32)
         lifted_gate = lifted_ever.astype(np.float32)
         shaped += 0.60 * lifted_gate
         shaped += 1.50 * goal_progress_frac * lifted_gate
         shaped += 0.20 * np.exp(-14.0 * cube_goal) * lifted_gate
         shaped += 3.00 * placed.astype(np.float32)
     return np.clip(shaped, -2.0, 5.0).astype(np.float32)
+
+
+def _normalize_advantages(advantages: torch.Tensor, min_std: float = 1e-4) -> torch.Tensor:
+    centered = advantages - advantages.mean()
+    std = advantages.std(unbiased=False)
+    if not bool(torch.isfinite(std)) or float(std.item()) < min_std:
+        return centered
+    return centered / (std + 1e-8)
 
 
 class RewardRecipeWrapper(gym.Wrapper):
@@ -227,6 +273,7 @@ class RewardRecipeWrapper(gym.Wrapper):
             raise ValueError(f"Unknown MuJoCo Panda reward recipe: {self.recipe}")
         self.observation_space = flatten_observation_space(env.observation_space)
         self.global_step = 0
+        self.curriculum_state = CurriculumState()
 
     def reset(self, *, seed: int | None = None, options: dict[str, Any] | None = None):
         obs, info = self.env.reset(seed=seed, options=options)
@@ -237,10 +284,12 @@ class RewardRecipeWrapper(gym.Wrapper):
         info = dict(info)
         raw_reward = float(reward)
         if self.recipe == "subskill_curriculum":
-            reward = _curriculum_reward(raw_reward, info, self.global_step)
+            phase = self.curriculum_state.phase
+            reward = _curriculum_reward(raw_reward, info, self.global_step, phase=phase)
             info["task_reward"] = raw_reward
             info["training_reward"] = float(reward)
-            info["curriculum_phase_index"] = float({"approach": 0, "grasp_lift": 1, "place": 2}[_phase(self.global_step)])
+            info["curriculum_phase_index"] = float(PHASE_INDEX[phase])
+            self.curriculum_state.update_from_infos(info)
         else:
             info["training_reward"] = raw_reward
         self.global_step += 1
@@ -278,8 +327,7 @@ class Agent(nn.Module):
         probs = Normal(mean, logstd.exp())
         if action is None:
             action = probs.rsample()
-        clipped_action = torch.clamp(action, -1.0, 1.0)
-        return clipped_action, probs.log_prob(action).sum(1), probs.entropy().sum(1), self.critic(obs).squeeze(1)
+        return action, probs.log_prob(action).sum(1), probs.entropy().sum(1), self.critic(obs).squeeze(1)
 
     def act(self, obs: Any, deterministic: bool = True) -> np.ndarray:
         device = next(self.parameters()).device
@@ -598,6 +646,7 @@ def _train_vectorized(
     episode_returns = np.zeros(vector_env.num_envs, dtype=np.float32)
     episode_lengths = np.zeros(vector_env.num_envs, dtype=np.float32)
     latest_infos: dict[str, Any] = {}
+    curriculum_state = CurriculumState()
     for update in range(updates):
         if budget_seconds is not None and elapsed_seconds_since(start_time) >= budget_seconds:
             break
@@ -605,7 +654,7 @@ def _train_vectorized(
             agent,
             optimizer,
             obs,
-            lambda actions: _step_vector_env(vector_env, actions, global_step),
+            lambda actions: _step_vector_env(vector_env, actions, global_step, curriculum_state),
             device,
             num_steps,
             global_step,
@@ -660,15 +709,18 @@ def _step_env_list(envs: list[gym.Env[Any, Any]], actions: np.ndarray):
     return np.stack(next_obs).astype(np.float32), rewards, dones, {k: np.asarray(v) for k, v in info_values.items()}
 
 
-def _step_vector_env(vector_env: Any, actions: np.ndarray, global_step: int):
+def _step_vector_env(vector_env: Any, actions: np.ndarray, global_step: int, curriculum_state: CurriculumState | None = None):
     obs, raw_rewards, dones, infos = vector_env.step(actions)
-    rewards = _curriculum_reward_vector(raw_rewards, infos, global_step)
+    phase = curriculum_state.phase if curriculum_state is not None else _phase(global_step)
+    rewards = _curriculum_reward_vector(raw_rewards, infos, global_step, phase=phase)
     if np.any(dones):
         obs = vector_env.reset_worlds(dones)
     infos = dict(infos)
     infos["task_reward"] = raw_rewards
     infos["training_reward"] = rewards
-    infos["curriculum_phase_index"] = np.full_like(raw_rewards, {"approach": 0, "grasp_lift": 1, "place": 2}[_phase(global_step)], dtype=np.float32)
+    infos["curriculum_phase_index"] = np.full_like(raw_rewards, PHASE_INDEX[phase], dtype=np.float32)
+    if curriculum_state is not None:
+        curriculum_state.update_from_infos(infos)
     return obs.astype(np.float32), rewards, dones, infos
 
 
@@ -701,7 +753,7 @@ def _ppo_update(
         obs_tensor = torch.as_tensor(obs, dtype=torch.float32, device=device)
         with torch.no_grad():
             action, logprob, _, value = agent.get_action_and_value(obs_tensor)
-        action_np = action.cpu().numpy()
+        action_np = torch.clamp(action, -1.0, 1.0).cpu().numpy()
         next_obs, rewards, dones, infos = step_fn(action_np)
         obs_buf[step] = obs_tensor
         actions_buf[step] = action
@@ -733,6 +785,7 @@ def _ppo_update(
     b_actions = actions_buf.reshape((-1, action_dim))
     b_logprobs = logprobs_buf.reshape(-1)
     b_advantages = advantages.reshape(-1)
+    b_normalized_advantages = _normalize_advantages(b_advantages)
     b_returns = returns.reshape(-1)
     b_values = values_buf.reshape(-1)
     batch_size = b_obs.shape[0]
@@ -746,8 +799,7 @@ def _ppo_update(
             _, newlogprob, entropy, newvalue = agent.get_action_and_value(b_obs[mb_inds], b_actions[mb_inds])
             logratio = newlogprob - b_logprobs[mb_inds]
             ratio = logratio.exp()
-            mb_adv = b_advantages[mb_inds]
-            mb_adv = (mb_adv - mb_adv.mean()) / (mb_adv.std(unbiased=False) + 1e-8)
+            mb_adv = b_normalized_advantages[mb_inds]
             pg_loss1 = -mb_adv * ratio
             pg_loss2 = -mb_adv * torch.clamp(ratio, 1.0 - CLIP_COEF, 1.0 + CLIP_COEF)
             pg_loss = torch.max(pg_loss1, pg_loss2).mean()

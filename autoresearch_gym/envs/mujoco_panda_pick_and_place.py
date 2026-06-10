@@ -36,6 +36,10 @@ RENDER_CAMERA_LOOKAT = np.asarray([-0.25, 0.0, 0.08], dtype=np.float64)
 RENDER_CAMERA_DISTANCE = 1.85
 RENDER_CAMERA_AZIMUTH = 45.0
 RENDER_CAMERA_ELEVATION = -28.0
+PINCH_SITE_NAME = "pinch"
+PINCH_OFFSET_FROM_HAND = np.asarray([-0.006, -0.0005, -0.058], dtype=np.float32)
+GRASP_WIDTH_MIN = 0.01
+GRASP_WIDTH_MAX = 0.055
 
 
 def _pick_place_success(cube_to_goal: np.ndarray | float, lifted_ever: np.ndarray | bool) -> np.ndarray | np.bool_:
@@ -125,8 +129,10 @@ class AutoresearchMujocoPandaPickAndPlaceEnv(gym.Env[dict[str, np.ndarray], np.n
         self.cube_qvel_adr = int(self.model.jnt_dofadr[self.cube_joint_id])
         self.cube_body_id = self.mujoco.mj_name2id(self.model, self.mujoco.mjtObj.mjOBJ_BODY, "object")
         self.target_site_id = self.mujoco.mj_name2id(self.model, self.mujoco.mjtObj.mjOBJ_SITE, "target")
-        self.ee_site_id = _find_site(self.mujoco, self.model, ["gripper", "pinch", "attachment_site", "end_effector"])
+        self.ee_site_id = _find_site(self.mujoco, self.model, [PINCH_SITE_NAME, "gripper", "attachment_site", "end_effector"])
         self.ee_body_id = _find_body(self.mujoco, self.model, ["hand", "panda_hand", "link7", "panda_link7"])
+        if self.ee_site_id < 0 and self.ee_body_id < 0:
+            raise RuntimeError("generated Panda pick-place scene is missing a pinch site and hand body")
         self.home_qpos = np.asarray(self.model.qpos0, dtype=np.float64).copy()
         if self.robot_qpos_adrs.size:
             count = min(7, self.robot_qpos_adrs.size)
@@ -264,7 +270,9 @@ class AutoresearchMujocoPandaPickAndPlaceEnv(gym.Env[dict[str, np.ndarray], np.n
         if getattr(self, "reward_type", "dense") == "sparse":
             return -(~success).astype(np.float32)
         if success_requires_lift and info is not None and "lifted_ever" in info:
-            return np.where(success, 0.0, np.where(lifted_ever, -distance, -1.0)).astype(np.float32)
+            ee_to_cube = np.asarray(info.get("ee_to_cube_distance", 1.0), dtype=np.float32)
+            pre_lift_reward = -1.0 + 0.5 * np.exp(-10.0 * ee_to_cube)
+            return np.where(success, 0.0, np.where(lifted_ever, -distance, pre_lift_reward)).astype(np.float32)
         return -distance.astype(np.float32)
 
     def _get_obs(self) -> dict[str, np.ndarray]:
@@ -295,8 +303,8 @@ class AutoresearchMujocoPandaPickAndPlaceEnv(gym.Env[dict[str, np.ndarray], np.n
         if self.ee_site_id >= 0:
             return np.asarray(self.data.site_xpos[self.ee_site_id], dtype=np.float32)
         if self.ee_body_id >= 0:
-            return np.asarray(self.data.xpos[self.ee_body_id], dtype=np.float32)
-        return np.asarray(self.data.xpos[-1], dtype=np.float32)
+            return _pinch_from_body_pose(self.data.xpos[self.ee_body_id], self.data.xmat[self.ee_body_id])
+        raise RuntimeError("Panda pick-place model is missing a pinch site and hand body")
 
     def _set_target_site(self, goal: np.ndarray) -> None:
         if self.target_site_id >= 0:
@@ -314,7 +322,7 @@ class AutoresearchMujocoPandaPickAndPlaceEnv(gym.Env[dict[str, np.ndarray], np.n
         lifted_ever = bool(self.lifted_ever or lifted)
         cube_at_goal = cube_to_goal < SUCCESS_THRESHOLD
         placed = bool(_pick_place_success(cube_to_goal, lifted_ever)) if self.success_requires_lift else bool(cube_at_goal)
-        gripper_closed = bool(_finger_width(self.data, self.finger_qpos_adrs) < 0.035)
+        gripper_closed = bool(_is_grasp_width(_finger_width(self.data, self.finger_qpos_adrs)))
         return {
             "is_success": bool(placed),
             "cube_at_goal": bool(cube_at_goal),
@@ -440,8 +448,10 @@ class MujocoWarpPandaPickAndPlaceVectorEnv:
         self.cube_qpos_adr = int(self.model.jnt_qposadr[self.cube_joint_id])
         self.cube_qvel_adr = int(self.model.jnt_dofadr[self.cube_joint_id])
         self.cube_body_id = self.mujoco.mj_name2id(self.model, self.mujoco.mjtObj.mjOBJ_BODY, "object")
-        self.ee_site_id = _find_site(self.mujoco, self.model, ["gripper", "pinch", "attachment_site", "end_effector"])
+        self.ee_site_id = _find_site(self.mujoco, self.model, [PINCH_SITE_NAME, "gripper", "attachment_site", "end_effector"])
         self.ee_body_id = _find_body(self.mujoco, self.model, ["hand", "panda_hand", "link7", "panda_link7"])
+        if self.ee_site_id < 0 and self.ee_body_id < 0:
+            raise RuntimeError("generated Panda pick-place scene is missing a pinch site and hand body")
         self.home_qpos = np.asarray(self.model.qpos0, dtype=np.float32).copy()
         if self.robot_qpos_adrs.size:
             count = min(7, self.robot_qpos_adrs.size)
@@ -554,9 +564,12 @@ class MujocoWarpPandaPickAndPlaceVectorEnv:
         qpos[mask, self.cube_qpos_adr + 3] = 1.0
         self.step_counts[mask] = 0
         self.lifted_ever[mask] = False
-        self.last_actions[mask] = 0.0
+        self.last_actions[mask] = _open_gripper_action(self.model.nu)
+        ctrl = self.warp_data.ctrl.numpy()
+        ctrl[mask] = _denormalize_action(_open_gripper_action(self.model.nu), self.ctrl_low, self.ctrl_high)
         self.warp_data.qpos.assign(qpos)
         self.warp_data.qvel.assign(qvel)
+        self.warp_data.ctrl.assign(ctrl.astype(np.float32))
         self.mujoco_warp.forward(self.warp_model, self.warp_data)
         obs = self._obs_from_arrays(qpos, qvel)
         self._set_initial_distance_metrics(obs, mask)
@@ -578,7 +591,7 @@ class MujocoWarpPandaPickAndPlaceVectorEnv:
         cube_to_goal = np.linalg.norm(cube - self.goals, axis=1).astype(np.float32)
         ee_to_cube = np.linalg.norm(ee - cube, axis=1).astype(np.float32)
         finger_width = _finger_width_from_qpos(qpos, self.finger_qpos_adrs)
-        gripper_closed = finger_width < 0.035
+        gripper_closed = _is_grasp_width(finger_width)
         cube_lift = np.maximum(0.0, cube[:, 2] - CUBE_Z).astype(np.float32)
         lifted = cube_lift > LIFT_THRESHOLD
         self.lifted_ever |= lifted
@@ -586,7 +599,8 @@ class MujocoWarpPandaPickAndPlaceVectorEnv:
         placed = (cube_at_goal & self.lifted_ever) if self.success_requires_lift else cube_at_goal
         reward = -cube_to_goal.astype(np.float32)
         if self.success_requires_lift:
-            reward = np.where(placed, 0.0, np.where(self.lifted_ever, -cube_to_goal, -1.0)).astype(np.float32)
+            pre_lift_reward = -1.0 + 0.5 * np.exp(-10.0 * ee_to_cube)
+            reward = np.where(placed, 0.0, np.where(self.lifted_ever, -cube_to_goal, pre_lift_reward)).astype(np.float32)
         if self.reward_type == "sparse":
             reward = (~placed).astype(np.float32) * -1.0
         done = placed | (self.step_counts >= self.max_steps)
@@ -618,14 +632,22 @@ class MujocoWarpPandaPickAndPlaceVectorEnv:
     def _obs_from_arrays(self, qpos: np.ndarray, qvel: np.ndarray) -> np.ndarray:
         cube = qpos[:, self.cube_qpos_adr : self.cube_qpos_adr + 3].astype(np.float32)
         cube_vel = qvel[:, self.cube_qvel_adr : self.cube_qvel_adr + 3].astype(np.float32)
-        # Warp does not expose site_xpos through this thin wrapper, so use the
-        # terminal link/body position only when available in xipos/xpos-like
-        # fields; otherwise fall back to a geometric proxy from cube direction.
+        # Prefer the injected pinch site. Older/stub Warp wrappers may not
+        # expose site_xpos, so use the same hand-frame pinch offset fallback.
         try:
-            xpos = self.warp_data.xpos.numpy()
-            ee = xpos[:, self.ee_body_id if self.ee_body_id >= 0 else -1, :].astype(np.float32)
+            site_xpos = self.warp_data.site_xpos.numpy()
+            if self.ee_site_id < 0:
+                raise AttributeError("no pinch site")
+            ee = site_xpos[:, self.ee_site_id, :].astype(np.float32)
         except Exception:
-            ee = cube + np.asarray([0.0, 0.0, 0.12], dtype=np.float32)
+            try:
+                xpos = self.warp_data.xpos.numpy()
+                xmat = self.warp_data.xmat.numpy()
+                if self.ee_body_id < 0:
+                    raise RuntimeError("Panda Warp model is missing a pinch site and hand body")
+                ee = _pinch_from_batched_body_pose(xpos[:, self.ee_body_id, :], xmat[:, self.ee_body_id, :])
+            except Exception as exc:
+                raise RuntimeError("Panda Warp vector env cannot resolve pinch-point observations") from exc
         joint_pos = qpos[:, self.robot_qpos_adrs].astype(np.float32)
         joint_vel = qvel[:, self.robot_qvel_adrs].astype(np.float32)
         return np.concatenate(
@@ -721,6 +743,7 @@ def _write_scene_xml(panda_xml_path: Path) -> Path:
     robot_base = worldbody.find("./body[@name='link0']")
     if robot_base is not None:
         robot_base.set("pos", f"{ROBOT_BASE_X:.3f} 0 0")
+    _ensure_pinch_site(worldbody)
     ET.SubElement(worldbody, "light", name="ar_key", pos="0 0 2.8", dir="0 0 -1", diffuse="0.8 0.8 0.8")
     ET.SubElement(
         worldbody,
@@ -815,6 +838,44 @@ def _move_cubes_away_from_goals(cube_pos: np.ndarray, goals: np.ndarray) -> np.n
 
 def _denormalize_action(action: np.ndarray, low: np.ndarray, high: np.ndarray) -> np.ndarray:
     return (low + 0.5 * (np.asarray(action, dtype=np.float32) + 1.0) * (high - low)).astype(np.float32)
+
+
+def _ensure_pinch_site(worldbody: ET.Element) -> None:
+    for site in worldbody.iter("site"):
+        if site.get("name") == PINCH_SITE_NAME:
+            return
+    hand_body = None
+    for body in worldbody.iter("body"):
+        if body.get("name") in {"hand", "panda_hand"}:
+            hand_body = body
+            break
+    if hand_body is None:
+        return
+    ET.SubElement(
+        hand_body,
+        "site",
+        name=PINCH_SITE_NAME,
+        pos=" ".join(f"{float(value):.6f}" for value in PINCH_OFFSET_FROM_HAND),
+        size="0.008",
+        rgba="1 1 1 0",
+    )
+
+
+def _pinch_from_body_pose(xpos: np.ndarray, xmat: np.ndarray) -> np.ndarray:
+    pos = np.asarray(xpos, dtype=np.float32).reshape(3)
+    mat = np.asarray(xmat, dtype=np.float32).reshape(3, 3)
+    return (pos + mat @ PINCH_OFFSET_FROM_HAND).astype(np.float32)
+
+
+def _pinch_from_batched_body_pose(xpos: np.ndarray, xmat: np.ndarray) -> np.ndarray:
+    pos = np.asarray(xpos, dtype=np.float32)
+    mat = np.asarray(xmat, dtype=np.float32).reshape(pos.shape[0], 3, 3)
+    return (pos + np.einsum("nij,j->ni", mat, PINCH_OFFSET_FROM_HAND)).astype(np.float32)
+
+
+def _is_grasp_width(width: np.ndarray | float) -> np.ndarray | np.bool_:
+    arr = np.asarray(width, dtype=np.float32)
+    return (arr > GRASP_WIDTH_MIN) & (arr < GRASP_WIDTH_MAX)
 
 
 def _actuated_joint_ids(model: Any) -> np.ndarray:

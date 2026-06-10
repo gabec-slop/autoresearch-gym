@@ -17,8 +17,11 @@ from torch.distributions import Normal
 from autoresearch_gym.runner.curves import elapsed_seconds_since, make_train_collection_window_record
 
 
-# SB3/RL-Zoo-inspired Panda pick-and-place recipe, but kept on this repo's
-# MuJoCo/MJWarp Menagerie task instead of switching to PandaGym.
+# SB3/RL-Zoo-inspired Panda pick-and-place recipe on this repo's MuJoCo/MJWarp
+# Menagerie task. The HER reward contract is resolved from the benchmark at
+# train time: lift-gated when env_kwargs.success_requires_lift is true (the
+# default), plain panda-gym -distance otherwise (e.g. the pandagym-dense
+# benchmarks in this task dir).
 EXP_NAME = "panda_pick_and_place_mjwarp_tqc_her_ee_seed"
 ALGORITHM = "tqc_her"
 CONTROL_TYPE = None
@@ -38,7 +41,7 @@ RECIPE = {
         "her_goal_selection_strategy": "future",
         "n_sampled_goal": 4,
         "future_scope": "same_env_same_episode",
-        "reward_contract": "lift_gated",
+        "reward_contract": "benchmark_resolved:lift_gated_or_distance",
     },
     "runner": {
         "sample_trajectory_source": "candidate_provided",
@@ -61,9 +64,13 @@ LOG_STD_MIN = -5.0
 LOG_STD_MAX = 2.0
 HER_RELABEL_FRACTION = 0.8
 SUCCESS_THRESHOLD = 0.05
-EE_ACTION_SCALE = 0.055
+EE_ACTION_SCALE = 0.05
 IK_DAMPING = 1.0e-4
 GRIPPER_CLOSE_SIGN = -1.0
+GRIPPER_WIDTH_DELTA_SCALE = 0.2
+# Resolved from benchmark.env_kwargs.success_requires_lift in train_agent;
+# True (lift-gated) is the task default.
+SUCCESS_REQUIRES_LIFT = True
 
 
 DIAGNOSTIC_SERIES = {
@@ -87,7 +94,9 @@ def get_candidate() -> dict[str, Any]:
             "critics, 1e6 replay, batch 2048, future HER relabeling with n_sampled_goal=4. "
             "Training stays on the MuJoCo/MJWarp vector collector and exposes a 4D "
             "end-effector delta tool action that is mapped to Menagerie joint/tendon "
-            "actuator controls by damped Jacobian IK before stepping MJWarp."
+            "actuator controls by damped Jacobian IK before stepping MJWarp. The HER "
+            "reward contract follows the benchmark: lift-gated by default, plain "
+            "panda-gym -distance when env_kwargs.success_requires_lift is false."
         ),
         "recipe": RECIPE,
     }
@@ -238,7 +247,10 @@ class EndEffectorDeltaTool:
             high = float(self.ctrl_high[i])
             raw[i] = np.clip(2.0 * (float(q) - low) / max(high - low, 1e-6) - 1.0, -1.0, 1.0)
         if raw.shape[0] > 7:
-            raw[7] = float(np.clip(GRIPPER_CLOSE_SIGN * action[3], -1.0, 1.0))
+            # Panda-gym applies action[-1] * 0.2 to the current finger width.
+            # Menagerie's tendon actuator is normalized and has the opposite
+            # close sign, so keep the small delta but adapt the sign.
+            raw[7] = float(np.clip(GRIPPER_CLOSE_SIGN * GRIPPER_WIDTH_DELTA_SCALE * action[3], -1.0, 1.0))
         return raw
 
 
@@ -493,6 +505,8 @@ def train_agent(
     live_callback: Any | None = None,
 ) -> tuple[Agent, dict[str, Any]]:
     del candidate
+    global SUCCESS_REQUIRES_LIFT
+    SUCCESS_REQUIRES_LIFT = bool(benchmark.env_kwargs.get("success_requires_lift", True))
     random.seed(benchmark.train_seed)
     np.random.seed(benchmark.train_seed)
     torch.manual_seed(benchmark.train_seed)
@@ -681,10 +695,17 @@ def _quantile_huber_loss(current: torch.Tensor, target: torch.Tensor) -> torch.T
     return loss.sum(dim=1).mean()
 
 
-def _goal_reward(next_obs: np.ndarray, lifted_ever: np.ndarray | None = None) -> np.ndarray:
+def _goal_reward(
+    next_obs: np.ndarray,
+    lifted_ever: np.ndarray | None = None,
+    success_requires_lift: bool | None = None,
+) -> np.ndarray:
     achieved = np.asarray(next_obs[:, 3:6], dtype=np.float32)
     desired = np.asarray(next_obs[:, 6:9], dtype=np.float32)
     distance = np.linalg.norm(achieved - desired, axis=1)
+    lift_gated = SUCCESS_REQUIRES_LIFT if success_requires_lift is None else bool(success_requires_lift)
+    if not lift_gated:
+        return -distance.astype(np.float32)
     lifted = np.zeros(distance.shape, dtype=bool) if lifted_ever is None else np.asarray(lifted_ever, dtype=bool)
     success = (distance < SUCCESS_THRESHOLD) & lifted
     return np.where(success, 0.0, np.where(lifted, -distance, -1.0)).astype(np.float32)
@@ -855,9 +876,11 @@ def _summary(
             "ee_action_scale": EE_ACTION_SCALE,
             "ik_damping": IK_DAMPING,
             "gripper_close_sign": GRIPPER_CLOSE_SIGN,
+            "gripper_width_delta_scale": GRIPPER_WIDTH_DELTA_SCALE,
             "her_relabel_fraction": HER_RELABEL_FRACTION,
             "her_goal_selection_strategy": "same_env_same_episode_future",
-            "reward_contract": "lift_gated_dense",
+            "reward_contract": "lift_gated_dense" if SUCCESS_REQUIRES_LIFT else "panda_gym_dense_distance",
+            "success_requires_lift": bool(SUCCESS_REQUIRES_LIFT),
         },
         "diagnostic_series": _diagnostic_series(),
         "physics_backend": "mujoco_warp_vectorized",

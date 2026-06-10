@@ -91,39 +91,20 @@ SEED_CASES: tuple[SeedCase, ...] = (
         },
     ),
     SeedCase(
+        "panda-mjwarp-mbpo",
+        "autoresearch_gym/tasks/panda_pick_and_place_mjwarp_v0/benchmark.json",
+        "autoresearch_gym/tasks/panda_pick_and_place_mjwarp_v0/seed_trainable_mbpo.py",
+        required_modules=("mujoco", "robot_descriptions"),
+        benchmark_overrides={
+            "train_episodes": 1,
+            "max_steps": 4,
+            "env_kwargs": {"backend": "mujoco", "max_steps": 4, "num_envs": 1, "steps_per_env_per_iteration": 4},
+        },
+    ),
+    SeedCase(
         "panda-mjwarp-pandagym-dense",
-        "autoresearch_gym/tasks/panda_pick_and_place_mjwarp_pandagym_dense_v0/benchmark.json",
-        "autoresearch_gym/tasks/panda_pick_and_place_mjwarp_pandagym_dense_v0/seed_trainable.py",
-        visual_artifact_smoke=False,
-        required_modules=("mujoco", "mujoco_warp", "robot_descriptions"),
-        benchmark_overrides={
-            "max_steps": 4,
-            "env_kwargs": {
-                "backend": "mujoco_warp",
-                "num_envs": 128,
-                "steps_per_env_per_iteration": 8,
-            },
-        },
-    ),
-    SeedCase(
-        "panda-mjwarp-pandagym-dense-tqc-her-ee",
-        "autoresearch_gym/tasks/panda_pick_and_place_mjwarp_pandagym_dense_v0/benchmark.json",
-        "autoresearch_gym/tasks/panda_pick_and_place_mjwarp_pandagym_dense_v0/seed_trainable_tqc_her_ee.py",
-        visual_artifact_smoke=False,
-        required_modules=("mujoco", "mujoco_warp", "robot_descriptions"),
-        benchmark_overrides={
-            "max_steps": 4,
-            "env_kwargs": {
-                "backend": "mujoco_warp",
-                "num_envs": 128,
-                "steps_per_env_per_iteration": 8,
-            },
-        },
-    ),
-    SeedCase(
-        "panda-mjwarp-pandagym-dense-guided-warmup",
-        "autoresearch_gym/tasks/panda_pick_and_place_mjwarp_pandagym_dense_v0/benchmark.json",
-        "autoresearch_gym/tasks/panda_pick_and_place_mjwarp_pandagym_dense_v0/seed_trainable_guided_warmup.py",
+        "autoresearch_gym/tasks/panda_pick_and_place_mjwarp_v0/benchmark_pandagym_dense.json",
+        "autoresearch_gym/tasks/panda_pick_and_place_mjwarp_v0/seed_trainable_tqc_her_ee.py",
         visual_artifact_smoke=False,
         required_modules=("mujoco", "mujoco_warp", "robot_descriptions"),
         benchmark_overrides={
@@ -251,6 +232,12 @@ SEED_CASES: tuple[SeedCase, ...] = (
         "bat-to-goal-vector",
         "autoresearch_gym/tasks/bat_to_goal_v0/benchmark_vectorized_wall_clock.json",
         "autoresearch_gym/tasks/bat_to_goal_v0/seed_trainable_vectorized.py",
+    ),
+    SeedCase(
+        "bat-to-goal-mbpo",
+        "autoresearch_gym/tasks/bat_to_goal_v0/benchmark.json",
+        "autoresearch_gym/tasks/bat_to_goal_v0/seed_trainable_mbpo.py",
+        benchmark_overrides={"train_episodes": 1, "max_steps": 4, "env_kwargs": {"max_steps": 4}},
     ),
     SeedCase(
         "unitree-g1-mjlab",

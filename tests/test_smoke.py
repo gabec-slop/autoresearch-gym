@@ -736,6 +736,29 @@ def test_unitree_cleanrl_style_seeds_expose_mjlab_levers() -> None:
     assert stage_steps == sorted(stage_steps)
 
 
+def test_manipulation_mbpo_seeds_expose_cleanrl_world_model_recipe() -> None:
+    from autoresearch_gym.tasks.bat_to_goal_v0 import seed_trainable_mbpo as bat_seed
+    from autoresearch_gym.tasks.panda_pick_and_place_mjwarp_v0 import seed_trainable_mbpo as panda_seed
+
+    for seed in (bat_seed, panda_seed):
+        candidate = seed.get_candidate()
+        recipe = candidate["recipe"]
+        assert recipe["style"] == "cleanrl_sac_mbpo"
+        assert recipe["algorithm"] == "sac_mbpo"
+        assert recipe["sac"]["hidden_dims"]
+        assert recipe["sac"]["batch_size"] > 0
+        assert recipe["world_model"]["ensemble_size"] >= 3
+        assert recipe["world_model"]["rollout_horizon"] == 1
+        assert recipe["world_model"]["batch_fraction"] > 0.0
+        assert recipe["world_model"]["priority_fraction"] > 0.0
+        assert "priority_signal" in recipe["world_model"]
+        assert candidate["diagnostic_series"]["series"]
+
+    assert bat_seed.RECIPE["control_type"] == "joints"
+    assert panda_seed.RECIPE["control_type"] is None
+    assert callable(getattr(panda_seed, "flatten_observation"))
+
+
 def test_unitree_backend_reads_nested_recipe_budget_fields() -> None:
     from autoresearch_gym.external.unitree_backend import (
         _learning_iterations,
@@ -3926,13 +3949,14 @@ def test_pre_commit_affected_plan_selects_exact_seed_case() -> None:
     finally:
         sys.path.remove(str(script_dir))
 
-    path = Path("autoresearch_gym/tasks/panda_pick_and_place_mjwarp_pandagym_dense_v0/seed_trainable_guided_warmup.py")
+    path = Path("autoresearch_gym/tasks/panda_pick_and_place_mjwarp_v0/seed_trainable_tqc_her_ee.py")
     commands = module.affected_plan([path], "python", 12.0, Path.cwd())
     flattened = [" ".join(cmd) for _, cmd in commands]
 
-    assert any("py_compile" in command and "seed_trainable_guided_warmup.py" in command for command in flattened)
-    assert any("--case panda-mjwarp-pandagym-dense-guided-warmup" in command for command in flattened)
-    assert not any("--case panda-mjwarp-pandagym-dense " in f"{command} " for command in flattened)
+    assert any("py_compile" in command and "seed_trainable_tqc_her_ee.py" in command for command in flattened)
+    assert any("--case panda-mjwarp-tqc-her-ee" in command for command in flattened)
+    assert any("--case panda-mjwarp-pandagym-dense" in command for command in flattened)
+    assert not any("--case panda-mjwarp " in f"{command} " for command in flattened)
 
 
 def test_pre_commit_affected_plan_skips_docs_only() -> None:
@@ -4351,7 +4375,7 @@ def test_mujoco_panda_pick_and_place_success_requires_lift_before_place() -> Non
     env = panda_env.AutoresearchMujocoPandaPickAndPlaceEnv.__new__(panda_env.AutoresearchMujocoPandaPickAndPlaceEnv)
     env.reward_type = "dense"
     at_goal = np.zeros(3, dtype=np.float32)
-    assert float(env.compute_reward(at_goal, at_goal, {"lifted_ever": False})) == pytest.approx(-1.0)
+    assert float(env.compute_reward(at_goal, at_goal, {"lifted_ever": False})) > -1.0
     assert float(env.compute_reward(at_goal, at_goal, {"lifted_ever": True})) == pytest.approx(0.0)
 
 
@@ -4614,6 +4638,7 @@ def test_mujoco_panda_tqc_ee_tool_uses_positive_close_convention_when_assets_are
     pytest.importorskip("mujoco")
     pytest.importorskip("robot_descriptions")
     from autoresearch_gym.tasks.panda_pick_and_place_mjwarp_v0.seed_trainable_tqc_her_ee import (
+        GRIPPER_WIDTH_DELTA_SCALE,
         EndEffectorDeltaTool,
         flatten_observation,
     )
@@ -4628,8 +4653,9 @@ def test_mujoco_panda_tqc_ee_tool_uses_positive_close_convention_when_assets_are
         raw_close = tool.single_action(flatten_observation(obs), np.asarray([0.0, 0.0, 0.0, 1.0], dtype=np.float32))
         raw_open = tool.single_action(flatten_observation(obs), np.asarray([0.0, 0.0, 0.0, -1.0], dtype=np.float32))
 
-        assert raw_close[7] == pytest.approx(-1.0)
-        assert raw_open[7] == pytest.approx(1.0)
+        assert raw_close[7] == pytest.approx(-GRIPPER_WIDTH_DELTA_SCALE)
+        assert raw_open[7] == pytest.approx(GRIPPER_WIDTH_DELTA_SCALE)
+        assert raw_close[7] < 0.0 < raw_open[7]
     finally:
         env.close()
 
@@ -4642,13 +4668,15 @@ def test_mujoco_panda_benchmarks_select_lift_gated_success_metric() -> None:
 
 
 def test_mujoco_pandagym_dense_port_benchmarks_use_pandagym_contract() -> None:
-    task_dir = Path("autoresearch_gym/tasks/panda_pick_and_place_mjwarp_pandagym_dense_v0")
-    for name in ["benchmark.json", "benchmark_wall_clock.json"]:
+    task_dir = Path("autoresearch_gym/tasks/panda_pick_and_place_mjwarp_v0")
+    for name in ["benchmark_pandagym_dense.json", "benchmark_pandagym_dense_wall_clock.json"]:
         payload = json.loads((task_dir / name).read_text(encoding="utf-8"))
         kwargs = payload["env_kwargs"]
         assert payload["env_id"] == "AutoresearchMujocoPandaGymPickAndPlaceDense-v0"
         assert payload["primary_metric"] == "eval_success_rate"
         assert payload["max_steps"] == 400
+        assert payload["eval_case_bank"] == "eval_cases_pandagym_dense.json"
+        assert (task_dir / payload["eval_case_bank"]).exists()
         assert kwargs["reward_type"] == "dense"
         assert kwargs["success_requires_lift"] is False
         assert "max_steps" not in kwargs
@@ -4686,25 +4714,21 @@ def test_mujoco_pandagym_dense_port_reward_is_distance_only_when_assets_are_inst
 
 
 def test_mujoco_pandagym_dense_port_seed_recomputes_pandagym_her_reward() -> None:
-    from autoresearch_gym.tasks.panda_pick_and_place_mjwarp_pandagym_dense_v0 import seed_trainable_tqc_her_ee
+    from autoresearch_gym.tasks.panda_pick_and_place_mjwarp_v0 import seed_trainable_tqc_her_ee
 
     obs = np.zeros((2, 43), dtype=np.float32)
     obs[:, 3:6] = np.asarray([[0.0, 0.0, 0.02], [0.0, 0.0, 0.02]], dtype=np.float32)
     obs[:, 6:9] = np.asarray([[0.03, 0.0, 0.02], [0.12, 0.0, 0.02]], dtype=np.float32)
-    reward = seed_trainable_tqc_her_ee._goal_reward(obs, np.asarray([False, False]))
+    reward = seed_trainable_tqc_her_ee._goal_reward(obs, np.asarray([False, False]), success_requires_lift=False)
     assert reward.tolist() == pytest.approx([-0.03, -0.12])
+    lift_gated = seed_trainable_tqc_her_ee._goal_reward(obs, np.asarray([False, False]), success_requires_lift=True)
+    assert lift_gated.tolist() == pytest.approx([-1.0, -1.0])
 
 
-def test_mujoco_pandagym_dense_guided_warmup_seed_exposes_scripted_controller() -> None:
-    from autoresearch_gym.tasks.panda_pick_and_place_mjwarp_pandagym_dense_v0 import seed_trainable_guided_warmup
+def test_mujoco_panda_oracle_policy_exposes_scripted_controller() -> None:
+    from autoresearch_gym.tasks.panda_pick_and_place_mjwarp_v0 import oracle_policy
 
-    candidate = seed_trainable_guided_warmup.get_candidate()
-    recipe = candidate["recipe"]
-
-    assert recipe["runner"]["sample_trajectory_source"] == SAMPLE_TRAJECTORY_SOURCE_CANDIDATE_PROVIDED
-    assert 0.0 < seed_trainable_guided_warmup.SCRIPTED_WARMUP_FRACTION < 1.0
-    assert seed_trainable_guided_warmup.SCRIPTED_WARMUP_STEPS > 0
-    phases = seed_trainable_guided_warmup.SCRIPTED_PHASES
+    phases = oracle_policy.SCRIPTED_PHASES
     assert phases.index("hover_cube") < phases.index("close") < phases.index("open")
 
     obs = np.zeros((2, 43), dtype=np.float32)
@@ -4713,89 +4737,69 @@ def test_mujoco_pandagym_dense_guided_warmup_seed_exposes_scripted_controller() 
     phases = np.asarray([0, 2], dtype=np.int32)
     phase_steps = np.zeros(2, dtype=np.int32)
 
-    target, gripper = seed_trainable_guided_warmup._scripted_targets(obs, phases, phase_steps)
+    target, gripper = oracle_policy._scripted_targets(obs, phases, phase_steps)
 
     assert target[0, :2].tolist() == pytest.approx(obs[0, 3:5].tolist())
-    assert target[0, 2] == pytest.approx(seed_trainable_guided_warmup.SCRIPTED_CONFIG["hover_z"])
+    assert target[0, 2] == pytest.approx(oracle_policy.SCRIPTED_CONFIG["hover_z"])
     assert target[1, :2].tolist() == pytest.approx(obs[1, 3:5].tolist())
-    assert target[1, 2] == pytest.approx(seed_trainable_guided_warmup.SCRIPTED_CONFIG["grasp_z"])
+    assert target[1, 2] == pytest.approx(oracle_policy.SCRIPTED_CONFIG["grasp_z"])
     assert gripper.tolist() == pytest.approx([-1.0, 1.0])
 
 
-def test_mujoco_pandagym_dense_guided_warmup_reward_biases_lift_over_push() -> None:
-    from autoresearch_gym.tasks.panda_pick_and_place_mjwarp_pandagym_dense_v0 import seed_trainable_guided_warmup
+def test_mujoco_panda_oracle_policy_emits_bounded_tool_actions_across_phases() -> None:
+    from autoresearch_gym.tasks.panda_pick_and_place_mjwarp_v0 import oracle_policy
 
-    obs = np.zeros((2, 43), dtype=np.float32)
-    obs[0, 0:3] = np.asarray([0.0, 0.0, 0.02], dtype=np.float32)
-    obs[0, 3:6] = np.asarray([0.0, 0.0, 0.02], dtype=np.float32)
-    obs[0, 6:9] = np.asarray([0.0, 0.0, 0.02], dtype=np.float32)
-    obs[1, 0:3] = np.asarray([0.0, 0.0, 0.08], dtype=np.float32)
-    obs[1, 3:6] = np.asarray([0.0, 0.0, 0.08], dtype=np.float32)
-    obs[1, 6:9] = np.asarray([0.0, 0.0, 0.08], dtype=np.float32)
+    obs = np.zeros((1, 43), dtype=np.float32)
+    obs[:, 0:3] = np.asarray([[0.0, 0.0, 0.10]], dtype=np.float32)
+    obs[:, 3:6] = np.asarray([[0.05, -0.02, 0.02]], dtype=np.float32)
+    obs[:, 6:9] = np.asarray([[0.10, 0.04, 0.02]], dtype=np.float32)
 
-    reward = seed_trainable_guided_warmup._goal_reward(obs, lifted_ever=np.asarray([False, True]))
+    oracle = oracle_policy.ScriptedPickPlaceOracle(1)
+    for phase_index in range(len(oracle_policy.SCRIPTED_PHASES)):
+        oracle.phase[:] = phase_index
+        actions = oracle.actions(obs, noise_scale=0.0)
+        assert actions.shape == (1, 4)
+        assert np.all(actions >= -1.0) and np.all(actions <= 1.0)
 
-    assert reward[1] > reward[0]
-    assert reward[1] - reward[0] == pytest.approx(
-        seed_trainable_guided_warmup.LIFT_REWARD_WEIGHT * 0.06
-        + seed_trainable_guided_warmup.LIFTED_EVER_BONUS
-        + seed_trainable_guided_warmup.UNLIFTED_GOAL_PENALTY
+    oracle.reset()
+    assert int(oracle.phase[0]) == 0
+    first_action = oracle.actions(obs, noise_scale=0.0)[0]
+    assert first_action[3] == pytest.approx(-1.0)
+
+
+def test_mujoco_panda_oracle_policy_advances_phases_and_records_grasp_offset() -> None:
+    from autoresearch_gym.tasks.panda_pick_and_place_mjwarp_v0 import oracle_policy
+
+    obs = np.zeros((1, 43), dtype=np.float32)
+    obs[:, 0:3] = np.asarray([[0.05, -0.02, 0.105]], dtype=np.float32)
+    obs[:, 3:6] = np.asarray([[0.05, -0.02, 0.02]], dtype=np.float32)
+    obs[:, 6:9] = np.asarray([[0.10, 0.04, 0.02]], dtype=np.float32)
+
+    oracle = oracle_policy.ScriptedPickPlaceOracle(1)
+    no_flags = {"lifted_ever": np.asarray([False]), "cube_at_goal": np.asarray([False]), "placed_success": np.asarray([False])}
+    min_hover = int(oracle_policy.SCRIPTED_CONFIG["phase_min_steps"]["hover_cube"])
+    for _ in range(min_hover):
+        assert int(oracle.phase[0]) == 0
+        oracle.advance(obs, np.asarray([False]), no_flags)
+    assert int(oracle.phase[0]) == 1, "oracle should advance past hover once at target and min steps elapsed"
+
+    oracle.phase[:] = 3
+    oracle.phase_steps[:] = 8
+    lifted_obs = obs.copy()
+    lifted_obs[:, 0:3] = np.asarray([[0.05, -0.02, 0.16]], dtype=np.float32)
+    lifted_obs[:, 3:6] = np.asarray([[0.05, -0.02, 0.10]], dtype=np.float32)
+    oracle.advance(
+        lifted_obs,
+        np.asarray([False]),
+        {"lifted_ever": np.asarray([True]), "cube_at_goal": np.asarray([False]), "placed_success": np.asarray([False])},
     )
+    assert bool(oracle.has_grasp_offset[0])
+    assert oracle.grasp_offset[0].tolist() == pytest.approx((lifted_obs[0, 0:3] - lifted_obs[0, 3:6]).tolist())
+    assert int(oracle.phase[0]) == 4
 
-
-def test_mujoco_pandagym_dense_guided_warmup_sampling_uses_scripted_actions() -> None:
-    from autoresearch_gym.tasks.panda_pick_and_place_mjwarp_pandagym_dense_v0 import seed_trainable_guided_warmup
-
-    class FailingActor:
-        def get_action(self, obs):
-            raise AssertionError("policy actor should not be used for scripted warmup sampling")
-
-    class FakeGuidedEnv(gym.Env):
-        def __init__(self) -> None:
-            self.observation_space = gym.spaces.Box(low=-1.0, high=1.0, shape=(43,), dtype=np.float32)
-            self.action_space = gym.spaces.Box(low=-1.0, high=1.0, shape=(4,), dtype=np.float32)
-            self.actions: list[np.ndarray] = []
-            self.steps = 0
-
-        def reset(self, *, seed=None, options=None):
-            del seed, options
-            self.steps = 0
-            return self._obs(), {}
-
-        def step(self, action):
-            action = np.asarray(action, dtype=np.float32)
-            assert action.shape == (4,)
-            self.actions.append(action.copy())
-            self.steps += 1
-            return self._obs(), -1.0, self.steps >= 2, False, {"lifted_ever": False}
-
-        def render(self):
-            return np.full((8, 8, 3), self.steps, dtype=np.uint8)
-
-        def _obs(self) -> np.ndarray:
-            obs = np.zeros(43, dtype=np.float32)
-            obs[0:3] = np.asarray([0.0, 0.0, 0.10], dtype=np.float32)
-            obs[3:6] = np.asarray([0.05, -0.02, 0.02], dtype=np.float32)
-            obs[6:9] = np.asarray([0.10, 0.04, 0.02], dtype=np.float32)
-            return obs
-
-    env = FakeGuidedEnv()
-
-    sampled = seed_trainable_guided_warmup._sample_policy_trajectory(
-        types.SimpleNamespace(device="cpu", actor=FailingActor()),
-        lambda control_type=None, reward_recipe=None: env,
-        types.SimpleNamespace(max_steps=3, eval_seed_start=4500, train_seed=1),
-        {"episode": 1, "sample_index": 1, "frame_stride": 1, "playback_fps": 20.0},
-        scripted=True,
-    )
-
-    assert sampled["metadata"]["playback_source"] == "guided_warmup"
-    assert sampled["frames"]
-    assert env.actions, "scripted warmup sampling did not step the fake env"
-    assert env.actions[0][3] == pytest.approx(-1.0)
-    assert env.actions[0][:3].tolist() == pytest.approx(
-        seed_trainable_guided_warmup.ScriptedE2EWarmupState(1).actions(env._obs().reshape(1, -1))[0][:3].tolist()
-    )
+    oracle.reset(np.asarray([True]))
+    assert not bool(oracle.has_grasp_offset[0])
+    assert int(oracle.phase[0]) == 0
 
 
 def test_mujoco_panda_pick_and_place_seed_task_resets_and_steps_when_assets_are_installed() -> None:

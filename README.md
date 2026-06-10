@@ -63,7 +63,7 @@ Bundled tasks:
 | FetchPushDense | `autoresearch_gym/tasks/fetch_push_dense_v0/benchmark.json` | `autoresearch_gym/tasks/fetch_push_dense_v0/seed_trainable.py` or `seed_trainable_her.py` |
 | Panda pick-and-place | `autoresearch_gym/tasks/panda_pick_and_place_v0/benchmark.json` | `autoresearch_gym/tasks/panda_pick_and_place_v0/seed_trainable.py` or `seed_trainable_her.py` |
 | Panda pick-and-place MuJoCo/MJWarp | `autoresearch_gym/tasks/panda_pick_and_place_mjwarp_v0/benchmark_wall_clock.json` | `autoresearch_gym/tasks/panda_pick_and_place_mjwarp_v0/seed_trainable.py` or `seed_trainable_tqc_her_ee.py` |
-| Panda-gym dense pick-and-place MuJoCo/MJWarp | `autoresearch_gym/tasks/panda_pick_and_place_mjwarp_pandagym_dense_v0/benchmark_wall_clock.json` | `autoresearch_gym/tasks/panda_pick_and_place_mjwarp_pandagym_dense_v0/seed_trainable_tqc_her_ee.py` or `seed_trainable_guided_warmup.py` |
+| Panda-gym dense pick-and-place MuJoCo/MJWarp | `autoresearch_gym/tasks/panda_pick_and_place_mjwarp_v0/benchmark_pandagym_dense_wall_clock.json` | `autoresearch_gym/tasks/panda_pick_and_place_mjwarp_v0/seed_trainable_tqc_her_ee.py` |
 | SO-101 reach MuJoCo | `autoresearch_gym/tasks/so101_reach_mujoco_v0/benchmark.json` | `autoresearch_gym/tasks/so101_reach_mujoco_v0/seed_trainable.py` |
 | SO-101 reach MuJoCo vectorized wall-clock | `autoresearch_gym/tasks/so101_reach_mujoco_v0/benchmark_vectorized_wall_clock.json` | `autoresearch_gym/tasks/so101_reach_mujoco_v0/seed_trainable_vectorized.py` |
 | SO-101 reach MuJoCo Warp wall-clock | `autoresearch_gym/tasks/so101_reach_mujoco_v0/benchmark_mjwarp_wall_clock.json` | `autoresearch_gym/tasks/so101_reach_mujoco_v0/seed_trainable_vectorized.py` |

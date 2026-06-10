@@ -1,6 +1,6 @@
 {
-  "name": "panda_gym_pick_and_place_mjwarp_dense_v0_wall_clock",
-  "description": "Wall-clock MuJoCo/MJWarp vector benchmark ported from panda-gym PickAndPlace dense semantics.",
+  "name": "panda_gym_pick_and_place_mjwarp_dense_v0",
+  "description": "MuJoCo/MJWarp Menagerie Panda task ported from panda-gym PickAndPlace dense semantics.",
   "env_id": "AutoresearchMujocoPandaGymPickAndPlaceDense-v0",
   "env_kwargs": {
     "render_mode": "rgb_array",
@@ -12,10 +12,10 @@
     "obj_xy_range": 0.3,
     "tabletop_goal_probability": 0.3,
     "reject_initial_success": false,
-    "num_envs": 256,
-    "steps_per_env_per_iteration": 32
+    "num_envs": 64,
+    "steps_per_env_per_iteration": 8
   },
-  "train_episodes": 100000,
+  "train_episodes": 100,
   "eval_episodes": 25,
   "max_steps": 400,
   "render_mode": "rgb_array",
@@ -23,15 +23,14 @@
   "primary_metric_mode": "maximize",
   "train_seed": 47,
   "eval_seed_start": 4500,
-  "device": "cuda",
-  "eval_case_bank": "eval_cases.json",
+  "device": "auto",
+  "eval_case_bank": "eval_cases_pandagym_dense.json",
   "notes": [
     "This task intentionally follows panda-gym PickAndPlace dense reward and success: reward=-||achieved_goal-desired_goal||, success=distance<0.05, no lift gate.",
     "The episode horizon is extended to 400 steps so guided warmup trajectories are not truncated during hover, descend, grasp, lift, carry, and release.",
     "Use this as the semantic parity bridge before returning to lift-gated pick-and-place.",
     "Training collection uses MJWarp vectorization; eval remains CPU MuJoCo through the runner."
   ],
-  "train_seconds": 300,
   "train_probe": {
     "enabled": true,
     "interval_seconds": 20.0,
